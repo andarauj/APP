@@ -1,0 +1,45 @@
+# Dependências — reinstaláveis a partir do package-lock.json.
+node_modules/
+
+# Build e cache do Expo / Metro
+.expo/
+dist/
+web-build/
+*.tsbuildinfo
+
+# Pastas nativas geradas por `expo prebuild` — não devem ir para o
+# repositório num projeto managed: são recriadas a partir do app.json, e
+# comitá-las faz com que alterações à configuração deixem silenciosamente
+# de ter efeito.
+android/
+ios/
+
+# Segredos e credenciais de assinatura
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Cobertura de testes
+coverage/
+
+# Sistema operativo / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Ferramenta de scaffolding usada no arranque do projeto
+.bolt/
