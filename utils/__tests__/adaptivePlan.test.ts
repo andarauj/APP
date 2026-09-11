@@ -39,6 +39,9 @@ describe('phase spec by goal', () => {
       expect(phaseSpec('deload', g).volumeMult).toBeLessThanOrEqual(0.6);
     }
   });
+  it('general intensification volume is grounded at 0.80x (PERIODIZATION_RESEARCH.md §"Judgment on the app\'s current hardcoded multipliers") — a deliberate change, not accidental drift', () => {
+    expect(phaseSpec('intensification', 'general').volumeMult).toBeCloseTo(0.80);
+  });
 });
 
 describe('phase spec by experience', () => {

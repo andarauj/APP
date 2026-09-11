@@ -55,14 +55,45 @@ interface PhaseSpec {
   expect: string;
 }
 
+/**
+ * Sourced against PERIODIZATION_RESEARCH.md (compiled 2026-09-11) — see that
+ * file for full citations and confidence ratings. Summary per phase:
+ *
+ * - on_ramp: no literature gives a precise multiplier; "moderate volume,
+ *   high reps, low intensity before loading climbs" matches Bompa's
+ *   anatomical-adaptation phase. Heuristic, directionally sound.
+ * - accumulation: >1.0x volume matches the well-established idea that
+ *   volume should rise as a mesocycle progresses (Schoenfeld et al. 2017
+ *   dose-response meta-analysis; Israetel et al. 2020 MEV->MAV ramp).
+ * - intensification: was 0.90x. Revised down to 0.80x — a mere 10% set-count
+ *   cut is small relative to what the literature associates with a drop to
+ *   4-6 reps at ~85% e1RM: Baz-Valle et al.'s validation of "total sets" as
+ *   a volume proxy is scoped to 6-20+ reps (4-6 sits at/below that range),
+ *   and periodization sources (Bompa; Lorenz & Morrison 2015) describe
+ *   volume dropping "systematically", not by ~10%, as intensity climbs.
+ *   No source gives an exact correct number here — 0.80x is the
+ *   conservative end of the research's suggested 0.70-0.80x test range.
+ * - deload: 0.50x sits at the midpoint of Bell et al. (2025)'s "moderate
+ *   recovery needs" tier (40-60% cut) and is well inside what one controlled
+ *   study (Vann et al. 2021, an 85% cut) found caused no measurable harm.
+ *   This is the best-grounded multiplier of the four — keep as is.
+ */
 const BASE_PHASES: Record<AdaptivePhase, PhaseSpec> = {
   on_ramp:         { volumeMult: 0.85, repLow: 12, repHigh: 15, intensityPct: 0.65, expect: 'Semana de adaptação: reps altas, RPE 6–7, reencontrar as cargas.' },
   accumulation:    { volumeMult: 1.15, repLow: 8,  repHigh: 12, intensityPct: 0.72, expect: 'Semana de acumulação: mais séries, RPE 7–8, é aqui que se cresce.' },
-  intensification: { volumeMult: 0.90, repLow: 4,  repHigh: 6,  intensityPct: 0.85, expect: 'Semana de intensificação: pesado, reps baixas, RPE 8–9.' },
+  intensification: { volumeMult: 0.80, repLow: 4,  repHigh: 6,  intensityPct: 0.85, expect: 'Semana de intensificação: pesado, reps baixas, RPE 8–9.' },
   deload:          { volumeMult: 0.50, repLow: 6,  repHigh: 8,  intensityPct: 0.60, expect: 'Semana de descarga: metade do volume, cargas leves, recuperar.' },
 };
 
-/** Small per-goal nudges layered on the base phase spec. */
+/**
+ * Small per-goal nudges layered on the base phase spec. Note:
+ * strength.intensification.volumeMult (0.85) was set equal to the old base
+ * intensification multiplier and was intentionally left untouched when the
+ * base was revised down to 0.80x (see BASE_PHASES comment) — a strength
+ * goal reasonably keeping relatively more volume at heavy loads than the
+ * general case isn't itself wrong, but this wasn't a deliberate per-goal
+ * decision, just unreviewed drift. Worth a deliberate look, not a silent fix.
+ */
 const GOAL_TILT: Record<AdaptiveGoal, Partial<Record<AdaptivePhase, Partial<PhaseSpec>>>> = {
   strength: {
     accumulation:    { repLow: 6, repHigh: 10, intensityPct: 0.75 },
