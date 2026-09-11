@@ -228,7 +228,7 @@ export default function HistoryScreen() {
               <Flame size={22} color={colors.accent} />
             </View>
             <Text style={[styles.streakValue, { color: colors.text }]}>{streak.currentStreak}</Text>
-            <Text style={[styles.streakLabel, { color: colors.textSecondary }]}>Streak</Text>
+            <Text style={[styles.streakLabel, { color: colors.textSecondary }]}>Dias seguidos</Text>
           </Card>
           <Card style={styles.streakCard}>
             <View style={[styles.streakIcon, { backgroundColor: colors.primaryContainer }]}>
