@@ -25,6 +25,25 @@ export const PHASE_COLOR: Record<AdaptivePhase, string> = {
   deload: '#3EC8E0',
 };
 
+/**
+ * Standing explainer for why the 4-phase order is what it is — not tied to
+ * any one week's transition (that's `WeeklyRecap.why`), just the stable
+ * rationale behind the cycle shape itself. Grounded in what BASE_PHASES
+ * actually does below: Adaptação is the lightest, widest-rep phase (builds
+ * work capacity safely); Acumulação raises volume the most (the phase that
+ * does the most hypertrophy/stimulus work); Intensificação trades volume for
+ * the highest %e1RM (tests real strength limits, which only makes sense once
+ * capacity and technique are already there); Descarga cuts volume to half
+ * (the recovery the next, harder cycle depends on).
+ */
+export const CYCLE_RATIONALE_PT =
+  'Cada fase controla uma variável de treino diferente, por esta ordem: ' +
+  'a Adaptação constrói capacidade de trabalho com cargas leves antes de ' +
+  'mais nada; a Acumulação sobe o volume, que é o que mais gera estímulo; ' +
+  'a Intensificação troca volume por carga para testar os teus limites de ' +
+  'força; e a Descarga reduz tudo a metade para recuperar antes do próximo ' +
+  'ciclo, que arranca de um patamar mais alto que este.';
+
 interface PhaseSpec {
   /** multiplier on the plan's base number of working sets */
   volumeMult: number;

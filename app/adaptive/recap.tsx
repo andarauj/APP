@@ -12,7 +12,7 @@ import { ArrowLeft, ArrowRight, Sparkles, TrendingUp, TrendingDown, Minus } from
 import { useTheme } from '@/hooks/useTheme';
 import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
 import { getLatestAdaptivePlanAny } from '@/db/adaptiveDao';
-import { PHASE_LABEL_PT, PHASE_COLOR } from '@/utils/adaptivePlan';
+import { PHASE_LABEL_PT, PHASE_COLOR, CYCLE_RATIONALE_PT } from '@/utils/adaptivePlan';
 import { Card } from '@/components/ui/Card';
 
 export default function AdaptiveRecapScreen() {
@@ -74,6 +74,11 @@ export default function AdaptiveRecapScreen() {
               {status.isBridge ? ' (consolidação)' : ''}
             </Text>
           </View>
+
+          <Card style={{ backgroundColor: colors.surfaceVariant }}>
+            <Text style={[styles.cardTitle, { color: colors.text }]}>Quatro fases, um objetivo cada</Text>
+            <Text style={[styles.body, { color: colors.textSecondary, marginTop: 4 }]}>{CYCLE_RATIONALE_PT}</Text>
+          </Card>
 
           {recap ? (
             <>

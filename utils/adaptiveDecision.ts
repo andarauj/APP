@@ -100,7 +100,18 @@ export function decideNextWeek(input: DecisionInput): DecisionResult {
   if (current.phase === 'deload') {
     const np = nextPhase('deload'); // -> on_ramp, wrapsCycle
     reasons.push('Descarga concluída — novo ciclo a partir de um patamar mais alto.');
-    return { decision: 'advance', nextPhase: np.phase, wrapsCycle: np.wrapsCycle, reasons, expect: phaseSpec(np.phase, goal, experience).expect };
+    return {
+      decision: 'advance',
+      nextPhase: np.phase,
+      wrapsCycle: np.wrapsCycle,
+      reasons,
+      // Distinct from BASE_PHASES.on_ramp.expect's "reencontrar as cargas" —
+      // that phrasing fits the very first on_ramp week ever (utils/
+      // adaptiveService.ts's startAdaptivePlan), not this one: by the 2nd+
+      // cycle the loads are already known, so this week is about locking in
+      // technique at a lighter load before the new (higher) baseline ramps.
+      expect: 'Novo ciclo, fase de Adaptação: esforço moderado para consolidar a técnica — o ponto de partida já é mais alto do que no ciclo anterior.',
+    };
   }
 
   // --- a bridge week is a single half-step; after it, always move on ---
