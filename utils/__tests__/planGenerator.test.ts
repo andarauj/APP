@@ -208,6 +208,60 @@ describe('pickExercisesForDay with home_dumbbell equipment', () => {
   });
 });
 
+describe('pickExercisesForDay with allowedEquipment (fine-grained checklist)', () => {
+  it('keeps only exercises whose equipment is in the list, ignoring equipmentPref entirely', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino com Barra', 'chest', 'barbell'),
+      ex(2, 'Supino com Halteres', 'chest', 'dumbbell'),
+      ex(3, 'Supino Maquina', 'chest', 'machine'),
+    ];
+    // equipmentPref is 'any' (would normally allow everything) but the
+    // explicit checklist should still win.
+    const picked = pickExercisesForDay(pool, ['chest'], 30, 'any', [], undefined, ['dumbbell']);
+    expect(picked.every(p => p.equipment === 'dumbbell')).toBe(true);
+  });
+
+  it('does not fall back to a wider equipment set when the checklist has too few matches — an exact checklist is stricter than the coarse buckets', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino Maquina', 'chest', 'machine'),
+      ex(2, 'Supino com Barra', 'chest', 'barbell'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 30, 'any', [], undefined, ['band']);
+    expect(picked).toHaveLength(0);
+  });
+
+  it('selecting only Gymleco still returns generic machine exercises — the seed database has none actually tagged gymleco', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino Maquina', 'chest', 'machine'),
+      ex(2, 'Supino com Barra', 'chest', 'barbell'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 30, 'any', [], undefined, ['gymleco']);
+    expect(picked.some(p => p.equipment === 'machine')).toBe(true);
+    expect(picked.some(p => p.equipment === 'barbell')).toBe(false);
+  });
+});
+
+describe('pickExercisesForDay with excludedMuscles (injuries)', () => {
+  it('drops an excluded muscle from the day entirely, even if it was in focus', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Desenvolvimento com Halteres', 'shoulders', 'dumbbell'),
+      ex(2, 'Supino com Barra', 'chest', 'barbell'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest', 'shoulders'], 45, 'any', [], undefined, undefined, ['shoulders']);
+    expect(picked.some(p => p.primary_muscle === 'shoulders')).toBe(false);
+    expect(picked.some(p => p.primary_muscle === 'chest')).toBe(true);
+  });
+
+  it('an excluded muscle is never added as a focus area either', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Desenvolvimento com Halteres', 'shoulders', 'dumbbell'),
+      ex(2, 'Supino com Barra', 'chest', 'barbell'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 45, 'any', ['shoulders'], undefined, undefined, ['shoulders']);
+    expect(picked.some(p => p.primary_muscle === 'shoulders')).toBe(false);
+  });
+});
+
 describe('suggestedDaysPerWeek', () => {
   it('suggests more days when a broad full-body split is too short to cover every muscle group', () => {
     // 2 days/week -> Full Body split, busiest day needs 5 muscle groups;

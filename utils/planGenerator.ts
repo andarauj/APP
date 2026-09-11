@@ -2,7 +2,7 @@ import { getAllExercises } from '@/db/exerciseDao';
 import { createPlan, addExerciseToPlan } from '@/db/planDao';
 import { getDatabase } from '@/db/database';
 import { getMuscleRecency, getFatigueRadarExerciseData, getExerciseUsageCounts, getLastSetForExercise, getProgressionSuggestion } from '@/db/workoutDao';
-import type { Exercise, MuscleGroup, PlanType, SplitType, SetType } from '@/types';
+import type { Exercise, MuscleGroup, PlanType, SplitType, SetType, Equipment } from '@/types';
 import { MUSCLE_GROUPS_PT } from '@/types';
 import type { BodyAnalysis } from './bodyAnalysis';
 import { selectTodaysMuscles, muscleGroupCountForMinutes, pickMuscleNeedingMoreVolume } from './dailyWorkoutGenerator';
@@ -186,6 +186,42 @@ export function movementFamily(name: string): string {
   return first || words[0];
 }
 
+// Real usage history outranks everything else: an exercise the person has
+// actually stuck with across several sessions is a better bet than any
+// generic "barbell is usually better" guess. Sessions are capped (via
+// MAX_USAGE_SESSIONS_COUNTED) so a long-time staple doesn't permanently lock
+// out ever trying anything else — it still wins, but by a bounded amount,
+// not an ever-growing one.
+//
+// BUGFIX (found by reading a real generated plan): with only equipment
+// priority to sort by, same-tier ties fell back to whatever order the
+// exercises came from the database in — alphabetical by name. That silently
+// favored oddly-specific variants: "Supino Apertado com Barra" (close-grip)
+// sorts before the plain "Supino com Barra" alphabetically, so the
+// close-grip specialty version became the day's ONLY barbell press pick
+// (demoted to warmup), while the actual flat bench press was never selected
+// at all. Preferring the SHORTER name as a tie-breaker favors the plain,
+// foundational lift ("Supino com Barra", 3 words) over qualified variants
+// ("Supino Apertado/Inclinado/Isometrico com Barra", 4+ words) — a real
+// anchor lift, not a specialty variant, should be the one actually
+// generated for the primary lift slot.
+function sortCandidates(matches: Exercise[], usageHistory?: Map<number, number>): Exercise[] {
+  return [...matches].sort((a, b) => {
+    // A capped session count so a long-time staple wins by a bounded
+    // amount, not an ever-growing one that would permanently crowd out
+    // trying anything else once it's been used a lot.
+    const usageA = Math.min(usageHistory?.get(a.id) ?? 0, MAX_USAGE_SESSIONS_COUNTED);
+    const usageB = Math.min(usageHistory?.get(b.id) ?? 0, MAX_USAGE_SESSIONS_COUNTED);
+    if (usageA !== usageB) return usageB - usageA;
+
+    const priorityDiff = (COMPOUND_PRIORITY[a.equipment] ?? 99) - (COMPOUND_PRIORITY[b.equipment] ?? 99);
+    if (priorityDiff !== 0) return priorityDiff;
+    const wordCountDiff = a.name.split(' ').length - b.name.split(' ').length;
+    if (wordCountDiff !== 0) return wordCountDiff;
+    return a.name.localeCompare(b.name);
+  });
+}
+
 export function pickExercisesForDay(
   allExercises: Exercise[],
   focus: MuscleGroup[],
@@ -193,10 +229,15 @@ export function pickExercisesForDay(
   equipmentPref: EquipmentPreference,
   focusAreas: MuscleGroup[],
   usageHistory?: Map<number, number>,
+  allowedEquipment?: Equipment[],
+  excludedMuscles?: MuscleGroup[],
 ): Exercise[] {
-  const focusMuscles = focusAreas.length > 0
-    ? [...new Set([...focusAreas.filter(m => focus.includes(m)), ...focus])]
+  const focusWithoutInjuries = excludedMuscles && excludedMuscles.length > 0
+    ? focus.filter(m => !excludedMuscles.includes(m))
     : focus;
+  const focusMuscles = focusAreas.length > 0
+    ? [...new Set([...focusAreas.filter(m => focusWithoutInjuries.includes(m)), ...focusWithoutInjuries])]
+    : focusWithoutInjuries;
 
   const targetExerciseCount = Math.max(
     4,
@@ -207,6 +248,25 @@ export function pickExercisesForDay(
   for (const muscle of focusMuscles) {
     let matches = allExercises
       .filter(e => e.primary_muscle === muscle && e.type === 'strength');
+
+    // Fine-grained equipment (an exact checklist, e.g. from onboarding) is
+    // otherwise stricter than the coarse EquipmentPreference buckets — no
+    // loosening, since the person told us exactly what they have, and
+    // showing something outside that list is worse than training that
+    // muscle less this session. One deliberate exception, mirroring
+    // matchesEquipment's own 'gymleco' handling above: the seed exercise
+    // database has zero exercises actually tagged 'gymleco' (it's one gym
+    // chain's own branded machines, not a distinct movement), so selecting
+    // only Gymleco would otherwise silently return nothing. Generic
+    // 'machine' exercises are the closest real substitute.
+    if (allowedEquipment && allowedEquipment.length > 0) {
+      const allowed = allowedEquipment.includes('gymleco')
+        ? [...allowedEquipment, 'machine' as Equipment]
+        : allowedEquipment;
+      matches = matches.filter(e => allowed.includes(e.equipment));
+      byMuscle.set(muscle, sortCandidates(matches, usageHistory));
+      continue;
+    }
 
     const prefMatches = matches.filter(e => matchesEquipment(e, equipmentPref));
     if (prefMatches.length >= 2) {
@@ -221,40 +281,7 @@ export function pickExercisesForDay(
       matches = prefMatches;
     }
 
-    // Real usage history outranks everything else: an exercise the person
-    // has actually stuck with across several sessions is a better bet than
-    // any generic "barbell is usually better" guess. Sessions are capped
-    // (via CAPPED_SESSIONS below) so a long-time staple doesn't
-    // permanently lock out ever trying anything else — it still wins, but
-    // by a bounded amount, not an ever-growing one.
-    //
-    // BUGFIX (found by reading a real generated plan): with only equipment
-    // priority to sort by, same-tier ties fell back to whatever order the
-    // exercises came from the database in — alphabetical by name. That
-    // silently favored oddly-specific variants: "Supino Apertado com Barra"
-    // (close-grip) sorts before the plain "Supino com Barra" alphabetically,
-    // so the close-grip specialty version became the day's ONLY barbell
-    // press pick (demoted to warmup), while the actual flat bench press
-    // was never selected at all. Preferring the SHORTER name as a tie-
-    // breaker favors the plain, foundational lift ("Supino com Barra", 3
-    // words) over qualified variants ("Supino Apertado/Inclinado/Isometrico
-    // com Barra", 4+ words) — a real anchor lift, not a specialty variant,
-    // should be the one actually generated for the primary lift slot.
-    matches.sort((a, b) => {
-      // A capped session count so a long-time staple wins by a bounded
-      // amount, not an ever-growing one that would permanently crowd out
-      // trying anything else once it's been used a lot.
-      const usageA = Math.min(usageHistory?.get(a.id) ?? 0, MAX_USAGE_SESSIONS_COUNTED);
-      const usageB = Math.min(usageHistory?.get(b.id) ?? 0, MAX_USAGE_SESSIONS_COUNTED);
-      if (usageA !== usageB) return usageB - usageA;
-
-      const priorityDiff = (COMPOUND_PRIORITY[a.equipment] ?? 99) - (COMPOUND_PRIORITY[b.equipment] ?? 99);
-      if (priorityDiff !== 0) return priorityDiff;
-      const wordCountDiff = a.name.split(' ').length - b.name.split(' ').length;
-      if (wordCountDiff !== 0) return wordCountDiff;
-      return a.name.localeCompare(b.name);
-    });
-    byMuscle.set(muscle, matches);
+    byMuscle.set(muscle, sortCandidates(matches, usageHistory));
   }
 
   const picked: Exercise[] = [];
@@ -419,13 +446,26 @@ export async function generatePlan(
     customName?: string;
     equipmentPref?: EquipmentPreference;
     bodyAnalysis?: BodyAnalysis | null;
+    /** Direct target zones (e.g. from onboarding), merged with whatever
+     *  body-analysis already flagged — both mean the same thing (extra sets
+     *  for that muscle), just from different sources. */
+    focusAreas?: MuscleGroup[];
+    /** Exact equipment checklist (e.g. from onboarding). Overrides
+     *  equipmentPref's coarse buckets when present — see pickExercisesForDay. */
+    allowedEquipment?: Equipment[];
+    /** Muscles to leave out of every day's focus entirely (e.g. an
+     *  onboarding-reported injury) — not just deprioritized, skipped. */
+    excludedMuscles?: MuscleGroup[];
   },
 ): Promise<number> {
   const template = SPLIT_TEMPLATES[daysPerWeek] || SPLIT_TEMPLATES[3];
   const allExercises = await getAllExercises();
   const usageHistory = await getExerciseUsageCounts();
   const equipmentPref = options?.equipmentPref ?? 'any';
-  const focusAreas = options?.bodyAnalysis?.focusAreas ?? [];
+  const allowedEquipment = options?.allowedEquipment;
+  const excludedMuscles = options?.excludedMuscles ?? [];
+  const focusAreas = [...new Set([...(options?.bodyAnalysis?.focusAreas ?? []), ...(options?.focusAreas ?? [])])]
+    .filter(m => !excludedMuscles.includes(m));
   const suggestConditioning = options?.bodyAnalysis?.suggestConditioning ?? false;
 
   const eqLabel = equipmentPref === 'gymleco' ? ' · Gymleco' : equipmentPref === 'free_weights' ? ' · Pesos Livres' : '';
@@ -462,7 +502,7 @@ export async function generatePlan(
     // now stored in day_label/day_index, and order_index restarts within each day.
     for (let dayIndex = 0; dayIndex < template.days.length; dayIndex++) {
       const day = template.days[dayIndex];
-      const dayExercises = pickExercisesForDay(allExercises, day.focus, minutesPerDay, equipmentPref, focusAreas, usageHistory);
+      const dayExercises = pickExercisesForDay(allExercises, day.focus, minutesPerDay, equipmentPref, focusAreas, usageHistory, allowedEquipment, excludedMuscles);
       // Group the day's exercises by muscle so each day reads muscle-by-muscle
       // (all chest work together, then shoulders, then triceps) instead of
       // jumping between muscle groups.
