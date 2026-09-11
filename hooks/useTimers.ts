@@ -35,6 +35,10 @@ export function useCountdown(duration: number, running: boolean, onComplete?: ()
   const [remaining, setRemaining] = useState(duration);
   const [isFinished, setIsFinished] = useState(false);
   const endTimeRef = useRef<number | null>(null);
+  // Bumped by reset() so the ticking effect below re-runs even when
+  // `running` was already true (see that effect's comment for why a plain
+  // `running` transition isn't enough).
+  const [resetToken, setResetToken] = useState(0);
 
   // The ticking effect must not re-subscribe when these change.
   //
@@ -84,7 +88,20 @@ export function useCountdown(duration: number, running: boolean, onComplete?: ()
       }
     }, 250);
     return () => clearInterval(interval);
-  }, [running]);
+    // BUGFIX (reported: "o descanso não dispara em todas as séries e
+    // exercícios"): this effect only re-ran when `running` itself flipped
+    // false->true. The workout screen starts a new rest by calling reset()
+    // then setRestActive(true) — but if the PREVIOUS rest was still
+    // actively counting down (very common: nobody waits out the full
+    // timer every time), `running` was already true, so that call was a
+    // no-op transition and this effect never re-ran. reset() had already
+    // nulled endTimeRef and reset `remaining` for one render, but with no
+    // interval left to pick either back up, the display just froze there
+    // — and every later rest for the rest of the workout silently failed
+    // the same way, since `running` could never transition again either.
+    // resetToken exists purely so reset() has a way to force this effect
+    // to run again even when `running` didn't change.
+  }, [running, resetToken]);
 
   const addTime = useCallback((seconds: number) => {
     setRemaining(prev => {
@@ -102,6 +119,7 @@ export function useCountdown(duration: number, running: boolean, onComplete?: ()
     setRemaining(d);
     setIsFinished(false);
     endTimeRef.current = null;
+    setResetToken(t => t + 1);
   }, [duration]);
 
   return { remaining, isFinished, addTime, reset };

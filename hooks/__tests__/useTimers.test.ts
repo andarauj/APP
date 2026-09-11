@@ -151,4 +151,40 @@ describe('useCountdown', () => {
     expect(t.state.current.remaining).toBe(90);
     expect(t.state.current.isFinished).toBe(false);
   });
+
+  /**
+   * Regression for "rest doesn't fire on every set" — the real trigger is
+   * completing a set WHILE the previous rest is still actively counting
+   * down (very common: nobody waits out the full timer every time).
+   *
+   * completeSet() in app/workout/active.tsx calls reset() then
+   * setRestActive(true) to start each new rest — but if the previous rest
+   * was still running, `running` never transitions false->true, so a
+   * naive implementation that only (re)creates its interval on a
+   * `running` transition never starts a fresh interval: reset() correctly
+   * sets `remaining` to the new duration for one render, then the display
+   * just freezes there forever, and this and every later rest silently
+   * stops working for the rest of the workout.
+   */
+  it('reset() while still running restarts ticking, not just the displayed number', () => {
+    const onComplete = jest.fn();
+    const t = renderCountdown({ duration: 30, running: true, onComplete });
+
+    t.tick(10_000);
+    expect(t.state.current.remaining).toBe(20);
+
+    // Completing another set mid-rest: `running` stays true throughout.
+    act(() => {
+      t.state.current.reset(15);
+    });
+    expect(t.state.current.remaining).toBe(15);
+
+    t.tick(5000);
+    expect(t.state.current.remaining).toBe(10); // frozen at 15 if the bug is present
+
+    t.tick(10_000);
+    expect(t.state.current.remaining).toBe(0);
+    expect(t.state.current.isFinished).toBe(true);
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
 });
