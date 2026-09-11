@@ -2,9 +2,9 @@ import * as Sharing from 'expo-sharing';
 import JSZip from 'jszip';
 import { getPlanById, getPlanExercisesWithDetails } from '@/db/planDao';
 import { getSessionById, getSessionSetsWithExercise, getStreakData, getPersonalRecords, getWeeklyVolumeByMuscle, getMostTrainedExercises, getMostUsedPlans, getTrainingTips, getAllSessions } from '@/db/workoutDao';
-import { getExerciseById } from '@/db/exerciseDao';
 import { getDatabase } from '@/db/database';
 import { documentDirectory, writeAsStringAsync, readAsStringAsync, EncodingType, makeDirectoryAsync } from 'expo-file-system/legacy';
+import { summarizeWorkoutPace, rateSetPace } from './setPace';
 
 export function escapeXml(text: string): string {
   return text
@@ -106,6 +106,67 @@ export async function exportWorkoutAsXml(sessionId: number): Promise<string> {
   xml += `  </treino>\n`;
   xml += '</changes>\n';
   return xml;
+}
+
+/**
+ * A short, human-readable summary of ONE workout — for sending to yourself
+ * (the OS share sheet includes Gmail/Mail among the targets) right after
+ * finishing, distinct from exportWorkoutAsXml (data-restore format) and
+ * exportTrainingReport (a rolling report across the last 10 sessions).
+ * Includes the set-pace read (see utils/setPace.ts) when at least one set
+ * was timed with the "Tempo de série" stopwatch.
+ */
+export async function exportWorkoutSummaryText(sessionId: number): Promise<string> {
+  const session = await getSessionById(sessionId);
+  if (!session) throw new Error('Treino nao encontrado');
+  const sets = await getSessionSetsWithExercise(sessionId);
+
+  const grouped = new Map<number, { name: string; sets: typeof sets }>();
+  for (const set of sets) {
+    if (!grouped.has(set.exercise_id)) grouped.set(set.exercise_id, { name: set.exercise_name, sets: [] });
+    grouped.get(set.exercise_id)!.sets.push(set);
+  }
+
+  const totalVolume = sets.reduce((sum, s: any) => sum + s.reps * s.weight, 0);
+  const prCount = sets.filter((s: any) => s.is_pr).length;
+  const date = new Date(session.started_at * 1000).toLocaleString('pt-PT');
+
+  let text = `Changes — Resumo do treino\n`;
+  text += `${session.name}\n${date}\n\n`;
+  text += `Duração: ${Math.round((session.total_duration || 0) / 60)} min · Séries: ${sets.length} · Volume: ${Math.round(totalVolume)} kg`;
+  if (prCount > 0) text += ` · ${prCount} PR${prCount > 1 ? 's' : ''}`;
+  text += `\n\n`;
+
+  const pace = summarizeWorkoutPace(sets.map((s: any) => ({ reps: s.reps, actualSeconds: s.set_duration || 0 })));
+  if (pace.measuredSets > 0) {
+    const verdictText: Record<string, string> = {
+      fast: 'Ritmo: sets mais rápidos do que o ideal — vale a pena controlar melhor o movimento.',
+      slow: 'Ritmo: sets mais lentos do que o ideal — pode ser pausa a mais entre repetições.',
+      good: 'Ritmo: dentro do esperado.',
+      mixed: 'Ritmo: inconsistente esta sessão (sets rápidos e lentos misturados).',
+    };
+    text += `${verdictText[pace.verdict] ?? ''}\n`;
+    text += `Média ${Math.round(pace.avgActualSeconds)}s por série (ideal ≈ ${Math.round(pace.avgIdealSeconds)}s), ${pace.measuredSets}/${pace.totalSets} séries cronometradas.\n\n`;
+  }
+
+  for (const { name, sets: exSets } of grouped.values()) {
+    text += `${name}\n`;
+    for (const s of exSets as any[]) {
+      let line = `  ${s.reps} x ${s.weight}kg`;
+      if (s.rpe) line += ` · RPE ${s.rpe}`;
+      if (s.set_duration > 0) {
+        const rating = rateSetPace(s.reps, s.set_duration);
+        line += ` · ${s.set_duration}s`;
+        if (rating === 'fast') line += ' (rápido)';
+        else if (rating === 'slow') line += ' (lento)';
+      }
+      if (s.is_pr) line += ' · PR';
+      text += `${line}\n`;
+    }
+    text += `\n`;
+  }
+
+  return text;
 }
 
 export async function shareXmlFile(content: string, filename: string): Promise<void> {

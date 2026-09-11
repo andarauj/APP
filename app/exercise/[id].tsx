@@ -23,8 +23,8 @@ import { Dumbbell, TrendingUp, StickyNote, Camera, ImagePlus, Trash2, Check, Zap
 type ChartMetric = 'weight' | 'volume';
 type DetailTab = 'historico' | 'grafico';
 
-// JeFit-parity range chips (14D · 1M · 3M · 6M). Applied client-side to the
-// already-loaded history/chart data so no extra query is needed.
+// Range chips (14D · 1M · 3M · 6M). Applied client-side to the already-loaded
+// history/chart data so no extra query is needed.
 const RANGES: { key: string; label: string; days: number }[] = [
   { key: '14d', label: '14D', days: 14 },
   { key: '1m', label: '1M', days: 30 },
@@ -149,8 +149,8 @@ export default function ExerciseDetailScreen() {
       />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Media first — JeFit shows the demo up top. Falls back to the
-            dataset illustration; the user's own photo/video wins when set. */}
+        {/* Media first — the demo goes up top. Falls back to the dataset
+            illustration; the user's own photo/video wins when set. */}
         {!!displayImage && (
           <View style={styles.mediaWrap}>
             <ExerciseMedia uri={displayImage} height={210} />

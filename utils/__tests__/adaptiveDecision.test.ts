@@ -112,6 +112,27 @@ describe('hold — middle ground', () => {
   });
 });
 
+describe('experience adjusts the advance threshold', () => {
+  // score4 = 2 (loadRising false, didWork true, balanceOk false, phaseAligned true),
+  // stallCount 0 so the `strong` gate's stallCount===0 check doesn't itself block advance.
+  const scenario = {
+    current: wk({ phase: 'accumulation' as const, nspiVolume: 88, nspiLoad: 50, nspiBalance: 55, minBucketRatio: 0.4 }),
+    recent: [wk({ nspiLoad: 55 })],
+    stallCount: 0,
+  };
+  it('a beginner advances on score4=2 where intermediate would only hold', () => {
+    const inter = decideNextWeek(inp(scenario));
+    expect(inter.decision).toBe('hold');
+
+    const beg = decideNextWeek(inp({ ...scenario, experience: 'beginner' }));
+    expect(beg.decision).toBe('advance');
+  });
+  it('advanced keeps the same threshold as intermediate', () => {
+    const adv = decideNextWeek(inp({ ...scenario, experience: 'advanced' }));
+    expect(adv.decision).toBe('hold');
+  });
+});
+
 describe('phase alignment', () => {
   it('intensification: load rising matters, volume dip is fine', () => {
     const r = decideNextWeek(inp({

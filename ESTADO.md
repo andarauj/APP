@@ -1,6 +1,11 @@
 # Changes — estado do projeto
 
-Última revisão: 10 de setembro de 2026.
+Última revisão: 11 de setembro de 2026.
+
+**Versionamento:** `1.0.0` é a versão de referência ("versão 1") — a que
+fecha todo o trabalho de redesenho + motor adaptativo. Dali para a frente,
+cada lote de alterações sobe o número de patch (`1.0.1`, `1.0.2`, ...) em
+`app.json` (`expo.version`).
 
 Este ficheiro substitui `TIER1_FEATURES.md` e `NAVEGACAO_REFACTOR.md`, que
 descreviam um estado que já não existia e davam por concluídas coisas que
@@ -18,8 +23,8 @@ Comandos corridos neste repositório:
 | Verificação | Resultado |
 |---|---|
 | `npx tsc --noEmit` | sem erros |
-| `npm run lint` | 0 erros, 20 avisos |
-| `npm test` | 24 suites, 246 testes |
+| `npm run lint` | 0 erros, 18 avisos |
+| `npm test` | 32 suites, 371 testes |
 
 Os testes cobrem lógica pura (cálculos, geração de planos, agregações), o
 dataset de exercícios, o `getWeightChange`, o registo de migrações, o
@@ -227,11 +232,9 @@ cardio.
 
 ## Motor adaptativo (NSPI)
 
-Design completo em `NSPI_ENGINE.md`. Replica o *Adaptive Progressive
-Overload* / *Periodization* do JeFit (ciclos de 4 fases, ajuste semanal,
-North Star Progress Index) **totalmente offline** — só heurísticas
-explicáveis, sem rede nem LLM. **Grátis e sempre acessível** (no JeFit é
-pago; aqui não há gate "Elite").
+Design completo em `NSPI_ENGINE.md`. Motor de periodização automática
+(ciclos de 4 fases, ajuste semanal, North Star Progress Index) assente só em
+heurísticas explicáveis, sem rede nem LLM. Sempre acessível, sem gates.
 
 Estado por sub-fase:
 
@@ -242,7 +245,8 @@ Estado por sub-fase:
 | N3 | `utils/adaptiveDecision.ts` — decisão semanal (advance / bridge / hold / deload_early), "progresso não é punição" | **feito**, 13 testes |
 | N4 | Orquestração: migração `migrateAdaptiveEngine`; `db/adaptiveDao.ts` (CRUD); `utils/movementClassify.ts` (padrão + bucket, puro); `utils/adaptiveWeek.ts` (janela + assemblagem de sinais, puro); `utils/adaptiveService.ts` (`startAdaptivePlan`, `closeWeekIfDue` idempotente, `getAdaptiveStatus`) | **feito**, 29 testes |
 | N5 | UI: `hooks/useAdaptiveStatus.ts`; wizard `app/adaptive/start.tsx` (objetivo/nível/plano/dia de início); card "Plano Adaptativo" em `Treino › Explorar`; badge de fase em `Treino › Plano`; card **NSPI** em `Progresso › Resumo` (substitui o Índice de Progresso quando há semana fechada); ecrã `app/adaptive/recap.tsx` (Weekly Recap); toggle "Periodização automática" + dia de início de semana em `Definições`; estrela roxa "porquê este alvo" no treino ativo | **feito** |
-| N6 | "Treino Inteligente" vira atalho compacto quando há plano adaptativo ativo; `closeWeekIfDue` corre a cada `useAdaptiveStatus` em foco (idempotente — só faz trabalho real na primeira chamada depois da semana acabar) | **feito** |
+| N6 | `closeWeekIfDue` corre a cada `useAdaptiveStatus` em foco (idempotente — só faz trabalho real na primeira chamada depois da semana acabar). ~~"Treino Inteligente" vira atalho compacto~~ — removido por completo a pedido do dono (11/09): deixou de fazer sentido com o motor adaptativo a decidir a semana. | **feito** |
+| N7 | Níveis de experiência (Iniciante/Intermédio/Avançado) passam a afetar o motor a sério, não só o onboarding: `EXPERIENCE_ADJUST` em `utils/adaptivePlan.ts` (deltas relativos sobre o spec já ajustado por objetivo — iniciante intensifica mais leve e com rep window mais larga, avançado intensifica mais fundo e descarrega mais fundo); `strongThreshold` em `utils/adaptiveDecision.ts` (2 em vez de 3 para iniciante — progressão quase linear merece uma fasquia mais baixa para avançar). `intermediate` fica vazio de propósito: é o comportamento de sempre, por isso todo o código existente que não passa `experience` continua bit-a-bit igual. Editável em `Perfil › Definições › Plano Adaptativo (NSPI)` (chips "NÍVEL"). | **feito**, 9 testes novos |
 
 **Estrela roxa "porquê este alvo" — feito.** Em `app/workout/active.tsx`
 (~1650 linhas, já tinha partido duas vezes com refactors não testados — ver
@@ -306,8 +310,21 @@ avaliam para `undefined` em Android — e não vale a pena removê-las.
 
 ## Dívida conhecida
 
-- **20 avisos de lint, nenhum de hooks.** Os que restam são variáveis por
-  usar e `require()` em ficheiros de teste.
+- **14 avisos de lint** (eram 31 — o resto eram imports/variáveis por usar,
+  removidos). Os que restam são `require()` em ficheiros de teste (padrão
+  deliberado para reiniciar módulos entre casos) e `import/first` a seguir
+  a um `jest.mock()`.
+- **Teclado a tapar o peso/reps do último exercício — mitigado, não
+  totalmente verificável em emulador.** Duas causas reais corrigidas:
+  (1) todos os exercícios abriam expandidos ao mesmo tempo — só o primeiro
+  abre agora, os outros ficam colapsados (toca no cabeçalho para abrir) e
+  concluir todas as séries de um exercício fecha-o e abre o seguinte
+  automaticamente; (2) o `KeyboardAvoidingView` só tinha `behavior` definido
+  para iOS — em Android (a única plataforma da app) não fazia nada. Também
+  foi acrescentado um ajuste manual que desloca o ecrã para o campo focado
+  ficar acima do teclado. Este emulador usa um teclado numérico muito baixo
+  (ligado a "teclado físico" do host), por isso o cenário exato não dá para
+  confirmar visualmente aqui — fica para verificar num telemóvel real.
 - **`app/workout/active.tsx` tem ~1640 linhas.** O `TempoMetronomeBox` já
   saiu para `components/workout/`. O `SetRow` (~220 linhas) é o candidato
   seguinte, mas está tipado contra `ActiveExercise` e usa o
@@ -317,13 +334,21 @@ avaliam para `undefined` em Android — e não vale a pena removê-las.
 - **Sem `WorkoutContext`.** Centralizar o estado do treino num contexto
   dedicado limparia o ecrã, mas é a mesma categoria de mudança: grande,
   mecânica, e impossível de verificar sem correr um treino.
-- **Upgrade real por exercitar.** Há agora um registo de migrações
-  (`schema_migrations`): um passo só é dado como aplicado depois de
-  terminar, portanto uma falha é repetida no arranque seguinte em vez de
-  ficar esquecida, e `getFailedMigrations()` expõe o que falhou. Isto está
-  coberto por testes com base de dados simulada, e a instalação de raiz foi
-  vista a correr em emulador — mas **um upgrade a partir de uma instalação
-  antiga real continua por fazer**.
+- ~~Upgrade real por exercitar~~ **Coberto.** `db/__tests__/migrations.upgrade.test.ts`
+  corre a sequência real de `initDatabase()` contra SQLite a sério (`node:sqlite`,
+  não um mock) — uma vez numa instalação de raiz, e uma vez contra um schema
+  "dia 1" escrito à mão (sem nenhuma das colunas que só existem por `ALTER`),
+  com linhas de exemplo. Encontrou um bug real no processo: `idx_plan_exercises_day`
+  era criado no bloco fatal do schema base, antes de `migratePlanDays` garantir
+  que `day_index` existia — numa instalação verdadeiramente antiga isso
+  derrubava a app inteira com "Database unavailable" logo no arranque.
+  Corrigido (o índice sai do bloco fatal; `migratePlanDays` já o recriava a
+  seguir, em segurança). Continua a faltar um telemóvel Android real — o
+  teste cobre o SQL, não o hardware arm64 nem o resto do sistema operativo.
+- **Descanso com o telemóvel bloqueado — verificado.** Timer de descanso
+  iniciado, ecrã bloqueado de imediato; a notificação (`changes-rest-timer`)
+  apareceu no `dumpsys notification` do sistema com som e vibração armados,
+  dentro da janela agendada. Falta só o mesmo teste num telemóvel real.
 - ~~Instruções do dataset por traduzir~~ **Feito** — 871 traduzidas para
   PT-PT, no JSON vendorizado + migração `migrateExerciseDbInstructionsPt`.
   Verificado em emulador.
@@ -341,15 +366,113 @@ avaliam para `undefined` em Android — e não vale a pena removê-las.
 
 ---
 
+## Conteúdo/UX — pedidos do dono (11 de setembro de 2026)
+
+Lote de 10 pedidos, todos **feitos** e verificados em emulador via `eas
+update`:
+
+- **Áudio do descanso não para música de fundo** — já era assim
+  (`interruptionMode: 'duckOthers'` em `utils/sound.ts`, baixa o volume e
+  repõe sozinho); só faltava dizer.
+- **Níveis de experiência no motor adaptativo** — ver N7 acima.
+- **`Treino › Plano` mostra o que está planeado por dia + estimativa de
+  tempo.** Novo card "O QUE ESTÁ PLANEADO": lê `plan_exercises` do plano
+  adaptativo (já reescrito pelo motor a cada semana — reflete sempre a fase
+  atual), agrupa por dia, e usa `utils/workoutTime.ts`
+  (`estimateDayMinutes`) para uma estimativa que conta séries × tempo de
+  execução, descanso entre séries, e tempo de troca de exercício/peso entre
+  exercícios. Expansível por dia.
+- **"Treino Inteligente" removido por completo** — ver N6 acima.
+- **Sinais de Fadiga: nível geral de "stacking".** `overallFatigueLevel()`
+  em `utils/fatigueSignals.ts` conta quantos TIPOS de sinal (salto de
+  volume, regressão de força, RPE creep) disparam ao mesmo tempo — 2+ ao
+  mesmo tempo pesa mais do que um isolado, é o padrão real de sobrecarga.
+  Banner novo no topo do ecrã com essa leitura; sinais dentro de cada tipo
+  passam a vir ordenados por gravidade.
+- **Consistência: quadrados → gráfico de barras semanais.** O grid
+  dia-a-dia ("aqueles quadrados não me dizem nada") saiu;
+  `components/ui/TrainingConsistencyChart.tsx` (substitui
+  `TrainingHeatmap.tsx`, apagado) mostra uma barra por semana com altura =
+  séries reais dessa semana, cor graduada à escala da própria pessoa, toque
+  para ver o detalhe. `utils/trainingHeatmap.ts` ganhou
+  `aggregateWeeklyConsistency`.
+- **Descrição em "Gerar Divisão" e "5/3/1"** — subtítulos curtos nos cards
+  de `Treino › Explorar`.
+- **Perfil enriquecido.** Cabeçalho novo com resumo vitalício (treinos,
+  dias seguidos, recordes, kg levantados, "a treinar desde X") — visível em
+  qualquer sub-separador do Perfil, não só nos Recordes. `getAchievementStats`
+  ganhou `currentStreak` e `firstWorkoutAt`.
+- **Tab dedicada "Meus Planos".** 4º separador em `Treino` (Explorar ·
+  Plano · Instantâneo · Meus Planos), decisão tomada com o dono entre isto
+  e um 5º ícone na barra inferior. Estado/ações partilhados com o ecrã
+  Planos standalone via `hooks/usePlansManager.ts` +
+  `components/ui/PlanGroupCard.tsx` + `PlanVersionModal.tsx`, para não haver
+  duas ideias diferentes do que "duplicar" ou "apagar" um plano fazem.
+  Criar/listar/duplicar/apagar verificado em emulador.
+- **"Streak" → "Dias seguidos"** em `Progresso › Resumo`.
+
+Todas as strings de marketing ("grátis", "sem conta", "sem anúncios") foram
+removidas do onboarding, do ecrã de confirmação do plano adaptativo e de
+`Treino › Explorar` — o dono já sabe, não precisa que a app repita. Frases
+motivacionais (`utils/motivationalQuotes.ts` e a notificação associada)
+foram apagadas por completo. Todas as referências de código ao JeFit foram
+removidas (`grep -ri jefit` limpo em todo o repositório).
+
+---
+
+## Segundo lote de pedidos (11 de setembro de 2026)
+
+Todos **feitos** e verificados em emulador via `eas update`:
+
+- **Bug corrigido: botão "Gerar Plano da Semana X" no 5/3/1 não respondia.**
+  Tinha `disabled={!allSet}` no `Button`, o que bloqueava o `onPress` por
+  completo — incluindo o alerta "Falta definir pesos" que já existia mas
+  nunca conseguia disparar. O botão passa a estar sempre ativo; o próprio
+  `handleGenerate` mostra o alerta quando faltam pesos.
+- **Cronómetro de descanso redesenhado** — `components/ui/RestRing.tsx`,
+  um anel circular SVG (mesma técnica do `DonutChart`) que esvazia à medida
+  que o tempo passa, com "-15s"/"+15s" a flanquear. Substitui a barra de
+  texto anterior em `app/workout/active.tsx`.
+- **Cronómetro por série liga-se à análise de ritmo.** O
+  `workout_sets.set_duration` já existia e já era escrito (via o
+  cronómetro "Tempo de série"), mas nunca era reposto a zero entre séries
+  nem usado para nada — corrigido (reset automático após cada série) e
+  `utils/setPace.ts` (ritmo ideal = reps × 3s, configurável) passa a
+  comparar o tempo real com o ideal. `app/workout/summary.tsx` mostra um
+  card "Ritmo das séries" + o tempo por série na lista; um botão novo
+  (`exportWorkoutSummaryText`) envia esse resumo pela folha de partilha do
+  Android — que já inclui Gmail e "Quick Share" (o mecanismo de
+  transferência nativo do Android), cobrindo também o pedido de exportar o
+  backup para as transferências do telemóvel sem código extra.
+- **Assistente do plano adaptativo sugere mais dias quando não chegam.**
+  `suggestedDaysPerWeek()` em `utils/planGenerator.ts` — se os
+  minutos/sessão escolhidos não derem para cobrir todos os grupos
+  musculares do dia mais exigente da divisão, sugere o próximo
+  dias/semana que resolve, com opção de aceitar ou manter.
+- **Gerador de treino em casa** — `app/plan/home.tsx` +
+  `generateHomeWorkout()`: pergunta que parte do corpo, quanto tempo, e se
+  quer cardio; gera só com halteres/peso do corpo (`home_dumbbell`, um
+  novo `EquipmentPreference` que nunca recua para equipamento de ginásio,
+  ao contrário de `free_weights`). Acessível em `Treino › Explorar`.
+
+**Testes: 32 suites / 371.** `tsc` limpo, lint sem novos avisos.
+
+---
+
 ## Prioridade
 
-1. Correr num Android **real** e refazer o fluxo (em emulador já passa).
-2. Testar upgrade de base de dados a partir de uma instalação anterior.
-3. Descanso com o telemóvel bloqueado.
+1. Correr num Android **real** — hardware arm64, o resto continua por ver
+   mesmo com tudo o que segue verificado noutro sítio.
+2. ~~Testar upgrade de base de dados a partir de uma instalação anterior~~ —
+   coberto por teste (ver Dívida conhecida). Falta só o dispositivo real.
+3. ~~Descanso com o telemóvel bloqueado~~ — verificado em emulador (som +
+   vibração armados, notificação entregue). Falta só o dispositivo real.
 4. Só depois, funcionalidades novas.
 
-O emulador tirou os três crashes que partiam a app a correr e mostrou o
-fluxo de raiz a funcionar, mas não substitui os pontos 1–3: hardware arm64,
-percurso de upgrade e notificação com o ecrã bloqueado continuam por ver.
-Até lá, a app não deve ser dada como pronta, independentemente do que o
-`tsc`, o lint e os testes digam.
+O emulador tirou os crashes que partiam a app a correr, mostrou o fluxo de
+raiz a funcionar, e agora também cobre — com SQLite a sério, não simulado —
+o upgrade a partir de uma instalação antiga e a notificação de descanso com
+o ecrã bloqueado. O que falta a partir daqui é só mesmo hardware real:
+arm64, e tudo o que só um telemóvel físico mostra (bateria, outras apps a
+interromper, redes reais). Até lá, a app não deve ser dada como pronta,
+independentemente do que o `tsc`, o lint e os testes digam.

@@ -4,13 +4,22 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { getSessionById, getSessionSetsWithExercise, updateSession } from '@/db/workoutDao';
-import { exportWorkoutAsXml, shareXmlFile } from '@/utils/xmlExport';
+import { exportWorkoutAsXml, shareXmlFile, exportWorkoutSummaryText, shareTextFile } from '@/utils/xmlExport';
 import type { WorkoutSession , MuscleGroup } from '@/types';
 import { formatTime, formatDate } from '@/utils/format';
-import { Trophy, Download, Home, Dumbbell } from 'lucide-react-native';
+import { Trophy, Download, Home, Dumbbell, Gauge, Mail } from 'lucide-react-native';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { MUSCLE_GROUPS_PT } from '@/types';
+import { summarizeWorkoutPace, rateSetPace, type WorkoutPaceSummary } from '@/utils/setPace';
+
+const PACE_VERDICT_TEXT: Record<WorkoutPaceSummary['verdict'], (p: WorkoutPaceSummary) => string> = {
+  fast: () => 'Estás a fazer as séries mais depressa do que o ideal — vale a pena controlar melhor o movimento, sem pressa.',
+  slow: () => 'As séries estão a demorar mais do que o necessário — pode ser pausa a mais entre repetições.',
+  good: () => 'Ritmo das séries dentro do esperado.',
+  mixed: () => 'Ritmo inconsistente esta sessão: algumas séries rápidas, outras lentas.',
+  unmeasured: () => '',
+};
 
 export default function WorkoutSummaryScreen() {
   const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
@@ -20,6 +29,8 @@ export default function WorkoutSummaryScreen() {
   const [setsByExercise, setSetsByExercise] = useState<any[]>([]);
   const [prCount, setPrCount] = useState(0);
   const [displayStats, setDisplayStats] = useState({ sets: 0, volume: 0, duration: 0 });
+  const [pace, setPace] = useState<WorkoutPaceSummary | null>(null);
+  const [sendingSummary, setSendingSummary] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -37,6 +48,7 @@ export default function WorkoutSummaryScreen() {
       }
       setSetsByExercise(Object.values(grouped));
       setPrCount(sets.filter((s: any) => s.is_pr).length);
+      setPace(summarizeWorkoutPace(sets.map((s: any) => ({ reps: s.reps, actualSeconds: s.set_duration || 0 }))));
 
       // BUGFIX: total_sets/total_volume/total_duration on the session row are
       // only written when a workout finishes normally (confirmFinish) or is
@@ -67,6 +79,26 @@ export default function WorkoutSummaryScreen() {
       await shareXmlFile(xml, `Changes_${name}_${Date.now()}.xml`);
     } catch (e) {
       Alert.alert('Erro ao exportar', String(e));
+    }
+  };
+
+  /**
+   * A short, readable text version of this one workout — sets, volume, PRs,
+   * and the pace analysis — for sending to yourself (the OS share sheet
+   * includes Gmail/Mail among the targets, same mechanism as the training
+   * report in Perfil). Distinct from handleExport's XML, which is for
+   * restoring data, not reading.
+   */
+  const handleSendSummary = async () => {
+    setSendingSummary(true);
+    try {
+      const text = await exportWorkoutSummaryText(Number(sessionId));
+      const name = session?.name.replace(/\s+/g, '_') || 'Treino';
+      await shareTextFile(text, `Changes_Resumo_${name}_${Date.now()}.txt`, 'text/plain');
+    } catch (e) {
+      Alert.alert('Erro ao enviar', String(e));
+    } finally {
+      setSendingSummary(false);
     }
   };
 
@@ -158,6 +190,23 @@ export default function WorkoutSummaryScreen() {
           </View>
         </Card>
 
+        {/* Set pace — only shown when at least one set was actually timed
+            with the "Tempo de série" stopwatch; most workouts won't have
+            this, and there's nothing useful to say when it's empty. */}
+        {pace && pace.measuredSets > 0 && (
+          <Card style={styles.paceCard}>
+            <View style={styles.paceHeader}>
+              <Gauge size={18} color={colors.primary} />
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Ritmo das séries</Text>
+            </View>
+            <Text style={[styles.paceVerdict, { color: colors.text }]}>{PACE_VERDICT_TEXT[pace.verdict](pace)}</Text>
+            <Text style={[styles.paceDetail, { color: colors.textSecondary }]}>
+              Média: {formatTime(Math.round(pace.avgActualSeconds))} por série · ideal ≈ {formatTime(Math.round(pace.avgIdealSeconds))}
+              {pace.measuredSets < pace.totalSets ? ` · ${pace.measuredSets} de ${pace.totalSets} séries cronometradas` : ''}
+            </Text>
+          </Card>
+        )}
+
         {/* Volume by muscle */}
         {Object.keys(volumePerMuscle).length > 0 && (
           <Card>
@@ -188,23 +237,44 @@ export default function WorkoutSummaryScreen() {
               <Text style={[styles.exName, { color: colors.text }]}>{ex.name}</Text>
               <Badge label={MUSCLE_GROUPS_PT[ex.muscle as MuscleGroup] || ex.muscle} color={colors.primaryContainer} textColor={colors.primary} />
             </View>
-            {ex.sets.map((set: any, si: number) => (
-              <View key={si} style={[styles.setRow, si > 0 && { borderTopWidth: 1, borderTopColor: colors.border }]}>
-                <Text style={[styles.setIndex, { color: colors.textTertiary }]}>{si + 1}</Text>
-                <Text style={[styles.setVal, { color: colors.text }]}>{set.reps} × {set.weight} kg</Text>
-                {set.rpe && <Text style={[styles.setRpe, { color: colors.textSecondary }]}>RPE {set.rpe}</Text>}
-                {set.is_pr === 1 && <Badge label="PR" color={colors.accentContainer} textColor={colors.accent} />}
-              </View>
-            ))}
+            {ex.sets.map((set: any, si: number) => {
+              const setPace = set.set_duration > 0 ? rateSetPace(set.reps, set.set_duration) : 'unmeasured';
+              return (
+                <View key={si} style={[styles.setRow, si > 0 && { borderTopWidth: 1, borderTopColor: colors.border }]}>
+                  <Text style={[styles.setIndex, { color: colors.textTertiary }]}>{si + 1}</Text>
+                  <Text style={[styles.setVal, { color: colors.text }]}>{set.reps} × {set.weight} kg</Text>
+                  {set.rpe && <Text style={[styles.setRpe, { color: colors.textSecondary }]}>RPE {set.rpe}</Text>}
+                  {setPace !== 'unmeasured' && (
+                    <Text style={[styles.setPace, { color: setPace === 'good' ? colors.textSecondary : colors.accent }]}>
+                      {formatTime(set.set_duration)}
+                    </Text>
+                  )}
+                  {set.is_pr === 1 && <Badge label="PR" color={colors.accentContainer} textColor={colors.accent} />}
+                </View>
+              );
+            })}
           </Card>
         ))}
       </ScrollView>
 
       {/* Actions */}
       <View style={[styles.actions, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
-        <TouchableOpacity style={[styles.actionBtn, styles.actionBtnSecondary, { backgroundColor: colors.surfaceVariant }]} onPress={handleExport}>
+        <TouchableOpacity
+          style={[styles.actionBtnSquare, { backgroundColor: colors.surfaceVariant }]}
+          onPress={handleExport}
+          accessibilityRole="button"
+          accessibilityLabel="Exportar dados deste treino"
+        >
           <Download size={20} color={colors.textSecondary} />
-          <Text style={[styles.actionBtnText, { color: colors.textSecondary }]}>Exportar</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.actionBtnSquare, { backgroundColor: colors.surfaceVariant }]}
+          onPress={handleSendSummary}
+          disabled={sendingSummary}
+          accessibilityRole="button"
+          accessibilityLabel="Enviar resumo deste treino por email"
+        >
+          <Mail size={20} color={colors.textSecondary} />
         </TouchableOpacity>
         <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.primary }]} onPress={() => router.replace('/(tabs)/history')}>
           <Home size={20} color="#fff" />
@@ -248,6 +318,11 @@ const styles = StyleSheet.create({
   setRpe: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17 },
   actions: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', gap: 12, padding: 16, borderTopWidth: 1 },
   actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: 14 },
-  actionBtnSecondary: {},
+  actionBtnSquare: { width: 50, alignItems: 'center', justifyContent: 'center', borderRadius: 14 },
   actionBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
+  paceCard: { gap: 6 },
+  paceHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  paceVerdict: { fontFamily: 'Inter-SemiBold', fontSize: 14, lineHeight: 19 },
+  paceDetail: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16 },
+  setPace: { fontFamily: 'Inter-Regular', fontSize: 12 },
 });

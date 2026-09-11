@@ -685,21 +685,26 @@ export async function getMonthlyRecapData(year: number, month: number): Promise<
  */
 export async function getAchievementStats(): Promise<{
   totalWorkouts: number;
+  currentStreak: number;
   longestStreak: number;
   prCount: number;
   totalVolume: number;
+  firstWorkoutAt: number | null;
 }> {
   const db = await getDatabase();
-  const [streak, prRow, volumeRow] = await Promise.all([
+  const [streak, prRow, volumeRow, firstRow] = await Promise.all([
     getStreakData(),
     db.getFirstAsync<{ c: number }>('SELECT COUNT(*) as c FROM workout_sets WHERE is_pr = 1'),
     db.getFirstAsync<{ v: number }>('SELECT COALESCE(SUM(total_volume), 0) as v FROM workout_sessions WHERE ended_at IS NOT NULL'),
+    db.getFirstAsync<{ started_at: number }>('SELECT MIN(started_at) as started_at FROM workout_sessions WHERE ended_at IS NOT NULL'),
   ]);
   return {
     totalWorkouts: streak.totalWorkouts,
+    currentStreak: streak.currentStreak,
     longestStreak: streak.longestStreak,
     prCount: prRow?.c || 0,
     totalVolume: volumeRow?.v || 0,
+    firstWorkoutAt: firstRow?.started_at ?? null,
   };
 }
 

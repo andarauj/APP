@@ -161,7 +161,7 @@ export const MUSCLE_GROUPS_PT: Record<MuscleGroup, string> = {
   quads: 'Quadríceps',
   hamstrings: 'Isquiotibiais',
   glutes: 'Glúteos',
-  calves: 'Panturrilhas',
+  calves: 'Gémeos',
   traps: 'Trapézio',
   lats: 'Dorsais',
   cardio: 'Cardio',

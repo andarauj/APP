@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, FlatList, Modal, TextInput } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, FlatList, Modal, TextInput, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
@@ -10,6 +10,7 @@ import { Chip } from '@/components/ui/Chip';
 import { Button } from '@/components/ui/Button';
 import { SearchBar } from '@/components/ui/SearchBar';
 import { ExerciseTile } from '@/components/ui/ExerciseTile';
+import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
 import { getPlanById, getPlanExercisesWithDetails, addExerciseToPlan, deletePlanExercise, updatePlanExercise } from '@/db/planDao';
 import { searchExercises } from '@/db/exerciseDao';
 import { exportPlanAsXml, shareXmlFile } from '@/utils/xmlExport';
@@ -132,11 +133,14 @@ export default function PlanDetailScreen() {
           // collide with two side-by-side buttons on narrow headers.
           <TouchableOpacity
             onPress={handleExport}
+            disabled={exporting}
             style={[styles.iconBtn, { backgroundColor: colors.surfaceVariant }]}
             accessibilityRole="button"
             accessibilityLabel="Exportar plano em XML"
           >
-            <Download size={20} color={colors.textSecondary} />
+            {exporting
+              ? <ActivityIndicator size="small" color={colors.textSecondary} />
+              : <Download size={20} color={colors.textSecondary} />}
           </TouchableOpacity>
         }
       />
@@ -216,7 +220,16 @@ export default function PlanDetailScreen() {
           <Card key={ex.id} style={styles.exCard}>
             <TouchableOpacity style={styles.exHeader} onPress={() => setEditingId(editingId === ex.id ? null : ex.id)}>
               <View>
-                <ExerciseTile muscle={(ex as any).primary_muscle} equipment={(ex as any).equipment} size={40} />
+                {/* Real illustration instead of a generic muscle-group icon
+                    when the dataset has one — "só o nome não me diz nada"
+                    was a fair complaint, every exercise looked the same. */}
+                {(ex as any).image_url ? (
+                  <View style={styles.exThumbWrap}>
+                    <ExerciseMedia uri={(ex as any).image_url} height={40} />
+                  </View>
+                ) : (
+                  <ExerciseTile muscle={(ex as any).primary_muscle} equipment={(ex as any).equipment} size={40} />
+                )}
                 <View style={[styles.exIndex, { backgroundColor: colors.primary, borderColor: colors.surface }]}>
                   <Text style={styles.exIndexText}>{i + 1}</Text>
                 </View>
@@ -261,7 +274,13 @@ export default function PlanDetailScreen() {
             keyExtractor={item => String(item.id)}
             renderItem={({ item }) => (
               <TouchableOpacity style={[styles.pickerItem, { borderBottomColor: colors.border }]} onPress={() => handleAddExercise(item)}>
-                <ExerciseTile muscle={item.primary_muscle} equipment={item.equipment} size={40} />
+                {item.image_url ? (
+                  <View style={styles.exThumbWrap}>
+                    <ExerciseMedia uri={item.image_url} height={40} />
+                  </View>
+                ) : (
+                  <ExerciseTile muscle={item.primary_muscle} equipment={item.equipment} size={40} />
+                )}
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.pickerName, { color: colors.text }]}>{item.name}</Text>
                   <Text style={[styles.pickerSub, { color: colors.textSecondary }]}>{MUSCLE_GROUPS_PT[item.primary_muscle]} · {EQUIPMENT_PT[item.equipment]}</Text>
@@ -370,6 +389,7 @@ const styles = StyleSheet.create({
   sectionTitle: { fontFamily: 'Inter-Bold', fontSize: 18 },
   exCard: { gap: 8 },
   exHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  exThumbWrap: { width: 40, height: 40, borderRadius: 8, overflow: 'hidden' },
   exIndex: {
     position: 'absolute', bottom: -4, right: -4, width: 18, height: 18, borderRadius: 9,
     alignItems: 'center', justifyContent: 'center', borderWidth: 2,

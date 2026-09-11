@@ -9,7 +9,7 @@
  * "progress is not a punishment system".
  */
 
-import type { AdaptiveGoal, AdaptivePhase } from './nspi';
+import type { AdaptiveGoal, AdaptivePhase, AdaptiveExperience } from './nspi';
 import { nextPhase, phaseSpec } from './adaptivePlan';
 
 export type AdaptiveDecision = 'advance' | 'bridge' | 'hold' | 'deload_early';
@@ -34,6 +34,11 @@ export interface DecisionInput {
   stallCount: number;
   /** from utils/fatigueSignals — an explicit "you look fried" flag */
   fatigueFlag?: boolean;
+  /** Defaults to 'intermediate' (today's untouched thresholds) when absent.
+   *  Beginners get a more lenient bar to advance — novice linear
+   *  progression really is close to "every week you can add a bit more",
+   *  unlike an intermediate/advanced lifter who has to earn it. */
+  experience?: AdaptiveExperience;
 }
 
 export interface DecisionResult {
@@ -48,6 +53,7 @@ const mean = (ns: number[]) => (ns.length ? ns.reduce((a, b) => a + b, 0) / ns.l
 
 export function decideNextWeek(input: DecisionInput): DecisionResult {
   const { current, recent, goal, stallCount, fatigueFlag } = input;
+  const experience = input.experience ?? 'intermediate';
   const prevLoads = recent.slice(0, 2).map(w => w.nspiLoad);
   const avgPrevLoad = prevLoads.length ? mean(prevLoads) : 50;
 
@@ -86,7 +92,7 @@ export function decideNextWeek(input: DecisionInput): DecisionResult {
       nextPhase: 'deload',
       wrapsCycle: false,
       reasons,
-      expect: phaseSpec('deload', goal).expect,
+      expect: phaseSpec('deload', goal, experience).expect,
     };
   }
 
@@ -94,17 +100,21 @@ export function decideNextWeek(input: DecisionInput): DecisionResult {
   if (current.phase === 'deload') {
     const np = nextPhase('deload'); // -> on_ramp, wrapsCycle
     reasons.push('Descarga concluída — novo ciclo a partir de um patamar mais alto.');
-    return { decision: 'advance', nextPhase: np.phase, wrapsCycle: np.wrapsCycle, reasons, expect: phaseSpec(np.phase, goal).expect };
+    return { decision: 'advance', nextPhase: np.phase, wrapsCycle: np.wrapsCycle, reasons, expect: phaseSpec(np.phase, goal, experience).expect };
   }
 
   // --- a bridge week is a single half-step; after it, always move on ---
   if (current.isBridge) {
     const np = nextPhase(current.phase);
     reasons.push('Semana de consolidação feita — a avançar de fase.');
-    return { decision: 'advance', nextPhase: np.phase, wrapsCycle: np.wrapsCycle, reasons, expect: phaseSpec(np.phase, goal).expect };
+    return { decision: 'advance', nextPhase: np.phase, wrapsCycle: np.wrapsCycle, reasons, expect: phaseSpec(np.phase, goal, experience).expect };
   }
 
-  const strong = score4 >= 3 && stallCount === 0;
+  // A beginner's near-linear progression earns a lower bar to advance —
+  // see the DecisionInput.experience doc comment. Everything else
+  // (intermediate and advanced) keeps today's threshold of 3.
+  const strongThreshold = experience === 'beginner' ? 2 : 3;
+  const strong = score4 >= strongThreshold && stallCount === 0;
   const weak = score4 <= 1 || stallCount >= 2 || !didWork;
 
   if (strong) {
@@ -112,7 +122,7 @@ export function decideNextWeek(input: DecisionInput): DecisionResult {
     if (loadRising) reasons.push(`Progressão de carga forte (NSPI carga ${Math.round(current.nspiLoad)}).`);
     if (didWork) reasons.push(`Concluíste ${Math.round(current.nspiVolume)}% do volume planeado.`);
     if (balanceOk) reasons.push('Treino equilibrado pelos padrões de movimento.');
-    return { decision: 'advance', nextPhase: np.phase, wrapsCycle: np.wrapsCycle, reasons, expect: phaseSpec(np.phase, goal).expect };
+    return { decision: 'advance', nextPhase: np.phase, wrapsCycle: np.wrapsCycle, reasons, expect: phaseSpec(np.phase, goal, experience).expect };
   }
 
   if (weak) {

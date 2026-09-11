@@ -1,4 +1,4 @@
-import { detectPerformanceRegression, detectVolumeSpike, detectRpeCreep, type ExercisePerformancePoint } from '../fatigueSignals';
+import { detectPerformanceRegression, detectVolumeSpike, detectRpeCreep, overallFatigueLevel, type ExercisePerformancePoint } from '../fatigueSignals';
 
 function points(values: number[]): ExercisePerformancePoint[] {
   return values.map((v, i) => ({ date: i, estimated1RM: v }));
@@ -156,5 +156,23 @@ describe('detectRpeCreep', () => {
     expect(detectRpeCreep(sets, 2)).toBeNull();
     // With a looser 10% tolerance, they do count, revealing the creep.
     expect(detectRpeCreep(sets, 10)).not.toBeNull();
+  });
+});
+
+describe('overallFatigueLevel', () => {
+  it('is "none" with no active signal types', () => {
+    expect(overallFatigueLevel(0)).toBe('none');
+  });
+  it('is "watch" for a single isolated signal', () => {
+    expect(overallFatigueLevel(1)).toBe('watch');
+  });
+  it('is "stacking" when two distinct signal types fire together', () => {
+    expect(overallFatigueLevel(2)).toBe('stacking');
+  });
+  it('is "high" when all three signal types fire together', () => {
+    expect(overallFatigueLevel(3)).toBe('high');
+  });
+  it('never goes below "none" for a negative count', () => {
+    expect(overallFatigueLevel(-1)).toBe('none');
   });
 });

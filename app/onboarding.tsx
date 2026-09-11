@@ -10,8 +10,8 @@ import { generatePlan, type EquipmentPreference } from '@/utils/planGenerator';
 import type { PlanType } from '@/types';
 import { ArrowLeft, Dumbbell } from 'lucide-react-native';
 
-// JeFit-style goal-based onboarding: a short welcome, then a few questions
-// whose answers seed a starter plan and (later) the adaptive engine.
+// Goal-based onboarding: a short welcome, then a few questions whose
+// answers seed a starter plan and the adaptive engine.
 type Opt = { key: string; label: string; sub?: string };
 
 const GOALS: (Opt & { planType: PlanType })[] = [
@@ -117,7 +117,7 @@ export default function OnboardingScreen() {
           </Animated.View>
           <Text style={[styles.title, { color: colors.text, textAlign: 'center' }]}>Bem-vindo à Changes</Text>
           <Text style={[styles.body, { color: colors.textSecondary, textAlign: 'center', marginTop: 12 }]}>
-            Cinco perguntas rápidas e montamos-te um plano. Tudo fica no telemóvel — sem conta, sem anúncios, sem subscrição.
+            Cinco perguntas rápidas e montamos-te um plano de treino à tua medida.
           </Text>
         </View>
         <View style={styles.footer}>

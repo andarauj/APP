@@ -200,11 +200,17 @@ export default function FiveThreeOneScreen() {
           </Card>
         )}
 
+        {/* BUGFIX (reported: "o botão não funciona"): this used to be
+            disabled={!allSet}, which blocks onPress from firing at all — the
+            explanatory Alert inside handleGenerate ("Falta definir pesos")
+            existed but could never actually run. Tapping now always reaches
+            that guard, so a person who hasn't set their 4 reference weights
+            yet gets told why, instead of a button that silently does
+            nothing. */}
         <Button
           title={`Gerar Plano da Semana ${currentWeek}`}
           onPress={handleGenerate}
           loading={generating}
-          disabled={!allSet}
           icon={<TrendingUp size={18} color="#fff" />}
           style={{ marginTop: 8 }}
         />

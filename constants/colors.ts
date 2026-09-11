@@ -1,15 +1,12 @@
-// JeFit-parity palette. Replaces the previous "Volt & Ink" identity by
-// explicit owner decision (see JEFIT_PARIDADE.md §5): the app is being
-// redesigned to match JeFit — bright blue on near-white, near-black
+// Changes' visual identity: bright blue on near-white, near-black
 // extra-bold headings, light-blue selected states, and purple/gradient
-// reserved for premium / AI ("periodization", the ✦ star).
+// reserved for the adaptive engine ("periodização", the ✦ star).
 //
 // Token keys are unchanged so every `useTheme().colors.*` call site keeps
 // working; only the values move.
 export const Colors = {
   dark: {
-    // JeFit dark mode is a deep navy, not a neutral black (see the
-    // mesocycle-training screenshots).
+    // Dark mode is a deep navy, not a neutral black.
     background: '#0B1220',
     surface: '#141C2B',
     surfaceVariant: '#1B2436',

@@ -4,10 +4,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
 import { SearchBar } from '@/components/ui/SearchBar';
 import { Chip } from '@/components/ui/Chip';
-import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { ExerciseTile, muscleColor } from '@/components/ui/ExerciseTile';
+import { muscleColor } from '@/components/ui/ExerciseTile';
 import { ExerciseListItem } from '@/components/ui/ExerciseListItem';
 import { useDatabase } from '@/hooks/useDatabase';
 import { searchExercises, createCustomExercise, deleteCustomExercise, getExerciseUsage } from '@/db/exerciseDao';
@@ -19,7 +18,7 @@ import { useRouter } from 'expo-router';
 
 const MUSCLES: (MuscleGroup | null)[] = [null, 'chest', 'back', 'shoulders', 'biceps', 'triceps', 'forearms', 'abs', 'quads', 'hamstrings', 'glutes', 'calves', 'traps', 'lats', 'cardio', 'mobility', 'fullbody'];
 
-// JeFit "Exercise" landing: a grid of muscle groups you tap to drill into.
+// Exercise landing: a grid of muscle groups you tap to drill into.
 const MUSCLE_GRID: MuscleGroup[] = ['chest', 'back', 'shoulders', 'biceps', 'triceps', 'forearms', 'abs', 'quads', 'hamstrings', 'glutes', 'calves', 'cardio'];
 const EQUIPMENTS: (Equipment | null)[] = [null, 'barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'kettlebell', 'band', 'ez_bar', 'smith', 'plate', 'other'];
 const TYPES: (ExerciseType | null)[] = [null, 'strength', 'cardio', 'mobility'];
@@ -36,7 +35,7 @@ export default function ExercisesScreen() {
   const [filterType, setFilterType] = useState<ExerciseType | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
-  // 'grid' = JeFit muscle-group landing; 'list' = the filtered list.
+  // 'grid' = muscle-group landing; 'list' = the filtered list.
   const [browse, setBrowse] = useState<'grid' | 'list'>('grid');
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -278,8 +277,8 @@ export default function ExercisesScreen() {
         <SearchBar value={query} onChangeText={setQuery} placeholder="Pesquisar exercícios..." />
       </View>
 
-      {/* JeFit-parity inline filter pills. The full picker stays in the
-          bottom-sheet modal; these surface what's active and open it. */}
+      {/* Inline filter pills. The full picker stays in the bottom-sheet
+          modal; these surface what's active and open it. */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}

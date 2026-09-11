@@ -96,13 +96,12 @@ export default function TabsLayout() {
         tabBarAllowFontScaling: false,
       }}
     >
-      {/* JeFit-parity bar: Descobrir · Treino · Exercícios · Progresso.
-          "Perfil" left the bar in Fase 1c — records/calculators/settings are
-          reached from the ⚙️ in the Progresso header. */}
+      {/* Bar: Descobrir · Treino · Exercícios · Progresso. "Perfil" is off
+          the bar — records/calculators/settings are reached from the ⚙️ in
+          the Progresso header. */}
 
-      {/* Descobrir (JeFit "Discover") — no social back-end, so it is a small
-          always-available library: today's line, personalised tips, and
-          evergreen coaching notes. */}
+      {/* Descobrir — no social back-end, so it is a small always-available
+          library: personalised tips and evergreen coaching notes. */}
       <Tabs.Screen
         name="discover"
         options={{
@@ -128,10 +127,9 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* The old "Início" dashboard — streak, volume, consistency heatmap,
-          Progress Index — which is JeFit's "Progress › Overview" in all but
-          name. Renamed here; a real Resumo/Corpo/Atividade split follows in
-          Fase 1c. Still the index route, so it is where the app lands. */}
+      {/* The main dashboard — streak, volume, consistency heatmap, Progress
+          Index — split into Resumo/Corpo/Atividade sub-tabs. Still the
+          index route, so it is where the app lands. */}
       <Tabs.Screen
         name="index"
         options={{
@@ -140,8 +138,8 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* Off the bar (JeFit has no Perfil tab). Reached from the ⚙️ in the
-          Progresso header; holds Recordes · Calc. · Corpo · Definições. */}
+      {/* Off the bar — reached from the ⚙️ in the Progresso header; holds
+          Recordes · Calc. · Corpo · Definições. */}
       <Tabs.Screen
         name="profile"
         options={{

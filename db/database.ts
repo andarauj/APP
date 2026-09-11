@@ -172,7 +172,14 @@ export async function initDatabase(): Promise<void> {
       FOREIGN KEY (exercise_id) REFERENCES exercises(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_plan_exercises_plan ON plan_exercises(plan_id);
-    CREATE INDEX IF NOT EXISTS idx_plan_exercises_day ON plan_exercises(plan_id, day_index);
+    -- idx_plan_exercises_day (plan_id, day_index) is NOT created here on
+    -- purpose: on a real upgrade this CREATE TABLE is a no-op (the table
+    -- already exists from before day_index existed), so an index on that
+    -- column here would throw "no such column" and take the whole app down
+    -- — this whole block is fatal, unlike the per-step migrations below.
+    -- migratePlanDays() creates it safely, after guaranteeing the column
+    -- exists. Caught by db/__tests__/migrations.upgrade.test.ts, which runs
+    -- these migrations against a real (pre-day_index) legacy schema.
 
     CREATE TABLE IF NOT EXISTS workout_sessions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

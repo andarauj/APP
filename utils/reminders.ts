@@ -1,6 +1,5 @@
 import { Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
-import { getQuoteForDate } from './motivationalQuotes';
 
 // Weekday numbers used across the app's settings: 0=Domingo ... 6=Sábado
 export const WEEKDAY_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -65,53 +64,5 @@ export async function scheduleWorkoutReminders(days: number[], time: string): Pr
       },
     });
   }
-  return true;
-}
-
-const MOTIVATIONAL_CATEGORY = 'changes-motivational-quote';
-
-export async function cancelMotivationalNotification(): Promise<void> {
-  const scheduled = await Notifications.getAllScheduledNotificationsAsync();
-  for (const n of scheduled) {
-    if (n.content.data?.category === MOTIVATIONAL_CATEGORY) {
-      await Notifications.cancelScheduledNotificationAsync(n.identifier);
-    }
-  }
-}
-
-/**
- * A daily local notification with a rotating motivational phrase, at
- * whatever time the person sets. Uses a DAILY trigger (fires every day at
- * this time indefinitely) rather than a one-off — but a DAILY trigger keeps
- * whatever text it was scheduled with, so on its own it would repeat the
- * same phrase forever. Re-scheduling it here (called again whenever the
- * settings change, and from the Home screen on each app open — see
- * app/(tabs)/index.tsx) refreshes it to the current day's phrase each time,
- * so it stays varied for anyone opening the app roughly daily, which is the
- * realistic case for their own gym-tracking app.
- */
-export async function scheduleMotivationalNotification(time: string): Promise<boolean> {
-  await cancelMotivationalNotification();
-
-  const granted = await requestReminderPermission();
-  if (!granted) return false;
-
-  const [hourStr, minuteStr] = time.split(':');
-  const hour = Math.min(23, Math.max(0, parseInt(hourStr, 10) || 7));
-  const minute = Math.min(59, Math.max(0, parseInt(minuteStr, 10) || 0));
-
-  await Notifications.scheduleNotificationAsync({
-    content: {
-      title: 'Bom dia 💪',
-      body: getQuoteForDate(new Date()),
-      data: { category: MOTIVATIONAL_CATEGORY },
-      sound: Platform.OS === 'ios' ? 'default' : undefined,
-    },
-    trigger: {
-      type: Notifications.SchedulableTriggerInputTypes.DAILY,
-      hour,
-      minute,
-    },
-  });
   return true;
 }

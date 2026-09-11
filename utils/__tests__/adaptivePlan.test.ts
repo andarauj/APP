@@ -41,6 +41,43 @@ describe('phase spec by goal', () => {
   });
 });
 
+describe('phase spec by experience', () => {
+  it('defaults to intermediate (untouched) when experience is omitted', () => {
+    expect(phaseSpec('intensification', 'general')).toEqual(phaseSpec('intensification', 'general', 'intermediate'));
+    expect(phaseSpec('accumulation', 'strength')).toEqual(phaseSpec('accumulation', 'strength', 'intermediate'));
+  });
+  it('beginner intensification trades a little intensity for a wider rep window', () => {
+    const inter = phaseSpec('intensification', 'general', 'intermediate');
+    const beg = phaseSpec('intensification', 'general', 'beginner');
+    expect(beg.intensityPct).toBeLessThan(inter.intensityPct);
+    expect(beg.repHigh).toBeGreaterThan(inter.repHigh);
+  });
+  it('beginner accumulation has less volume than intermediate', () => {
+    const inter = phaseSpec('accumulation', 'general', 'intermediate');
+    const beg = phaseSpec('accumulation', 'general', 'beginner');
+    expect(beg.volumeMult).toBeLessThan(inter.volumeMult);
+  });
+  it('advanced intensification is heavier than intermediate', () => {
+    const inter = phaseSpec('intensification', 'general', 'intermediate');
+    const adv = phaseSpec('intensification', 'general', 'advanced');
+    expect(adv.intensityPct).toBeGreaterThan(inter.intensityPct);
+  });
+  it('advanced deload is deeper (less volume) than intermediate', () => {
+    const inter = phaseSpec('deload', 'general', 'intermediate');
+    const adv = phaseSpec('deload', 'general', 'advanced');
+    expect(adv.volumeMult).toBeLessThan(inter.volumeMult);
+  });
+  it('phases untouched by EXPERIENCE_ADJUST stay identical across experience levels', () => {
+    expect(phaseSpec('on_ramp', 'general', 'beginner')).toEqual(phaseSpec('on_ramp', 'general', 'intermediate'));
+    expect(phaseSpec('on_ramp', 'general', 'advanced')).toEqual(phaseSpec('on_ramp', 'general', 'intermediate'));
+  });
+  it('phaseTargets threads experience through to sets/weight', () => {
+    const inter = phaseTargets('accumulation', 'general', 4, 100, 0, 2.5, 'intermediate');
+    const beg = phaseTargets('accumulation', 'general', 4, 100, 0, 2.5, 'beginner');
+    expect(beg.targetSets).toBeLessThanOrEqual(inter.targetSets);
+  });
+});
+
 describe('roundToIncrement', () => {
   it('snaps to the loadable step', () => {
     expect(roundToIncrement(64, 2.5)).toBe(65);

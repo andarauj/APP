@@ -23,21 +23,19 @@ import { getWeeklyPlanner } from '@/db/plannerDao';
 import { getAllPlans } from '@/db/planDao';
 import { getSetting, setSetting } from '@/db/settingsDao';
 import { computeProgressIndex, type ProgressIndexResult } from '@/utils/progressIndex';
-import { PHASE_LABEL_PT, PHASE_COLOR } from '@/utils/adaptivePlan';
+import { PHASE_LABEL_PT } from '@/utils/adaptivePlan';
 import { getNewlyUnlocked, getUnlockedAchievementIds, type Achievement } from '@/utils/achievements';
-import { getQuoteForDate } from '@/utils/motivationalQuotes';
-import { scheduleMotivationalNotification } from '@/utils/reminders';
 import { DonutChart } from '@/components/ui/DonutChart';
-import { TrainingHeatmap } from '@/components/ui/TrainingHeatmap';
+import { TrainingConsistencyChart } from '@/components/ui/TrainingConsistencyChart';
 import { WeeklyCommitmentStrip } from '@/components/ui/WeeklyCommitmentStrip';
-import { computeHeatmapIntensities, type HeatmapDay } from '@/utils/trainingHeatmap';
+import { aggregateWeeklyConsistency, type WeeklyConsistency } from '@/utils/trainingHeatmap';
 import { computeWeeklyCommitment, type WeeklyCommitment } from '@/utils/weeklyCommitment';
 import type { WorkoutSession, MuscleGroup, Equipment } from '@/types';
 import { MUSCLE_GROUPS_PT } from '@/types';
 import { formatDateTime, formatTime, formatVolume } from '@/utils/format';
 import {
   Flame, TrendingUp, TrendingDown, Minus, Play, ChevronRight, AlertTriangle, Info, CheckCircle2,
-  Dumbbell, Repeat, ListChecks, Gauge, Sparkles, Calendar, Trophy, Activity, Settings as SettingsIcon,
+  Dumbbell, Repeat, ListChecks, Sparkles, Calendar, Trophy, Activity, Settings as SettingsIcon,
   Ruler, Camera, Radar, Star, Zap, History as HistoryIcon,
 } from 'lucide-react-native';
 
@@ -77,7 +75,7 @@ export default function HomeScreen() {
   const [recentSessions, setRecentSessions] = useState<WorkoutSession[]>([]);
   const [topExercises, setTopExercises] = useState<MostTrainedExercise[]>([]);
   const [muscleDistribution, setMuscleDistribution] = useState<{ muscle: string; sets: number }[]>([]);
-  const [heatmapDays, setHeatmapDays] = useState<HeatmapDay[]>([]);
+  const [weeklyConsistency, setWeeklyConsistency] = useState<WeeklyConsistency[]>([]);
   const [weeklyCommitment, setWeeklyCommitment] = useState<WeeklyCommitment | null>(null);
   const [newAchievement, setNewAchievement] = useState<Achievement | null>(null);
   const [topPlans, setTopPlans] = useState<MostUsedPlan[]>([]);
@@ -91,9 +89,8 @@ export default function HomeScreen() {
   const chevronAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${chevronRotation.value}deg` }] }));
   const [loaded, setLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  // JeFit "Progress" sub-tabs (see JEFIT_PARIDADE.md Fase 1c). Resumo is the
-  // old dashboard; Corpo and Atividade gather what used to live in the
-  // Perfil › Corpo tab and the /progress hub.
+  // Progress sub-tabs: Resumo is the main dashboard; Corpo and Atividade
+  // gather what used to live in the Perfil › Corpo tab and the /progress hub.
   const [progTab, setProgTab] = useState<'resumo' | 'corpo' | 'atividade'>('resumo');
   const [bodyMetricsModalVisible, setBodyMetricsModalVisible] = useState(false);
   const [latestBodyMetric, setLatestBodyMetric] = useState<any>(null);
@@ -127,7 +124,7 @@ export default function HomeScreen() {
       setMuscleDistribution(muscleVol);
       setLatestBodyMetric(latestMetric);
       setWeightChange(weightDelta);
-      setHeatmapDays(computeHeatmapIntensities(heatmapRaw));
+      setWeeklyConsistency(aggregateWeeklyConsistency(heatmapRaw));
 
       const planLabels = Object.fromEntries(allPlans.map(p => [p.id, p.name]));
       setWeeklyCommitment(computeWeeklyCommitment(planner, planLabels, completedWeekdays, new Date().getDay()));
@@ -153,17 +150,6 @@ export default function HomeScreen() {
       const result = computeProgressIndex({ ...progressData, previousScore });
       setProgressIndex(result);
       setSetting('progressIndexLastScore', String(result.score)).catch(() => {});
-
-      // Keeps the scheduled notification's wording matching today's quote —
-      // see the BUGFIX note in utils/reminders.ts for why this happens here
-      // instead of relying solely on the daily trigger.
-      getSetting('motivationalNotifyEnabled').then(enabled => {
-        if (enabled === '1') {
-          getSetting('motivationalNotifyTime').then(time => {
-            scheduleMotivationalNotification(time || '07:00').catch(() => {});
-          });
-        }
-      }).catch(() => {});
 
       setLoaded(true);
     } catch (err) {
@@ -205,17 +191,13 @@ export default function HomeScreen() {
   };
 
   const isNewUser = loaded && streak.totalWorkouts === 0;
-  // A pure, cheap function — called directly on render rather than memoized,
-  // so it's always correct even if the app is left open across midnight.
-  const todaysQuote = getQuoteForDate();
 
   return (
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>Progresso</Text>
-        {/* JeFit-parity: settings live behind a gear in the Progress header
-            (see JEFIT_PARIDADE.md Fase 1c). Points at the Perfil tab, whose
-            "Definições" sub-tab holds them until Perfil is dissolved. */}
+        {/* Settings live behind a gear in the Progress header, pointing at the
+            Perfil tab's "Definições" sub-tab. */}
         <TouchableOpacity
           onPress={() => router.push('/(tabs)/profile')}
           hitSlop={10}
@@ -226,7 +208,7 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Sub-tabs — JeFit "Progress": Resumo · Corpo · Atividade */}
+      {/* Sub-tabs: Resumo · Corpo · Atividade */}
       <View style={[styles.progTabs, { borderBottomColor: colors.border }]}>
         {([
           ['resumo', 'Resumo'],
@@ -350,13 +332,6 @@ export default function HomeScreen() {
         )}
 
         {progTab === 'resumo' && (<>
-        {/* Motivational quote — the first thing on the screen, deliberately:
-            this is meant to spark "let's go", not be buried under stats. */}
-        <View style={[styles.quoteCard, { backgroundColor: colors.primaryContainer }]}>
-          <Sparkles size={16} color={colors.primary} />
-          <Text style={[styles.quoteText, { color: colors.text }]}>{todaysQuote}</Text>
-        </View>
-
         {/* Weekly commitment — "what are we doing this week, and how's it
             gone" — distinct from Progress Index (which compares to your
             own rolling average, not an explicit plan you set). Only shows
@@ -376,7 +351,7 @@ export default function HomeScreen() {
               <Flame size={20} color={colors.accent} />
             </View>
             <Text style={[styles.statValue, { color: colors.text }]}>{streak.currentStreak}</Text>
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Streak</Text>
+            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Dias seguidos</Text>
           </Card>
           <Card style={styles.statCard}>
             <View style={[styles.statIcon, { backgroundColor: colors.primaryContainer }]}>
@@ -517,11 +492,9 @@ export default function HomeScreen() {
         )}
 
         {/* Progress Index — one weekly number combining consistency, volume,
-            muscle balance and progression, similar in spirit to the unified
-            scores some 2026 workout apps offer (e.g. Jefit's NSPI) — but
-            computed transparently from data already tracked here, fully
-            offline, with every point explained below instead of a
-            subscription-gated black-box AI score. */}
+            muscle balance and progression, computed transparently from data
+            already tracked here, with every point explained below instead
+            of an opaque black-box score. */}
         {/* NSPI — the adaptive engine's own score, shown instead of the
             generic Índice de Progresso once a plano adaptativo is active
             (NSPI_ENGINE.md §7). Same visual language (ring + trend arrow)
@@ -687,16 +660,16 @@ export default function HomeScreen() {
           </View>
         )}
 
-        {/* Training consistency heatmap — the "did I show up" picture at a
-            glance, in the same spirit as GitHub's contribution graph.
-            Intensity is scaled to the person's OWN typical volume (see
-            computeHeatmapIntensities), not a fixed number that wouldn't
-            fit everyone's training style equally. */}
-        {heatmapDays.length > 0 && (
+        {/* Training consistency — a bar per week, height scaled to the
+            person's OWN typical volume (see aggregateWeeklyConsistency),
+            not a fixed number that wouldn't fit everyone's training style
+            equally. Replaced the old day-by-day square grid, which read as
+            an unexplained wall of squares. */}
+        {weeklyConsistency.length > 0 && (
           <View style={{ gap: 8 }}>
             <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>CONSISTÊNCIA (13 SEMANAS)</Text>
-            <Card style={{ alignItems: 'center' }}>
-              <TrainingHeatmap days={heatmapDays} />
+            <Card>
+              <TrainingConsistencyChart weeks={weeklyConsistency} />
             </Card>
           </View>
         )}
@@ -827,7 +800,6 @@ const styles = StyleSheet.create({
   linkIcon: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
   linkTitle: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   linkDesc: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
-  quoteCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderRadius: 14, padding: 14 },
   recapBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, padding: 14 },
   recapBannerIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   recapBannerText: { flex: 1, fontFamily: 'Inter-Bold', fontSize: 15 },
@@ -838,7 +810,6 @@ const styles = StyleSheet.create({
   achievementUnlockedLabel: { fontFamily: 'Inter-Bold', fontSize: 12, letterSpacing: 1.5 },
   achievementTitle: { fontFamily: 'Inter-Bold', fontSize: 20, textAlign: 'center' },
   achievementDesc: { fontFamily: 'Inter-Regular', fontSize: 14, textAlign: 'center', lineHeight: 20 },
-  quoteText: { flex: 1, fontFamily: 'Inter-SemiBold', fontSize: 14, lineHeight: 20 },
   statsRow: { flexDirection: 'row', gap: 10 },
   statCard: { flex: 1, alignItems: 'center', gap: 6, paddingVertical: 14 },
   statIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },

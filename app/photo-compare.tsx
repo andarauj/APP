@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Image, ScrollView, Dimensions
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { useSharedValue, useAnimatedStyle, runOnJS } from 'react-native-reanimated';
+import Animated, { useSharedValue, useAnimatedStyle } from 'react-native-reanimated';
 import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { Card } from '@/components/ui/Card';
@@ -49,13 +49,11 @@ export default function PhotoCompareScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const dividerX = useSharedValue(SLIDER_SIZE / 2);
-  const [dividerLabel, setDividerLabel] = useState(50);
 
   const panGesture = Gesture.Pan()
     .onChange(e => {
       const next = Math.min(SLIDER_SIZE, Math.max(0, dividerX.value + e.changeX));
       dividerX.value = next;
-      runOnJS(setDividerLabel)(Math.round((next / SLIDER_SIZE) * 100));
     });
 
   const clipStyle = useAnimatedStyle(() => ({ width: dividerX.value }));

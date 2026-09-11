@@ -75,6 +75,7 @@ export default function AutoPlanScreen() {
         { text: 'Ver plano', onPress: () => router.replace({ pathname: '/plan/[id]', params: { id: planId } }) },
       ]);
     } catch (err) {
+      console.error('Failed to generate plan:', err);
       Alert.alert('Erro', 'Nao foi possivel gerar o plano. Tenta novamente.');
     } finally {
       setGenerating(false);

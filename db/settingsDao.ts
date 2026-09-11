@@ -27,8 +27,6 @@ export const DEFAULT_SETTINGS = {
   appMode: 'advanced',
   reminderDays: '1,3,5',
   reminderTime: '18:00',
-  motivationalNotifyEnabled: '0',
-  motivationalNotifyTime: '07:00',
   // Height doesn't change like a body measurement does, so it lives here
   // (set once, editable) rather than as a per-entry body_metrics column.
   heightCm: '',

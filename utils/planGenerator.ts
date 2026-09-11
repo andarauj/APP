@@ -92,6 +92,48 @@ const SPLIT_TEMPLATES: Record<number, SplitTemplate> = {
   },
 };
 
+/**
+ * How many exercises a session of `minutesAvailable` gets — same formula
+ * pickExercisesForDay() actually uses, kept in sync here for
+ * suggestedDaysPerWeek() below.
+ */
+function targetExerciseCountFor(minutesAvailable: number): number {
+  return Math.max(4, Math.min(8, Math.floor(minutesAvailable / PER_SET_MINUTES / 3)));
+}
+
+/**
+ * Whether the chosen days/week can actually give every muscle group in its
+ * busiest day at least one exercise, given how many minutes are available
+ * per session — and if not, the smallest days/week that would fix it.
+ *
+ * Fewer days means a broader per-day focus (a 2-day Full Body split covers
+ * 4 muscle groups in one session; a 5-day Bro Split covers 1). The number
+ * of exercises a session gets is driven only by minutesAvailable (see
+ * targetExerciseCountFor), not by how many muscle groups that day needs to
+ * cover — so a short session on a broad-focus day risks some of that day's
+ * muscle groups getting no exercise at all. Spreading the same weekly
+ * training across more, narrower-focus days fixes that without needing a
+ * longer session.
+ *
+ * Returns null when the current choice already covers every muscle group
+ * (nothing to suggest), or when even the maximum 6 days/week wouldn't fully
+ * fix it (in which case nagging about it doesn't help either).
+ */
+export function suggestedDaysPerWeek(daysPerWeek: number, minutesPerDay: number): number | null {
+  const targetExerciseCount = targetExerciseCountFor(minutesPerDay);
+  const fits = (days: number): boolean => {
+    const template = SPLIT_TEMPLATES[days];
+    if (!template) return true;
+    const maxFocus = Math.max(...template.days.map(d => d.focus.length));
+    return targetExerciseCount >= maxFocus;
+  };
+  if (fits(daysPerWeek)) return null;
+  for (let d = daysPerWeek + 1; d <= 6; d++) {
+    if (fits(d)) return d;
+  }
+  return null;
+}
+
 const COMPOUND_PRIORITY: Record<string, number> = {
   barbell: 0,
   dumbbell: 1,
@@ -108,12 +150,13 @@ const COMPOUND_PRIORITY: Record<string, number> = {
   other: 12,
 };
 
-export type EquipmentPreference = 'any' | 'gymleco' | 'free_weights';
+export type EquipmentPreference = 'any' | 'gymleco' | 'free_weights' | 'home_dumbbell';
 
 function matchesEquipment(ex: Exercise, pref: EquipmentPreference): boolean {
   if (pref === 'any') return true;
   if (pref === 'gymleco') return ex.equipment === 'gymleco';
   if (pref === 'free_weights') return ['barbell', 'dumbbell', 'ez_bar', 'smith', 'trap_bar'].includes(ex.equipment);
+  if (pref === 'home_dumbbell') return ex.equipment === 'dumbbell' || ex.equipment === 'bodyweight';
   return true;
 }
 
@@ -170,6 +213,12 @@ export function pickExercisesForDay(
       matches = prefMatches;
     } else if (equipmentPref === 'gymleco') {
       matches = [...prefMatches, ...matches.filter(e => e.equipment === 'machine')];
+    } else if (equipmentPref === 'home_dumbbell') {
+      // Stay strictly within home equipment even when a muscle has fewer
+      // than 2 dumbbell/bodyweight options — unlike the other preferences,
+      // never fall back to gym-only equipment (barbell, machine, cable)
+      // the person doesn't actually have at home.
+      matches = prefMatches;
     }
 
     // Real usage history outranks everything else: an exercise the person
@@ -559,6 +608,65 @@ export async function generateTodaysWorkout(
         const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
         const finisher = pool[dayOfYear % pool.length];
         await addExerciseToPlan(planId, finisher.id, 1, '10-15 min', 0, 60, 'normal', null, 'Finisher de condicionamento geral', orderIndex++, 'Hoje', 0);
+      }
+    }
+  });
+
+  return planId;
+}
+
+/**
+ * A single-day workout using only dumbbells and bodyweight/mat exercises —
+ * for training at home with an inclined bench, a pair of dumbbells, and a
+ * mat, rather than a full gym. Same one-day-plan shape as
+ * generateTodaysWorkout (so the workout screen, rest timers and history all
+ * work unchanged), but the muscle focus is chosen directly by the person
+ * (not auto-picked from recency) and equipment is strictly home_dumbbell —
+ * see matchesEquipment's home_dumbbell case, which never falls back to
+ * gym-only equipment.
+ */
+export async function generateHomeWorkout(
+  focusMuscles: MuscleGroup[],
+  minutesAvailable: number,
+  includeCardio: boolean,
+): Promise<number> {
+  const allExercises = await getAllExercises();
+  const usageHistory = await getExerciseUsageCounts();
+
+  const muscleLabels = focusMuscles.map(m => MUSCLE_GROUPS_PT[m] || m).join(', ');
+  const dateLabel = new Intl.DateTimeFormat('pt-PT', { day: '2-digit', month: '2-digit' }).format(new Date());
+  const planName = `Treino em Casa — ${dateLabel}`;
+
+  const db = await getDatabase();
+  let planId!: number;
+
+  await db.withTransactionAsync(async () => {
+    planId = await createPlan(
+      planName,
+      `Só halteres, banco inclinado e tapete. Foco: ${muscleLabels}.`,
+      'hypertrophy',
+      'custom',
+      true,
+    );
+
+    const dayExercises = pickExercisesForDay(allExercises, focusMuscles, minutesAvailable, 'home_dumbbell', [], usageHistory);
+    const ordered = orderByMuscleGroup(dayExercises, focusMuscles);
+    let orderIndex = 0;
+    for (let i = 0; i < ordered.length; i++) {
+      const ex = ordered[i];
+      const { sets, reps, rest, setType } = setsRepsForPlanType('hypertrophy', i);
+      const weightTarget = await suggestWeightForExercise(ex.id, reps);
+      await addExerciseToPlan(planId, ex.id, sets, reps, weightTarget, rest, setType, null, '', orderIndex++, 'Treino em Casa', 0);
+    }
+
+    if (includeCardio) {
+      // Bodyweight only, same as the other generators' conditioning
+      // finisher — no equipment needed, works in a living room.
+      const cardioOptions = allExercises.filter(e => e.type === 'cardio' && e.equipment === 'bodyweight');
+      if (cardioOptions.length > 0) {
+        const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
+        const finisher = cardioOptions[dayOfYear % cardioOptions.length];
+        await addExerciseToPlan(planId, finisher.id, 1, '10-15 min', 0, 60, 'normal', null, 'Finisher de cardio', orderIndex++, 'Treino em Casa', 0);
       }
     }
   });

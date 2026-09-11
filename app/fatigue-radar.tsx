@@ -6,8 +6,8 @@ import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { Card } from '@/components/ui/Card';
 import { getProgressIndexData, getFatigueRadarExerciseData } from '@/db/workoutDao';
-import { detectVolumeSpike, detectPerformanceRegression, detectRpeCreep, type VolumeSpikeSignal, type RegressionSignal, type RpeCreepSignal } from '@/utils/fatigueSignals';
-import { ChevronLeft, Activity, TrendingDown, Gauge, CheckCircle2, Flame } from 'lucide-react-native';
+import { detectVolumeSpike, detectPerformanceRegression, detectRpeCreep, overallFatigueLevel, type VolumeSpikeSignal, type RegressionSignal, type RpeCreepSignal, type FatigueLevel } from '@/utils/fatigueSignals';
+import { ChevronLeft, Activity, TrendingDown, Gauge, CheckCircle2, Flame, Eye, Layers, AlertTriangle } from 'lucide-react-native';
 
 interface ExerciseRegression {
   exerciseName: string;
@@ -18,6 +18,24 @@ interface ExerciseRpeCreep {
   exerciseName: string;
   signal: RpeCreepSignal;
 }
+
+const LEVEL_META: Record<Exclude<FatigueLevel, 'none'>, { icon: typeof Eye; label: string; desc: string }> = {
+  watch: {
+    icon: Eye,
+    label: '1 sinal isolado',
+    desc: 'Sozinho, isto costuma não significar muito — mas vale a pena continuar de olho nas próximas sessões.',
+  },
+  stacking: {
+    icon: Layers,
+    label: '2 sinais em simultâneo',
+    desc: 'Quando vários sinais aparecem ao mesmo tempo, isso costuma pesar mais do que cada um isolado — considera aliviar a carga esta semana.',
+  },
+  high: {
+    icon: AlertTriangle,
+    label: 'Todos os sinais em simultâneo',
+    desc: 'Volume, força e esforço percebido apontam todos na mesma direção — é o padrão mais claro de sobrecarga que a app consegue detetar. Uma semana de descarga costuma ajudar.',
+  },
+};
 
 export default function FatigueRadarScreen() {
   const { colors } = useTheme();
@@ -48,6 +66,11 @@ export default function FatigueRadarScreen() {
         const rpeSignal = detectRpeCreep(ex.rpeSets);
         if (rpeSignal) foundRpe.push({ exerciseName: ex.exerciseName, signal: rpeSignal });
       }
+      // Worst case first within each signal type — if several exercises are
+      // regressing or creeping, the person should see the clearest one
+      // first, not whatever order the query happened to return.
+      found.sort((a, b) => b.signal.percentDecline - a.signal.percentDecline);
+      foundRpe.sort((a, b) => b.signal.rpeIncrease - a.signal.rpeIncrease);
       setRegressions(found);
       setRpeCreeps(foundRpe);
     } catch (err) {
@@ -59,7 +82,11 @@ export default function FatigueRadarScreen() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const hasAnySignal = volumeSpike !== null || regressions.length > 0 || rpeCreeps.length > 0;
+  const activeSignalTypes = [volumeSpike !== null, regressions.length > 0, rpeCreeps.length > 0].filter(Boolean).length;
+  const hasAnySignal = activeSignalTypes > 0;
+  const level = overallFatigueLevel(activeSignalTypes);
+  const levelMeta = level !== 'none' ? LEVEL_META[level] : null;
+  const LevelIcon = levelMeta?.icon;
 
   return (
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
@@ -85,6 +112,16 @@ export default function FatigueRadarScreen() {
             <Text style={{ color: colors.textSecondary, fontFamily: 'Inter-Regular', fontSize: 14, textAlign: 'center', paddingHorizontal: 20 }}>
               O teu volume e a tua performance recente estão dentro do que é normal para ti.
             </Text>
+          </Card>
+        )}
+
+        {!loading && hasAnySignal && levelMeta && LevelIcon && (
+          <Card style={[styles.signalCard, { backgroundColor: level === 'high' ? colors.errorContainer : colors.accentContainer }]}>
+            <LevelIcon size={22} color={level === 'high' ? colors.error : colors.accent} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.signalTitle, { color: colors.text }]}>{levelMeta.label}</Text>
+              <Text style={[styles.signalDesc, { color: colors.textSecondary }]}>{levelMeta.desc}</Text>
+            </View>
           </Card>
         )}
 

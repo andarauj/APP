@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, FlatList, Modal, Platform, Vibration, ActivityIndicator, BackHandler, KeyboardAvoidingView } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, FlatList, Modal, Platform, Vibration, ActivityIndicator, BackHandler, KeyboardAvoidingView, Keyboard } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, useAnimatedReaction, withSequence, withTiming, withSpring, ZoomIn, FadeOut } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
@@ -14,9 +14,6 @@ import type { AdaptiveGoal, AdaptivePhase } from '@/utils/nspi';
 import { createSession, updateSession, discardSession, addSet, getLastSetForExercise, getHistoricalRpeAtWeight , getProgressionSuggestion, getSessionTemplate } from '@/db/workoutDao';
 import { searchExercises, getAlternativeExercises, setExerciseUserNotes } from '@/db/exerciseDao';
 import { getSettingWithDefault, DEFAULT_SETTINGS } from '@/db/settingsDao';
-import { getLatestBodyMetric, getAllBodyMetrics } from '@/db/bodyMetricsDao';
-import { analyzeBody } from '@/utils/bodyAnalysis';
-import { pickExtraExercise } from '@/utils/planGenerator';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { scheduleRestEndNotification, cancelRestEndNotification } from '@/utils/restNotification';
 import type { Exercise, SetType, MuscleGroup } from '@/types';
@@ -24,15 +21,16 @@ import { MUSCLE_GROUPS_PT, EQUIPMENT_PT } from '@/types';
 import { SearchBar } from '@/components/ui/SearchBar';
 import { ExerciseTile } from '@/components/ui/ExerciseTile';
 import { formatTime } from '@/utils/format';
-import { parseTempo, tempoSecondsPerRep, calculatePlates } from '@/utils/calculators';
+import { parseTempo, calculatePlates } from '@/utils/calculators';
 import { hapticTap, hapticSuccess, hapticWarning, hapticSelect } from '@/utils/haptics';
 import { playRestEndSound } from '@/utils/sound';
 import { findSupersetPartner } from '@/utils/supersets';
 import { suggestSetAdjustment, type AutoRegulationSuggestion } from '@/utils/autoRegulation';
 import { TempoMetronomeBox } from '@/components/workout/TempoMetronomeBox';
+import { RestRing } from '@/components/ui/RestRing';
 import { generateLiveCoachingTips, type CoachingTip } from '@/utils/livCoachingTips';
 import { LiveCoachingStack } from '@/components/ui/LiveCoachingTip';
-import { X, Plus, Check, Timer, RotateCcw, ChevronDown, ChevronUp, Trophy, StickyNote, Repeat, TrendingUp, Pause, Play, Gauge, Sparkles, Star, Image as ImageIcon } from 'lucide-react-native';
+import { X, Plus, Check, Timer, RotateCcw, ChevronDown, ChevronUp, Trophy, StickyNote, Repeat, TrendingUp, Pause, Play, Gauge, Star, Image as ImageIcon } from 'lucide-react-native';
 import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
 
 interface ActiveExercise {
@@ -64,7 +62,7 @@ const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10];
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 
 export default function ActiveWorkoutScreen() {
-  const { planId, planName, dayIndex, repeatSessionId, isSmartWorkout } = useLocalSearchParams<{ planId: string; planName: string; dayIndex?: string; repeatSessionId?: string; isSmartWorkout?: string }>();
+  const { planId, planName, dayIndex, repeatSessionId } = useLocalSearchParams<{ planId: string; planName: string; dayIndex?: string; repeatSessionId?: string }>();
   const { colors } = useTheme();
   const { isSimple } = useAppMode();
   const router = useRouter();
@@ -117,6 +115,33 @@ export default function ActiveWorkoutScreen() {
   const [restRemindersEnabled, setRestRemindersEnabled] = useState(true);
   const [coachingTips, setCoachingTips] = useState<CoachingTip[]>([]);
   const [coachingExerciseIdx, setCoachingExerciseIdx] = useState<number | null>(null);
+
+  // BUGFIX (reported: weight/reps for an exercise near the end of a long
+  // workout were unreadable, hidden under the keyboard): KeyboardAvoidingView
+  // shrinking the list (see 'height' behavior below) helps, but doesn't by
+  // itself guarantee the specific field being typed into ends up above the
+  // keyboard — a field already near the bottom edge can still land behind it.
+  // This tracks the current scroll offset and, whichever set-row input was
+  // last focused, nudges the list up just enough to clear the keyboard once
+  // it finishes animating in.
+  const scrollViewRef = useRef<ScrollView>(null);
+  const scrollOffsetRef = useRef(0);
+  const focusedInputRef = useRef<any>(null);
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidShow', (e) => {
+      const input = focusedInputRef.current;
+      if (!input) return;
+      input.measureInWindow((_x: number, y: number, _width: number, height: number) => {
+        const keyboardTop = e.endCoordinates.screenY;
+        const inputBottom = y + height;
+        const overlap = inputBottom - keyboardTop;
+        if (overlap > 0) {
+          scrollViewRef.current?.scrollTo({ y: scrollOffsetRef.current + overlap + 24, animated: true });
+        }
+      });
+    });
+    return () => sub.remove();
+  }, []);
 
   // Adaptive engine ("porquê este alvo" — NSPI_ENGINE.md §7). Purely
   // additive and read-only: a separate effect from init() below so it can
@@ -264,7 +289,7 @@ export default function ActiveWorkoutScreen() {
     // pre-filled with the loads used last time.
     if (repeatSessionId) {
       const template = await getSessionTemplate(Number(repeatSessionId));
-      const repeated: ActiveExercise[] = await Promise.all(template.map(async t => {
+      const repeated: ActiveExercise[] = await Promise.all(template.map(async (t, i) => {
         const progression = await getProgressionSuggestion(t.exercise_id, String(t.reps));
         // BUGFIX (found in a self-audit after a real gap was reported): the
         // suggested weight was already computed here, but only ever shown
@@ -291,7 +316,11 @@ export default function ActiveWorkoutScreen() {
           defaultRepsTarget: String(t.reps),
           defaultWeight: t.weight,
           restSeconds: t.rest_seconds,
-          expanded: true,
+          // Only the first card opens automatically — with every exercise
+          // expanded at once the screen was one long undifferentiated
+          // scroll, and it was hard to tell which one you were actually on.
+          // Tapping any header still expands/collapses it.
+          expanded: i === 0,
           userNotes: '',
           progression: progression?.shouldProgress
             ? { suggestedWeight: progression.suggestedWeight, reason: progression.reason }
@@ -310,7 +339,7 @@ export default function ActiveWorkoutScreen() {
         ? allPlanExs.filter(pe => (pe.day_index ?? 0) === Number(dayIndex))
         : allPlanExs;
       const activeExs: ActiveExercise[] = await Promise.all(
-        planExs.map(async (pe) => {
+        planExs.map(async (pe, i) => {
           const lastSet = await getLastSetForExercise(pe.exercise_id);
           const reps = pe.reps_target || '8';
           const progression = await getProgressionSuggestion(pe.exercise_id, pe.reps_target || '');
@@ -331,7 +360,9 @@ export default function ActiveWorkoutScreen() {
             defaultWeight: pe.weight_target,
             restSeconds: pe.rest_seconds,
             tempo: pe.tempo || '',
-            expanded: true,
+            // Only the first card opens automatically — see the matching
+            // comment on the "repeat session" branch above for why.
+            expanded: i === 0,
             userNotes: pe.user_notes || '',
             progression: progression?.shouldProgress
               ? { suggestedWeight: progression.suggestedWeight, reason: progression.reason }
@@ -415,40 +446,6 @@ export default function ActiveWorkoutScreen() {
     setShowAddExercise(false);
   };
 
-  // "Gerar Exercício" — only offered for Treino Inteligente sessions (see
-  // isSmartWorkout param from smart-start.tsx). Reported gap: running
-  // longer than planned had no way to ask the app for one more exercise
-  // chosen the same reasoned way the rest of the session was — only the
-  // manual search picker above, which requires knowing what to pick
-  // yourself. This reuses that exact same "add to local state" pattern
-  // (see addExerciseToWorkout just above), just with the exercise chosen
-  // by pickExtraExercise instead of picked manually.
-  const [generatingExtra, setGeneratingExtra] = useState(false);
-  const handleGenerateExtraExercise = async () => {
-    setGeneratingExtra(true);
-    try {
-      const currentExercises = exercises.map(e => ({ exerciseId: e.exerciseId, primaryMuscle: e.primaryMuscle as MuscleGroup }));
-      const [latest, heightCm, allMetrics] = await Promise.all([
-        getLatestBodyMetric(),
-        getSettingWithDefault('heightCm', ''),
-        getAllBodyMetrics(),
-      ]);
-      const recentHistory = allMetrics.slice(0, 5).reverse();
-      const analysis = analyzeBody(latest, heightCm, recentHistory);
-      const picked = await pickExtraExercise(currentExercises, { bodyAnalysis: analysis });
-      if (!picked) {
-        Alert.alert('Sem sugestão disponível', 'Não encontrei um exercício novo para adicionar agora — podes escolher um manualmente em "Adicionar Exercício".');
-        return;
-      }
-      await addExerciseToWorkout(picked);
-      hapticSuccess();
-    } catch (err) {
-      console.error('Failed to generate extra exercise:', err);
-      Alert.alert('Erro', 'Não foi possível gerar um exercício novo. Tenta novamente.');
-    } finally {
-      setGeneratingExtra(false);
-    }
-  };
 
   const addSetToExercise = (exIdx: number) => {
     setExercises(prev => prev.map((ex, i) => {
@@ -606,6 +603,17 @@ export default function ActiveWorkoutScreen() {
     // restart the rest timer once per set in a rapid burst.
     if (silent) return;
 
+    // BUGFIX: the "Tempo de série" stopwatch (setElapsed) was only ever
+    // reset inside the rest-timer branch further below — a superset partner
+    // or the final set of the workout returns before reaching it, leaving
+    // the NEXT set's timing to start from whatever the previous set's
+    // elapsed value was instead of zero. Resetting here, right after every
+    // single (non-bulk) set completion, means each set's recorded duration
+    // (workout_sets.set_duration, read into addSet() above as setElapsed)
+    // is genuinely that set's own time, regardless of what happens next.
+    setSetTimerActive(false);
+    resetSetTimer();
+
     // If that was the last undone set in the whole workout, there's nothing
     // left to rest before — skip the rest timer and prompt to finish instead
     // (a common request: several competitor apps auto-suggest finishing once
@@ -638,6 +646,24 @@ export default function ActiveWorkoutScreen() {
       return;
     }
 
+    // Once every set of THIS exercise is done, collapse it and open the
+    // next one that still has work left — without this, every exercise
+    // stayed expanded for the whole workout and the screen was one long
+    // scroll with no sense of "what's next", which made logging (especially
+    // finding the weight/reps fields for a later exercise) harder than it
+    // needed to be.
+    const exNowDone = ex.sets.every((s, si) => si === setIdx || s.done);
+    if (exNowDone) {
+      const nextIdx = exercises.findIndex((e, i) => i !== exIdx && e.sets.some(s => !s.done));
+      if (nextIdx !== -1) {
+        setExercises(prev => prev.map((e, i) => {
+          if (i === exIdx) return { ...e, expanded: false };
+          if (i === nextIdx) return { ...e, expanded: true };
+          return e;
+        }));
+      }
+    }
+
     // Start rest timer. Falls back to the global default rather than a
     // hardcoded 90 — an exercise with no rest set should follow the user's
     // setting, not a number baked in here.
@@ -645,8 +671,6 @@ export default function ActiveWorkoutScreen() {
     setRestDuration(restForExercise);
     resetRest(restForExercise);
     setRestActive(true);
-    setSetTimerActive(false);
-    resetSetTimer();
 
     // Schedule a notification for when rest ends, so leaving the phone
     // locked or switching apps during rest doesn't mean missing the timer —
@@ -840,14 +864,25 @@ export default function ActiveWorkoutScreen() {
         </View>
       </View>
 
-      {/* Rest timer overlay */}
+      {/* Rest timer — circular ring clock (redesigned from a slim text bar
+          per request: "o relógio gosto mais como o da jetfit"). Same
+          countdown state/notification logic as before; this only changes
+          how it's drawn. */}
       {restActive && !restFinished && (
-        <View style={[styles.restBar, { backgroundColor: restRemaining <= 10 ? colors.error : colors.primaryContainer }]}>
-          <Timer size={16} color={restRemaining <= 10 ? colors.onError : colors.primary} />
-          <Text style={[styles.restText, { color: restRemaining <= 10 ? colors.onError : colors.primary }]}>
-            Descanso: {formatTime(restRemaining)}
-          </Text>
-          <View style={styles.restActions}>
+        <View style={[styles.restCard, { backgroundColor: colors.surface, borderColor: restRemaining <= 10 ? colors.error : colors.border }]}>
+          <TouchableOpacity
+            onPress={() => { setRestActive(false); cancelRestEndNotification().catch(() => {}); }}
+            style={styles.restCloseBtn}
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            accessibilityRole="button"
+            accessibilityLabel="Fechar descanso"
+          >
+            <X size={16} color={colors.textTertiary} />
+          </TouchableOpacity>
+
+          <Text style={[styles.restLabel, { color: colors.textSecondary }]}>DESCANSO</Text>
+
+          <View style={styles.restRingRow}>
             <TouchableOpacity
               onPress={() => {
                 addRestTime(-15);
@@ -856,33 +891,32 @@ export default function ActiveWorkoutScreen() {
                 // remaining time rather than the stale pre-adjustment value.
                 if (restRemindersEnabled) scheduleRestEndNotification(Math.max(1, restRemaining - 15), '').catch(() => {});
               }}
-              style={styles.restAdjBtn}
+              style={[styles.restAdjPill, { backgroundColor: colors.surfaceVariant }]}
               hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
               accessibilityRole="button"
               accessibilityLabel="Reduzir descanso em 15 segundos"
             >
-              <Text style={[styles.restAdjText, { color: restRemaining <= 10 ? colors.onError : colors.primary }]}>-15s</Text>
+              <Text style={[styles.restAdjText, { color: colors.text }]}>-15s</Text>
             </TouchableOpacity>
+
+            <RestRing
+              remaining={restRemaining}
+              duration={restDuration}
+              color={restRemaining <= 10 ? colors.error : colors.primary}
+              trackColor={colors.surfaceVariant}
+            />
+
             <TouchableOpacity
               onPress={() => {
                 addRestTime(15);
                 if (restRemindersEnabled) scheduleRestEndNotification(restRemaining + 15, '').catch(() => {});
               }}
-              style={styles.restAdjBtn}
+              style={[styles.restAdjPill, { backgroundColor: colors.surfaceVariant }]}
               hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
               accessibilityRole="button"
               accessibilityLabel="Aumentar descanso em 15 segundos"
             >
-              <Text style={[styles.restAdjText, { color: restRemaining <= 10 ? colors.onError : colors.primary }]}>+15s</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => { setRestActive(false); cancelRestEndNotification().catch(() => {}); }}
-              style={styles.restAdjBtn}
-              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
-              accessibilityRole="button"
-              accessibilityLabel="Fechar descanso"
-            >
-              <X size={14} color={restRemaining <= 10 ? colors.onError : colors.primary} />
+              <Text style={[styles.restAdjText, { color: colors.text }]}>+15s</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -937,12 +971,22 @@ export default function ActiveWorkoutScreen() {
           could not be completed without dismissing the keyboard first.
           keyboardShouldPersistTaps lets the checkmark be tapped directly
           while an input still has focus, rather than the first tap only
-          closing the keyboard. */}
+          closing the keyboard.
+          BUGFIX (reported: weight/reps for an exercise near the end of a
+          long list were unreadable, hidden under the keyboard): `behavior`
+          was only ever set for iOS — on Android (the only platform this app
+          ships to) it was `undefined`, so the view never shrank for the
+          keyboard at all. 'height' does on Android roughly what 'padding'
+          does on iOS: the list area shrinks to fit above the keyboard
+          instead of being covered by it. */}
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
       <ScrollView
+        ref={scrollViewRef}
+        onScroll={e => { scrollOffsetRef.current = e.nativeEvent.contentOffset.y; }}
+        scrollEventThrottle={32}
         contentContainerStyle={styles.exerciseList}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
@@ -972,7 +1016,24 @@ export default function ActiveWorkoutScreen() {
               delayLongPress={500}
               accessibilityHint="Manter premido para remover este exercício do treino"
             >
-              <ExerciseTile muscle={ex.primaryMuscle as MuscleGroup} equipment={ex.equipment as any} size={38} />
+              {/* BUGFIX (reported: "só o nome não me diz nada" — a generic
+                  muscle-group icon looked the same for every exercise
+                  working that muscle, so nothing here actually showed WHICH
+                  movement this was). Shows the real illustration as a small
+                  thumbnail when the dataset has one; falls back to the
+                  muscle icon for the curated exercises that don't. */}
+              {ex.imageUrl ? (
+                <TouchableOpacity
+                  onPress={() => setDemoFor({ name: ex.name, url: ex.imageUrl! })}
+                  style={styles.exThumbWrap}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Ver ilustração de ${ex.name} em ecrã inteiro`}
+                >
+                  <ExerciseMedia uri={ex.imageUrl} height={38} />
+                </TouchableOpacity>
+              ) : (
+                <ExerciseTile muscle={ex.primaryMuscle as MuscleGroup} equipment={ex.equipment as any} size={38} />
+              )}
               <View style={[styles.exDot, { backgroundColor: ex.sets.every(s => s.done) ? colors.secondary : colors.primary }]} />
               <View style={styles.exHeaderInfo}>
                 <Text style={[styles.exName, { color: colors.text }]}>{ex.name}</Text>
@@ -980,17 +1041,6 @@ export default function ActiveWorkoutScreen() {
                   {MUSCLE_GROUPS_PT[ex.primaryMuscle as MuscleGroup] || ex.primaryMuscle} · {ex.sets.filter(s => s.done).length}/{ex.sets.length} séries
                 </Text>
               </View>
-              {!!ex.imageUrl && (
-                <TouchableOpacity
-                  onPress={() => setDemoFor({ name: ex.name, url: ex.imageUrl! })}
-                  hitSlop={8}
-                  style={{ marginRight: 10 }}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Ver ilustração de ${ex.name}`}
-                >
-                  <ImageIcon size={17} color={colors.textTertiary} />
-                </TouchableOpacity>
-              )}
               {adaptiveInfo?.states.has(ex.exerciseId) && (
                 <TouchableOpacity
                   onPress={() => setWhyTargetFor(exIdx)}
@@ -1016,6 +1066,22 @@ export default function ActiveWorkoutScreen() {
 
             {ex.expanded && (
               <View style={styles.exBody}>
+                {/* Full-size illustration for the exercise actually open right
+                   now — the small header thumbnail is enough to recognise an
+                   exercise at a glance, but the one you're about to do
+                   deserves to be seen clearly, not just named. Tapping it
+                   opens the same view full-screen. */}
+                {!!ex.imageUrl && (
+                  <TouchableOpacity
+                    onPress={() => setDemoFor({ name: ex.name, url: ex.imageUrl! })}
+                    activeOpacity={0.85}
+                    style={{ marginBottom: 10 }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Ver ilustração de ${ex.name} em ecrã inteiro`}
+                  >
+                    <ExerciseMedia uri={ex.imageUrl} height={170} />
+                  </TouchableOpacity>
+                )}
                 {/* Double-progression hint from the previous session */}
                 {ex.progression && (
                   <View style={[styles.progressHint, { backgroundColor: colors.secondaryContainer }]}>
@@ -1114,6 +1180,7 @@ export default function ActiveWorkoutScreen() {
                     onUpdate={updateSet}
                     onComplete={completeSet}
                     onRemove={removeSet}
+                    onFocusInput={ref => { focusedInputRef.current = ref; }}
                   />
                 ))}
 
@@ -1137,29 +1204,6 @@ export default function ActiveWorkoutScreen() {
           <Text style={[styles.addExText, { color: colors.primary }]}>Adicionar Exercício</Text>
         </TouchableOpacity>
 
-        {/* Generate one more exercise — only for Treino Inteligente
-            sessions, when there's real time left over. Picked the same
-            reasoned way the rest of the session was (recency, focus areas,
-            fatigue exclusion), not just the next thing in an alphabetical
-            list. */}
-        {isSmartWorkout === '1' && (
-          <TouchableOpacity
-            style={[styles.addExBtn, { borderColor: colors.primary, backgroundColor: colors.primaryContainer, marginTop: 10 }]}
-            onPress={handleGenerateExtraExercise}
-            disabled={generatingExtra}
-            accessibilityRole="button"
-            accessibilityLabel="Gerar mais um exercício"
-          >
-            {generatingExtra ? (
-              <ActivityIndicator size="small" color={colors.primary} />
-            ) : (
-              <Sparkles size={20} color={colors.primary} />
-            )}
-            <Text style={[styles.addExText, { color: colors.primary }]}>
-              {generatingExtra ? 'A gerar...' : 'Gerar Exercício'}
-            </Text>
-          </TouchableOpacity>
-        )}
 
         {/* Set timer */}
         <View style={[styles.setTimerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -1210,7 +1254,13 @@ export default function ActiveWorkoutScreen() {
             keyExtractor={item => String(item.id)}
             renderItem={({ item }) => (
               <TouchableOpacity style={[styles.pickerItem, { borderBottomColor: colors.border }]} onPress={() => addExerciseToWorkout(item)}>
-                <ExerciseTile muscle={item.primary_muscle} equipment={item.equipment} size={40} />
+                {item.image_url ? (
+                  <View style={styles.pickerThumbWrap}>
+                    <ExerciseMedia uri={item.image_url} height={40} />
+                  </View>
+                ) : (
+                  <ExerciseTile muscle={item.primary_muscle} equipment={item.equipment} size={40} />
+                )}
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.pickerName, { color: colors.text }]}>{item.name}</Text>
                   <Text style={[styles.pickerSub, { color: colors.textSecondary }]}>{MUSCLE_GROUPS_PT[item.primary_muscle]} · {EQUIPMENT_PT[item.equipment]}</Text>
@@ -1291,7 +1341,13 @@ export default function ActiveWorkoutScreen() {
                 accessibilityRole="button"
                 accessibilityLabel={`Substituir por ${item.name}`}
               >
-                <ExerciseTile muscle={item.primary_muscle} equipment={item.equipment} size={40} />
+                {item.image_url ? (
+                  <View style={styles.pickerThumbWrap}>
+                    <ExerciseMedia uri={item.image_url} height={40} />
+                  </View>
+                ) : (
+                  <ExerciseTile muscle={item.primary_muscle} equipment={item.equipment} size={40} />
+                )}
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.pickerName, { color: colors.text }]}>{item.name}</Text>
                   <Text style={[styles.pickerSub, { color: colors.textSecondary }]}>
@@ -1430,12 +1486,17 @@ export default function ActiveWorkoutScreen() {
  * on a device — and an untested refactor of this exact file has broken it
  * before. Worth doing once the on-device pass in ESTADO.md is done.
  */
-function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, onRemove }: {
+function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, onRemove, onFocusInput }: {
   set: ActiveExercise['sets'][0]; setIdx: number; exIdx: number; colors: any; isSimple: boolean;
   onUpdate: (exIdx: number, setIdx: number, field: string, value: any) => void;
   onComplete: (exIdx: number, setIdx: number) => void;
   onRemove: (exIdx: number, setIdx: number) => void;
+  /** Registers whichever input the person just tapped into, so the screen
+   *  can scroll it clear of the keyboard once it's done animating in. */
+  onFocusInput: (ref: any) => void;
 }) {
+  const repsInputRef = useRef<TextInput>(null);
+  const weightInputRef = useRef<TextInput>(null);
   const [showRpe, setShowRpe] = useState(false);
   // Typing exact weights on a phone mid-set is fiddly, so tapping the weight
   // field reveals plate-sized increments instead.
@@ -1493,9 +1554,11 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, on
         </View>
         <View style={styles.setRepsCell}>
           <TextInput
+            ref={repsInputRef}
             style={[styles.setInput, { color: colors.text, backgroundColor: set.done ? 'transparent' : colors.surfaceVariant, borderColor: colors.border }]}
             value={set.reps}
             onChangeText={v => onUpdate(exIdx, setIdx, 'reps', v)}
+            onFocus={() => onFocusInput(repsInputRef.current)}
             keyboardType="numeric"
             selectTextOnFocus
             editable={!set.done}
@@ -1514,10 +1577,11 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, on
             </TouchableOpacity>
           )}
           <TextInput
+            ref={weightInputRef}
             style={[styles.setInput, styles.setInputInRow, { color: colors.text, backgroundColor: set.done ? 'transparent' : colors.surfaceVariant, borderColor: colors.border }]}
             value={set.weight}
             onChangeText={v => onUpdate(exIdx, setIdx, 'weight', v)}
-            onFocus={() => setShowQuickAdjust(true)}
+            onFocus={() => { setShowQuickAdjust(true); onFocusInput(weightInputRef.current); }}
             keyboardType="decimal-pad"
             selectTextOnFocus
             editable={!set.done}
@@ -1677,10 +1741,11 @@ const styles = StyleSheet.create({
   statValue: { fontFamily: 'Inter-Bold', fontSize: 16 },
   statLabel: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 14 },
   statDiv: { width: 1, height: 28 },
-  restBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 10, gap: 8 },
-  restText: { fontFamily: 'Inter-Bold', fontSize: 16, flex: 1 },
-  restActions: { flexDirection: 'row', gap: 8 },
-  restAdjBtn: { paddingHorizontal: 8, paddingVertical: 4 },
+  restCard: { alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: 1, gap: 8 },
+  restCloseBtn: { position: 'absolute', top: 10, right: 12, zIndex: 1, padding: 4 },
+  restLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, letterSpacing: 1 },
+  restRingRow: { flexDirection: 'row', alignItems: 'center', gap: 20 },
+  restAdjPill: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20 },
   restAdjText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   prNotif: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 8 },
   prText: { fontFamily: 'Inter-Bold', fontSize: 14 },
@@ -1693,6 +1758,7 @@ const styles = StyleSheet.create({
   supersetBadge: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderTopLeftRadius: 13, borderBottomRightRadius: 10 },
   supersetBadgeText: { fontFamily: 'Inter-Bold', fontSize: 10, lineHeight: 13, letterSpacing: 0.5 },
   exHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14 },
+  exThumbWrap: { width: 38, height: 38, borderRadius: 8, overflow: 'hidden' },
   exDot: { width: 10, height: 10, borderRadius: 5 },
   exHeaderInfo: { flex: 1 },
   exName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
@@ -1753,6 +1819,7 @@ const styles = StyleSheet.create({
   pickerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1 },
   pickerTitle: { fontFamily: 'Inter-Bold', fontSize: 20 },
   pickerItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1 },
+  pickerThumbWrap: { width: 40, height: 40, borderRadius: 8, overflow: 'hidden' },
   pickerName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   pickerSub: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
   finishOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 24 },

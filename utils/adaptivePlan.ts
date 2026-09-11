@@ -7,7 +7,7 @@
  * adaptive service (N4).
  */
 
-import type { AdaptiveGoal, AdaptivePhase } from './nspi';
+import type { AdaptiveGoal, AdaptivePhase, AdaptiveExperience } from './nspi';
 
 export const PHASE_ORDER: AdaptivePhase[] = ['on_ramp', 'accumulation', 'intensification', 'deload'];
 
@@ -60,8 +60,51 @@ const GOAL_TILT: Record<AdaptiveGoal, Partial<Record<AdaptivePhase, Partial<Phas
   general: {},
 };
 
-export function phaseSpec(phase: AdaptivePhase, goal: AdaptiveGoal): PhaseSpec {
-  return { ...BASE_PHASES[phase], ...(GOAL_TILT[goal]?.[phase] ?? {}) };
+/**
+ * Small relative nudges layered on TOP of the goal-tilted spec (not
+ * replacement values like GOAL_TILT — a beginner should get "a bit lighter
+ * than whatever this goal already prescribes", not a fixed number that
+ * might sit oddly against a goal's own tilt). `intermediate` is empty on
+ * purpose: it is the untouched baseline every existing caller already
+ * exercises, so leaving `experience` off phaseSpec()/phaseTargets() keeps
+ * today's exact behaviour.
+ */
+const EXPERIENCE_ADJUST: Record<AdaptiveExperience, Partial<Record<AdaptivePhase, {
+  intensityDelta?: number;   // added to intensityPct
+  repHighDelta?: number;     // added to repHigh (more room in the rep window)
+  volumeMultFactor?: number; // multiplies volumeMult
+}>>> = {
+  beginner: {
+    // Less to gain from grinding near-max singles, more to lose from a
+    // technical breakdown under a heavy bar — trade a little intensity for
+    // a wider, more forgiving rep window.
+    intensification: { intensityDelta: -0.05, repHighDelta: 1 },
+    accumulation: { volumeMultFactor: 0.9 },
+  },
+  intermediate: {},
+  advanced: {
+    // Can handle (and needs) working closer to a genuine near-max effort to
+    // keep progressing, but accumulates fatigue faster at that intensity —
+    // the deload that follows has to be deeper, not just the same relief.
+    intensification: { intensityDelta: 0.03 },
+    deload: { volumeMultFactor: 0.85 },
+  },
+};
+
+function applyExperience(spec: PhaseSpec, phase: AdaptivePhase, experience: AdaptiveExperience): PhaseSpec {
+  const adj = EXPERIENCE_ADJUST[experience]?.[phase];
+  if (!adj) return spec;
+  return {
+    ...spec,
+    intensityPct: Math.max(0.4, Math.min(1, spec.intensityPct + (adj.intensityDelta ?? 0))),
+    repHigh: spec.repHigh + (adj.repHighDelta ?? 0),
+    volumeMult: spec.volumeMult * (adj.volumeMultFactor ?? 1),
+  };
+}
+
+export function phaseSpec(phase: AdaptivePhase, goal: AdaptiveGoal, experience: AdaptiveExperience = 'intermediate'): PhaseSpec {
+  const base = { ...BASE_PHASES[phase], ...(GOAL_TILT[goal]?.[phase] ?? {}) };
+  return applyExperience(base, phase, experience);
 }
 
 /** The phase that follows `current` within a cycle; wraps deload -> on_ramp
@@ -102,11 +145,12 @@ export interface ExerciseTargets {
 
 /**
  * Targets for one exercise this phase.
- * @param baseSets  the plan's prescribed working sets for this exercise
- * @param e1rm      current estimated 1RM (0 if unknown)
- * @param stall     consecutive sessions without progressing (widens the rep
- *                  window slightly so a stuck lifter has room to grind)
- * @param increment loadable step for this exercise's equipment (kg)
+ * @param baseSets    the plan's prescribed working sets for this exercise
+ * @param e1rm        current estimated 1RM (0 if unknown)
+ * @param stall       consecutive sessions without progressing (widens the rep
+ *                    window slightly so a stuck lifter has room to grind)
+ * @param increment   loadable step for this exercise's equipment (kg)
+ * @param experience  beginner/intermediate/advanced — see EXPERIENCE_ADJUST
  */
 export function phaseTargets(
   phase: AdaptivePhase,
@@ -115,8 +159,9 @@ export function phaseTargets(
   e1rm: number,
   stall = 0,
   increment = 2.5,
+  experience: AdaptiveExperience = 'intermediate',
 ): ExerciseTargets {
-  const spec = phaseSpec(phase, goal);
+  const spec = phaseSpec(phase, goal, experience);
   const targetSets = Math.max(1, Math.round(baseSets * spec.volumeMult));
   const repBump = Math.min(2, stall); // up to +2 reps of room when stalling
   const repLow = spec.repLow;

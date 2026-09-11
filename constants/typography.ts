@@ -1,6 +1,6 @@
-// JeFit-parity type scale (see JEFIT_PARIDADE.md §3). Headings are heavy
-// (ExtraBold 800), large, tightly leaded and near-black; hero numbers on the
-// ruler/age steps are very large ExtraBold.
+// Changes' type scale. Headings are heavy (ExtraBold 800), large, tightly
+// leaded and near-black; hero numbers on the ruler/age steps are very
+// large ExtraBold.
 //
 // fontWeight is kept roughly aligned with the family but React Native honours
 // the weight baked into `fontFamily`, not the `fontWeight` string, when a

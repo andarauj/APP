@@ -2,7 +2,6 @@ import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ViewStyle } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { useTheme } from '@/hooks/useTheme';
-import { Typography } from '@/constants/typography';
 
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 
@@ -120,7 +119,7 @@ function AnimatedButtonInner({
 
 const styles = StyleSheet.create({
   button: {
-    // JeFit-parity: rounded, near-pill CTAs.
+    // Rounded, near-pill CTAs.
     borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',

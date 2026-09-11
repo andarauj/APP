@@ -1,19 +1,30 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, Modal, FlatList, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
-import { getAllPlans, getPlanDays } from '@/db/planDao';
+import { usePlansManager } from '@/hooks/usePlansManager';
+import { getAllPlans, getPlanDays, getPlanExercisesWithDetails } from '@/db/planDao';
 import { getLatestAdaptivePlanAny } from '@/db/adaptiveDao';
 import { getWeeklyPlanner, setPlannerDay, type WeeklyPlanner, type PlannerEntry } from '@/db/plannerDao';
 import { getUnfinishedSession, discardSession, getAllSessions } from '@/db/workoutDao';
 import type { WorkoutPlan } from '@/types';
 import { PLAN_TYPE_PT } from '@/types';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { Play, Zap, Plus, AlertCircle, RotateCcw, Calendar, Check as CheckIcon, X as XIcon, Sparkles, ListChecks, ChevronRight } from 'lucide-react-native';
+import { Play, Zap, Plus, AlertCircle, RotateCcw, Calendar, Check as CheckIcon, X as XIcon, Sparkles, ListChecks, ChevronRight, Clock, ChevronDown, Home as HomeIcon } from 'lucide-react-native';
 import { WEEKDAY_LABELS } from '@/utils/reminders';
 import { PHASE_LABEL_PT, PHASE_COLOR } from '@/utils/adaptivePlan';
+import { estimateDayMinutes, formatMinutes } from '@/utils/workoutTime';
+import { PlanGroupCard } from '@/components/ui/PlanGroupCard';
+import { PlanVersionModal } from '@/components/ui/PlanVersionModal';
+
+interface AdaptiveDayPreview {
+  dayIndex: number;
+  dayLabel: string;
+  minutes: number;
+  exercises: { id: number; name: string; sets: number; reps: string }[];
+}
 
 const WEEKDAY_FULL = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
@@ -23,10 +34,12 @@ export default function StartScreen() {
   const { status: adaptiveStatus } = useAdaptiveStatus();
   const router = useRouter();
 
-  // Top tabs, JeFit "Workout" layout: Explorar (Find) · Plano (Planned) ·
-  // Instantâneo (Instant). See JEFIT_PARIDADE.md Fase 1b.
-  const [activeTab, setActiveTab] = useState<'explorar' | 'plano' | 'instantaneo'>('plano');
-  
+  // Top tabs: Explorar (criar/gerar planos), Plano (o planeador semanal),
+  // Instantâneo (começar já, sem plano fixo), Meus Planos (gerir os planos
+  // já criados — editar, duplicar, apagar).
+  const [activeTab, setActiveTab] = useState<'explorar' | 'plano' | 'instantaneo' | 'planos'>('plano');
+  const plansManager = usePlansManager();
+
   const [plans, setPlans] = useState<WorkoutPlan[]>([]);
   const [unfinished, setUnfinished] = useState<{ id: number; name: string; started_at: number } | null>(null);
   const [lastSession, setLastSession] = useState<{ id: number; name: string; total_sets: number } | null>(null);
@@ -44,6 +57,8 @@ export default function StartScreen() {
   // reactivate it) instead of re-running the wizard and creating a second
   // adaptive plan on top of the paused one.
   const [hasAdaptivePlanEver, setHasAdaptivePlanEver] = useState(false);
+  const [adaptivePreview, setAdaptivePreview] = useState<AdaptiveDayPreview[]>([]);
+  const [expandedPreviewDay, setExpandedPreviewDay] = useState<number | null>(null);
 
   const loadStart = useCallback(async () => {
     getUnfinishedSession().then(s => setUnfinished(s as any)).catch(() => setUnfinished(null));
@@ -76,13 +91,44 @@ export default function StartScreen() {
   useFocusEffect(useCallback(() => {
     if (!isReady) return;
     loadStart();
-  }, [isReady, loadStart]));
+    plansManager.load();
+  }, [isReady, loadStart, plansManager.load]));
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await loadStart();
+    await Promise.all([loadStart(), plansManager.load()]);
     setRefreshing(false);
   };
+
+  // Per-day preview for the "Plano" tab — what's planned for each day of the
+  // active adaptive plan, with a rough time estimate. plan_exercises always
+  // holds the current phase's targets (rewritten in place each week by the
+  // adaptive engine — see utils/adaptiveService's applyPhaseToPlan), so this
+  // reflects whatever week/phase is active right now.
+  useEffect(() => {
+    let cancelled = false;
+    if (!adaptiveStatus) { setAdaptivePreview([]); return; }
+    getPlanExercisesWithDetails(adaptiveStatus.planId).then(rows => {
+      if (cancelled) return;
+      const byDay = new Map<number, any[]>();
+      for (const r of rows) {
+        const idx = r.day_index ?? 0;
+        const list = byDay.get(idx) ?? [];
+        list.push(r);
+        byDay.set(idx, list);
+      }
+      const days: AdaptiveDayPreview[] = Array.from(byDay.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([dayIndex, exs]) => ({
+          dayIndex,
+          dayLabel: exs[0]?.day_label || 'Treino',
+          exercises: exs.map(e => ({ id: e.id, name: e.exercise_name, sets: e.sets, reps: e.reps_target })),
+          minutes: estimateDayMinutes(exs.map(e => ({ sets: e.sets, restSeconds: e.rest_seconds }))),
+        }));
+      setAdaptivePreview(days);
+    }).catch(() => setAdaptivePreview([]));
+    return () => { cancelled = true; };
+  }, [adaptiveStatus?.planId, adaptiveStatus?.phase, adaptiveStatus?.weekIndex]);
 
   const openDayPicker = (weekday: number) => {
     setEditingDay(weekday);
@@ -160,12 +206,13 @@ export default function StartScreen() {
         <Text style={[styles.title, { color: colors.text }]}>Treino</Text>
       </View>
 
-      {/* Top tabs — JeFit "Workout": Explorar · Plano · Instantâneo */}
+      {/* Top tabs: Explorar · Plano · Instantâneo · Meus Planos */}
       <View style={[styles.topTabs, { borderBottomColor: colors.border }]}>
         {([
           ['explorar', 'Explorar'],
           ['plano', 'Plano'],
           ['instantaneo', 'Instantâneo'],
+          ['planos', 'Meus Planos'],
         ] as const).map(([key, label]) => (
           <TouchableOpacity
             key={key}
@@ -247,6 +294,54 @@ export default function StartScreen() {
           </View>
         </View>
 
+        {/* Adaptive plan's day-by-day preview — what's planned for each
+            training day this week, plus a rough time estimate (sets, rest,
+            and time to switch exercise/weight). */}
+        {adaptiveStatus && adaptivePreview.length > 0 && (
+          <View style={[styles.plannerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.plannerHeader}>
+              <ListChecks size={16} color={colors.textSecondary} />
+              <Text style={[styles.plannerTitle, { color: colors.textSecondary }]}>O QUE ESTÁ PLANEADO</Text>
+            </View>
+            {adaptivePreview.map((day, i) => {
+              const expanded = expandedPreviewDay === day.dayIndex;
+              const totalSets = day.exercises.reduce((s, e) => s + e.sets, 0);
+              return (
+                <View key={day.dayIndex} style={i > 0 ? [styles.previewDayBlock, { borderTopColor: colors.border }] : undefined}>
+                  <TouchableOpacity
+                    style={styles.previewDayRow}
+                    onPress={() => setExpandedPreviewDay(expanded ? null : day.dayIndex)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${day.dayLabel}: ${day.exercises.length} exercícios, ${totalSets} séries, cerca de ${formatMinutes(day.minutes)}`}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.previewDayLabel, { color: colors.text }]}>{day.dayLabel}</Text>
+                      <Text style={[styles.previewDayMeta, { color: colors.textSecondary }]}>
+                        {day.exercises.length} exercícios · {totalSets} séries
+                      </Text>
+                    </View>
+                    <View style={styles.previewTimeChip}>
+                      <Clock size={13} color={colors.primary} />
+                      <Text style={[styles.previewTimeText, { color: colors.primary }]}>{formatMinutes(day.minutes)}</Text>
+                    </View>
+                    <ChevronDown size={16} color={colors.textTertiary} style={expanded ? styles.previewChevronOpen : undefined} />
+                  </TouchableOpacity>
+                  {expanded && (
+                    <View style={styles.previewExList}>
+                      {day.exercises.map(ex => (
+                        <View key={ex.id} style={styles.previewExRow}>
+                          <Text style={[styles.previewExName, { color: colors.text }]} numberOfLines={1}>{ex.name}</Text>
+                          <Text style={[styles.previewExMeta, { color: colors.textSecondary }]}>{ex.sets}×{ex.reps}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              );
+            })}
+          </View>
+        )}
+
         {/* Today's assigned workout gets a prominent CTA when set. */}
         {todayEntry && (
           <TouchableOpacity
@@ -302,34 +397,10 @@ export default function StartScreen() {
           </>
         )}
 
-        {/* TAB: INSTANTÂNEO (JeFit "Instant") — começar já, sem plano fixo */}
+        {/* TAB: INSTANTÂNEO — começar já, sem plano fixo */}
         {activeTab === 'instantaneo' && (
           <>
             <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>COMEÇAR AGORA</Text>
-
-            {/* Smart workout — decides what to train today from actual recent
-                history rather than a fixed weekly split. With a Plano
-                Adaptativo active the NSPI engine already owns weekly
-                progression, so this becomes a smaller secondary shortcut
-                instead of the lead card (NSPI_ENGINE.md §9 N6). */}
-            <TouchableOpacity
-              style={[
-                adaptiveStatus ? styles.smartCardCompact : styles.smartCard,
-                { backgroundColor: colors.surface, borderColor: adaptiveStatus ? colors.border : colors.primary },
-              ]}
-              onPress={() => router.push('/workout/smart-start')}
-              activeOpacity={0.85}
-            >
-              <View style={[styles.smartIcon, adaptiveStatus && styles.smartIconCompact, { backgroundColor: colors.primaryContainer }]}>
-                <Sparkles size={adaptiveStatus ? 18 : 26} color={colors.primary} />
-              </View>
-              <View style={styles.quickInfo}>
-                <Text style={[adaptiveStatus ? styles.smartTitleCompact : styles.smartTitle, { color: colors.text }]}>Treino Inteligente</Text>
-                <Text style={[styles.smartDesc, { color: colors.textSecondary }]} numberOfLines={adaptiveStatus ? 1 : undefined}>
-                  {adaptiveStatus ? 'Atalho — o Plano Adaptativo já decide a tua semana' : 'Gera o treino de hoje a partir do que já treinaste'}
-                </Text>
-              </View>
-            </TouchableOpacity>
 
             <TouchableOpacity
               style={[styles.quickCard, { backgroundColor: colors.primary }]}
@@ -370,13 +441,12 @@ export default function StartScreen() {
           </>
         )}
 
-        {/* TAB: EXPLORAR (JeFit "Find") — criar/gerar planos + a biblioteca.
-            Absorve o antigo separador "Planos"; a gestão (editar/duplicar/
-            apagar) fica no ecrã de detalhe e no link "Gerir". */}
+        {/* TAB: EXPLORAR — criar/gerar planos + a biblioteca. Absorve o
+            antigo separador "Planos"; a gestão (editar/duplicar/apagar)
+            fica no ecrã de detalhe e no link "Gerir". */}
         {activeTab === 'explorar' && (
           <>
-            {/* Plano Adaptativo — motor NSPI. Grátis e sempre acessível, sem
-                gate "Elite" (NSPI_ENGINE.md §10.4). */}
+            {/* Plano Adaptativo — motor NSPI, sempre acessível a todos. */}
             <TouchableOpacity
               style={[styles.adaptiveCard, { backgroundColor: colors.accent }]}
               onPress={() => router.push(adaptiveStatus || hasAdaptivePlanEver ? '/adaptive/recap' : '/adaptive/start')}
@@ -406,8 +476,12 @@ export default function StartScreen() {
                   <Plus size={20} color={colors.primary} />
                 </View>
                 <Text style={[styles.compactTitle, { color: colors.text }]}>Novo Plano</Text>
+                <Text style={[styles.compactDesc, { color: colors.textSecondary }]} numberOfLines={2}>Escolhes tu os exercícios</Text>
               </TouchableOpacity>
 
+              {/* "Discrição" (sic, pedido do dono): estes dois eram só ícone +
+                  nome — Gerar Divisão e 5/3/1 são jargão de treino que não
+                  se explica sozinho, por isso ganharam uma frase curta. */}
               <TouchableOpacity
                 style={[styles.compactCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
                 onPress={() => router.push('/plan/auto')}
@@ -417,6 +491,7 @@ export default function StartScreen() {
                   <Calendar size={20} color={colors.primary} />
                 </View>
                 <Text style={[styles.compactTitle, { color: colors.text }]}>Gerar Divisão</Text>
+                <Text style={[styles.compactDesc, { color: colors.textSecondary }]} numberOfLines={2}>Plano automático por dias (Push/Pull/Pernas...)</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -428,44 +503,82 @@ export default function StartScreen() {
                   <Zap size={20} color={colors.primary} />
                 </View>
                 <Text style={[styles.compactTitle, { color: colors.text }]}>5/3/1</Text>
+                <Text style={[styles.compactDesc, { color: colors.textSecondary }]} numberOfLines={2}>Programa de força clássico, 4 semanas</Text>
               </TouchableOpacity>
             </View>
 
-            <View style={styles.explorarHead}>
-              <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>OS MEUS PLANOS</Text>
-              {plans.length > 0 && (
-                <TouchableOpacity onPress={() => router.push('/(tabs)/plans')} hitSlop={8}>
-                  <Text style={[styles.headerActionText, { color: colors.primary }]}>Gerir</Text>
-                </TouchableOpacity>
-              )}
-            </View>
+            <TouchableOpacity
+              style={[styles.planRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              onPress={() => router.push('/plan/home')}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.compactIcon, { backgroundColor: colors.surfaceVariant }]}>
+                <HomeIcon size={18} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.repeatTitle, { color: colors.text }]}>Treino em Casa</Text>
+                <Text style={[styles.repeatSub, { color: colors.textSecondary }]}>Só halteres, banco e tapete</Text>
+              </View>
+              <ChevronRight size={20} color={colors.textTertiary} />
+            </TouchableOpacity>
 
-            {plans.length === 0 ? (
+            <TouchableOpacity
+              style={[styles.planRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              onPress={() => setActiveTab('planos')}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.compactIcon, { backgroundColor: colors.surfaceVariant }]}>
+                <ListChecks size={18} color={colors.primary} />
+              </View>
+              <Text style={[styles.repeatTitle, { color: colors.text, flex: 1 }]}>Os meus planos</Text>
+              <ChevronRight size={20} color={colors.textTertiary} />
+            </TouchableOpacity>
+          </>
+        )}
+
+        {/* TAB: MEUS PLANOS — planos que a pessoa construiu, para gerir:
+            abrir, duplicar, apagar. Partilha estado/ações com o ecrã Planos
+            standalone via usePlansManager, para não haver duas ideias
+            diferentes do que "apagar um plano" faz. */}
+        {activeTab === 'planos' && (
+          <>
+            <TouchableOpacity
+              style={[styles.newPlanLink, { borderColor: colors.primary }]}
+              onPress={() => router.push('/plan/create')}
+              activeOpacity={0.8}
+            >
+              <Plus size={18} color={colors.primary} />
+              <Text style={[styles.newPlanLinkText, { color: colors.primary }]}>Novo Plano</Text>
+            </TouchableOpacity>
+
+            {plansManager.groups.length === 0 ? (
               <Text style={{ fontFamily: 'Inter-Regular', fontSize: 14, color: colors.textSecondary, paddingVertical: 8 }}>
-                Ainda não tens planos. Cria um acima para o teres aqui.
+                Ainda não tens planos. Cria um em cima ou no separador Explorar.
               </Text>
             ) : (
-              plans.map(p => (
-                <TouchableOpacity
-                  key={p.id}
-                  style={[styles.planRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                  onPress={() => router.push(`/plan/${p.id}`)}
-                  activeOpacity={0.8}
-                >
-                  <View style={[styles.compactIcon, { backgroundColor: colors.surfaceVariant }]}>
-                    <ListChecks size={18} color={colors.primary} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.repeatTitle, { color: colors.text }]} numberOfLines={1}>{p.name}</Text>
-                    <Text style={[styles.repeatSub, { color: colors.textSecondary }]}>{PLAN_TYPE_PT[p.plan_type]}</Text>
-                  </View>
-                  <Play size={20} color={colors.primary} />
-                </TouchableOpacity>
+              plansManager.groups.map(g => (
+                <PlanGroupCard
+                  key={g.name}
+                  group={g}
+                  dayCounts={plansManager.dayCounts}
+                  onOpenGroup={plansManager.handleOpenGroup}
+                  onDuplicate={plansManager.handleDuplicate}
+                  onDelete={plansManager.handleDelete}
+                  onQuickStart={plansManager.handleQuickStart}
+                />
               ))
             )}
           </>
         )}
       </ScrollView>
+
+      <PlanVersionModal
+        group={plansManager.openGroup}
+        onClose={() => plansManager.setOpenGroup(null)}
+        onDuplicate={plansManager.handleDuplicate}
+        onDelete={plansManager.handleDelete}
+        onQuickStart={plansManager.handleQuickStart}
+      />
 
       {/* Weekly planner assignment: pick a plan, then (if it has more than
           one training day) which specific day. */}
@@ -578,19 +691,15 @@ const styles = StyleSheet.create({
   phaseBadgeText: { flex: 1, fontFamily: 'Inter-SemiBold', fontSize: 13 },
   quickIcon: { width: 52, height: 52, borderRadius: 26, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
   quickInfo: { flex: 1 },
-  smartCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, padding: 18, gap: 14, borderWidth: 2 },
-  smartCardCompact: { flexDirection: 'row', alignItems: 'center', borderRadius: 14, padding: 10, gap: 10, borderWidth: 1 },
-  smartIcon: { width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center' },
-  smartIconCompact: { width: 32, height: 32, borderRadius: 16 },
-  smartTitle: { fontFamily: 'Inter-Bold', fontSize: 17 },
-  smartTitleCompact: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
-  smartDesc: { fontFamily: 'Inter-Regular', fontSize: 13, marginTop: 2 },
   explorarHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   planRow: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, padding: 14 },
+  newPlanLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 12, borderWidth: 1.5, borderStyle: 'dashed', paddingVertical: 12 },
+  newPlanLinkText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   compactRow: { flexDirection: 'row', gap: 10 },
   compactCard: { flex: 1, alignItems: 'center', borderRadius: 14, paddingVertical: 14, paddingHorizontal: 8, gap: 8, borderWidth: 1 },
   compactIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   compactTitle: { fontFamily: 'Inter-SemiBold', fontSize: 13, textAlign: 'center' },
+  compactDesc: { fontFamily: 'Inter-Regular', fontSize: 10.5, lineHeight: 13, textAlign: 'center', marginTop: -2 },
   quickTitle: { fontFamily: 'Inter-Bold', fontSize: 20, color: '#fff' },
   quickDesc: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17, color: 'rgba(255,255,255,0.8)', marginTop: 3 },
   sectionTitle: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, letterSpacing: 1, marginTop: 8 },
@@ -602,6 +711,17 @@ const styles = StyleSheet.create({
   plannerDayLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14 },
   plannerDayPlan: { fontFamily: 'Inter-Bold', fontSize: 10, lineHeight: 13 },
   todayCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, padding: 18, gap: 14 },
+  previewDayBlock: { borderTopWidth: 1, marginTop: 4, paddingTop: 4 },
+  previewDayRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
+  previewDayLabel: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
+  previewDayMeta: { fontFamily: 'Inter-Regular', fontSize: 12, marginTop: 2 },
+  previewTimeChip: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  previewTimeText: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
+  previewChevronOpen: { transform: [{ rotate: '180deg' }] },
+  previewExList: { paddingLeft: 2, paddingBottom: 10, gap: 7 },
+  previewExRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  previewExName: { fontFamily: 'Inter-Regular', fontSize: 13, flex: 1, marginRight: 8 },
+  previewExMeta: { fontFamily: 'Inter-SemiBold', fontSize: 12 },
   picker: { flex: 1 },
   pickerHeader: { flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, gap: 12 },
   pickerTitle: { fontFamily: 'Inter-Bold', fontSize: 18 },

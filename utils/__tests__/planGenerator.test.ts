@@ -1,4 +1,4 @@
-import { movementFamily, pickExercisesForDay, orderByMuscleGroup, getSplitDays, AVAILABLE_DAYS, shouldAddConditioningFinisher } from '../planGenerator';
+import { movementFamily, pickExercisesForDay, orderByMuscleGroup, getSplitDays, AVAILABLE_DAYS, shouldAddConditioningFinisher, suggestedDaysPerWeek } from '../planGenerator';
 import type { Exercise, MuscleGroup } from '@/types';
 
 function ex(id: number, name: string, primary_muscle: MuscleGroup, equipment: Exercise['equipment']): Exercise {
@@ -169,6 +169,68 @@ describe('getSplitDays', () => {
         expect(day.focus.length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+describe('pickExercisesForDay with home_dumbbell equipment', () => {
+  it('never picks gym-only equipment (barbell, machine, cable) even when a muscle has fewer than 2 home options', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino com Barra', 'chest', 'barbell'),
+      ex(2, 'Supino Maquina', 'chest', 'machine'),
+      ex(3, 'Crossover no Cabo', 'chest', 'cable'),
+      ex(4, 'Flexoes', 'chest', 'bodyweight'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 30, 'home_dumbbell', []);
+    // Only one true home option (bodyweight push-ups) exists for chest here
+    // — home_dumbbell must still never leak the barbell/machine/cable ones in.
+    expect(picked.every(p => p.equipment === 'dumbbell' || p.equipment === 'bodyweight')).toBe(true);
+  });
+
+  it('picks dumbbell and bodyweight exercises when both are available', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino com Halteres', 'chest', 'dumbbell'),
+      ex(2, 'Crucifixo com Halteres', 'chest', 'dumbbell'),
+      ex(3, 'Flexoes', 'chest', 'bodyweight'),
+      ex(4, 'Supino com Barra', 'chest', 'barbell'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 45, 'home_dumbbell', []);
+    expect(picked.length).toBeGreaterThan(0);
+    expect(picked.some(p => p.equipment === 'barbell')).toBe(false);
+  });
+
+  it('behaves the same as free_weights minus the gym-only fallback — an empty home pool returns nothing for that muscle rather than substituting gym equipment', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino com Barra', 'chest', 'barbell'),
+      ex(2, 'Supino Maquina', 'chest', 'machine'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 30, 'home_dumbbell', []);
+    expect(picked.filter(p => p.primary_muscle === 'chest')).toHaveLength(0);
+  });
+});
+
+describe('suggestedDaysPerWeek', () => {
+  it('suggests more days when a broad full-body split is too short to cover every muscle group', () => {
+    // 2 days/week -> Full Body split, busiest day needs 5 muscle groups;
+    // 30min/session only affords 4 exercises (the generator's own floor).
+    expect(suggestedDaysPerWeek(2, 30)).toBe(3); // 3 days -> Push/Pull/Legs, busiest day needs only 4
+  });
+
+  it('suggests more days for a single full-body day too short for its own focus', () => {
+    expect(suggestedDaysPerWeek(1, 30)).toBe(3);
+  });
+
+  it('returns null when the chosen days/week already covers every muscle group', () => {
+    expect(suggestedDaysPerWeek(3, 30)).toBeNull(); // Push/Pull/Legs already fits a 30min session
+    expect(suggestedDaysPerWeek(5, 30)).toBeNull(); // Bro split's busiest day (Pernas) already fits
+  });
+
+  it('returns null once minutes/session is long enough regardless of split breadth', () => {
+    expect(suggestedDaysPerWeek(2, 75)).toBeNull(); // 75min affords 6 exercises, covers Full Body's 5
+  });
+
+  it('never suggests fewer days than what was chosen', () => {
+    const result = suggestedDaysPerWeek(4, 30);
+    if (result !== null) expect(result).toBeGreaterThan(4);
   });
 });
 

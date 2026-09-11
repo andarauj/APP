@@ -56,7 +56,6 @@ export function MuscleBalanceRadar({ data, size = 250, strokeWidth = 2 }: RadarC
   const numMuscles = data.length;
   const angleSlice = (Math.PI * 2) / numMuscles;
   const maxRadius = size / 2 - 40;
-  const levelRadius = maxRadius / numLevels;
 
   // Calculate SVG paths
   const getPoint = (angleIndex: number, radiusPercent: number) => {

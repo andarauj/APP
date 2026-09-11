@@ -47,7 +47,7 @@ const MUSCLE_LABELS_PT: Record<string, string> = {
   quads: 'Quadriceps',
   hamstrings: 'Isquiotibiais',
   glutes: 'Gluteos',
-  calves: 'Panturrilhas',
+  calves: 'Gémeos',
   abs: 'Abdominais',
   forearms: 'Antebraços',
   traps: 'Trapezio',

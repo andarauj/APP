@@ -6,8 +6,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { Card } from '@/components/ui/Card';
 import { getTrainingTips, type TrainingTip } from '@/db/workoutDao';
-import { getQuoteForDate } from '@/utils/motivationalQuotes';
-import { Sparkles, AlertTriangle, Info, CheckCircle2, BookOpen } from 'lucide-react-native';
+import { AlertTriangle, Info, CheckCircle2, BookOpen } from 'lucide-react-native';
 
 const TIP_ICON = { warning: AlertTriangle, info: Info, positive: CheckCircle2 } as const;
 
@@ -58,8 +57,6 @@ export default function DiscoverScreen() {
     setRefreshing(false);
   };
 
-  const quote = getQuoteForDate();
-
   return (
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
@@ -71,11 +68,6 @@ export default function DiscoverScreen() {
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} colors={[colors.primary]} />}
       >
-        <View style={[styles.quoteCard, { backgroundColor: colors.primaryContainer }]}>
-          <Sparkles size={18} color={colors.primary} />
-          <Text style={[styles.quoteText, { color: colors.text }]}>{quote}</Text>
-        </View>
-
         {tips.length > 0 && (
           <>
             <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>DICAS PARA TI</Text>
@@ -119,8 +111,6 @@ const styles = StyleSheet.create({
   header: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
   headerTitle: { fontFamily: 'Inter-ExtraBold', fontSize: 28 },
   content: { padding: 16, gap: 12, paddingBottom: 32 },
-  quoteCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderRadius: 14, padding: 16 },
-  quoteText: { flex: 1, fontFamily: 'Inter-SemiBold', fontSize: 15, lineHeight: 21 },
   sectionTitle: { fontFamily: 'Inter-SemiBold', fontSize: 12, letterSpacing: 1, marginTop: 8 },
   tipCard: { gap: 8 },
   tipHead: { flexDirection: 'row', alignItems: 'center', gap: 10 },

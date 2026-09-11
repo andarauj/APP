@@ -15,7 +15,7 @@ export function Chip({ label, selected, onPress }: ChipProps) {
         styles.chip,
         {
           backgroundColor: selected ? colors.primaryContainer : colors.chip,
-          // JeFit-parity: pill chips, no ring on the unselected state.
+          // Pill chips, no ring on the unselected state.
           borderColor: selected ? colors.primary : 'transparent',
         },
       ]}

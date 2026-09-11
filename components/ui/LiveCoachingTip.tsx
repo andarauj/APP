@@ -5,7 +5,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Animated, { FadeOut, SlideInDown } from 'react-native-reanimated';
-import { useTheme } from '@/hooks/useTheme';
 import type { CoachingTip } from '@/utils/livCoachingTips';
 import { Flame, AlertCircle, Target, Lightbulb, TrendingUp, Activity, X } from 'lucide-react-native';
 

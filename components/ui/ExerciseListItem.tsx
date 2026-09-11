@@ -15,8 +15,8 @@ interface ExerciseListItemProps {
 }
 
 /**
- * JeFit-parity exercise row: a circular thumbnail, a bold name, and the
- * muscles worked underneath. No chevron — the whole row is the target.
+ * Exercise row: a circular thumbnail, a bold name, and the muscles worked
+ * underneath. No chevron — the whole row is the target.
  */
 export const ExerciseListItem = memo(function ExerciseListItem({
   exercise,

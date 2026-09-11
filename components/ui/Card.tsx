@@ -16,8 +16,8 @@ export function Card({ children, style, variant = 'default' }: CardProps) {
         styles.card,
         {
           backgroundColor: highlight ? colors.surfaceVariant : colors.surface,
-          // JeFit-parity: near-borderless cards — a hairline only on the
-          // plain white card, none on the grey "highlight" fill.
+          // Near-borderless cards — a hairline only on the plain white card,
+          // none on the grey "highlight" fill.
           borderColor: colors.borderLight,
           borderWidth: highlight ? 0 : StyleSheet.hairlineWidth,
         },

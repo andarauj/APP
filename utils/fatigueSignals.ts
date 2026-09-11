@@ -132,3 +132,21 @@ export function detectRpeCreep(
   }
   return null;
 }
+
+export type FatigueLevel = 'none' | 'watch' | 'stacking' | 'high';
+
+/**
+ * Any single signal above can be noise on its own — a hard session, an off
+ * week. What sports science treats as the real warning is signals
+ * STACKING: independent patterns (volume, strength trend, perceived
+ * effort) all pointing the same way at once is a stronger indicator than
+ * any one of them alone. This turns "how many distinct signal TYPES fired"
+ * into one overall level, so the screen can lead with how seriously to
+ * take it instead of showing every card with the same visual weight.
+ */
+export function overallFatigueLevel(activeSignalTypeCount: number): FatigueLevel {
+  if (activeSignalTypeCount <= 0) return 'none';
+  if (activeSignalTypeCount === 1) return 'watch';
+  if (activeSignalTypeCount === 2) return 'stacking';
+  return 'high';
+}

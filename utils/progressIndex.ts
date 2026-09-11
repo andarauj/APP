@@ -42,11 +42,9 @@ const BALANCE_MUSCLES = [
 const MIN_SETS_TO_COUNT_AS_TRAINED = 4;
 
 /**
- * A single weekly "how's my training going" number (0-100), inspired by the
- * unified progress scores several 2026 workout apps (e.g. Jefit's NSPI) now
- * offer — but computed transparently from data already tracked in this app,
- * entirely offline, with every point explained rather than a black-box AI
- * score behind a subscription.
+ * A single weekly "how's my training going" number (0-100), computed
+ * transparently from data already tracked in this app, with every point
+ * explained rather than an opaque black-box score.
  *
  * Deliberately simple and honest about its limits: it reflects training
  * *pattern* (showed up, kept up volume, trained broadly, kept progressing),

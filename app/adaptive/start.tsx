@@ -5,7 +5,7 @@
  * ends in startAdaptivePlan() instead of just generating a plan.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -14,7 +14,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { hapticSelect, hapticSuccess } from '@/utils/haptics';
 import { getAllPlans, getPlanDays } from '@/db/planDao';
-import { generatePlan, type EquipmentPreference } from '@/utils/planGenerator';
+import { generatePlan, suggestedDaysPerWeek, type EquipmentPreference } from '@/utils/planGenerator';
 import { startAdaptivePlan } from '@/utils/adaptiveService';
 import type { AdaptiveGoal } from '@/utils/nspi';
 import type { PlanType, WorkoutPlan } from '@/types';
@@ -41,7 +41,7 @@ const LOCATIONS: (Opt & { equip: EquipmentPreference })[] = [
 ];
 const MINUTES: Opt[] = [30, 45, 60, 75].map(m => ({ key: String(m), label: `${m} min` }));
 
-type Step = 'goal' | 'level' | 'plan' | 'newplan_days' | 'newplan_where' | 'newplan_minutes' | 'weekday' | 'confirm';
+type Step = 'goal' | 'level' | 'plan' | 'newplan_days' | 'newplan_where' | 'newplan_minutes' | 'suggest_days' | 'weekday' | 'confirm';
 
 export default function AdaptiveStartScreen() {
   const { colors } = useTheme();
@@ -86,6 +86,19 @@ export default function AdaptiveStartScreen() {
   const afterPlanChoice = () => {
     if (planId !== null) { goTo('weekday'); return; }
     goTo('newplan_days');
+  };
+
+  /**
+   * Once both days/week and minutes/session are known for a NEW plan,
+   * checks whether that combination leaves any of the split's days too
+   * short to cover their own muscle groups (see planGenerator's
+   * suggestedDaysPerWeek) — if so, offers to bump days/week up before
+   * moving on, instead of silently generating a thin session.
+   */
+  const afterMinutesChoice = () => {
+    const suggestion = suggestedDaysPerWeek(Number(days), Number(minutes));
+    if (suggestion !== null) { goTo('suggest_days'); return; }
+    goTo('weekday');
   };
 
   const finish = async () => {
@@ -204,7 +217,49 @@ export default function AdaptiveStartScreen() {
   } else if (step === 'newplan_where') {
     body = <Question title="Onde treinas?" options={LOCATIONS} value={location} onSelect={setLocation} onContinue={() => goTo('newplan_minutes')} />;
   } else if (step === 'newplan_minutes') {
-    body = <Question title="Quanto tempo por sessão?" options={MINUTES} value={minutes} onSelect={setMinutes} onContinue={() => goTo('weekday')} />;
+    body = <Question title="Quanto tempo por sessão?" options={MINUTES} value={minutes} onSelect={setMinutes} onContinue={afterMinutesChoice} />;
+  } else if (step === 'suggest_days') {
+    const suggestion = suggestedDaysPerWeek(Number(days), Number(minutes));
+    if (suggestion === null) {
+      // Shouldn't happen (this step is only reached right after
+      // afterMinutesChoice confirmed a suggestion exists), but fail safe
+      // with a plain continue rather than calling goTo() mid-render.
+      body = (
+        <View style={styles.footer}>
+          <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: colors.primary }]} onPress={() => goTo('weekday')}>
+            <Text style={styles.primaryBtnText}>Continuar</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    } else {
+      body = (
+        <>
+          <ScrollView contentContainerStyle={styles.qContent} showsVerticalScrollIndicator={false}>
+            <Text style={[styles.title, { color: colors.text }]}>Talvez precises de mais dias</Text>
+            <Text style={[styles.body, { color: colors.textSecondary, marginTop: 12 }]}>
+              Com {days} dia{days === '1' ? '' : 's'}/semana e {minutes} min por sessão, alguns
+              grupos musculares desse treino podem ficar sem exercício suficiente — não há tempo
+              para cobrir tudo o que esse dia precisa.{'\n\n'}
+              Com {suggestion} dias/semana, cada sessão cobre menos grupos musculares e {minutes} min chegam bem.
+            </Text>
+          </ScrollView>
+          <View style={styles.footer}>
+            <TouchableOpacity
+              style={[styles.primaryBtn, { backgroundColor: colors.primary }]}
+              onPress={() => { hapticSelect(); setDays(String(suggestion)); goTo('weekday'); }}
+            >
+              <Text style={styles.primaryBtnText}>Aumentar para {suggestion} dias</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.secondaryBtn, { borderColor: colors.border }]}
+              onPress={() => goTo('weekday')}
+            >
+              <Text style={[styles.secondaryBtnText, { color: colors.textSecondary }]}>Manter {days} dias</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      );
+    }
   } else if (step === 'weekday') {
     body = (
       <>
@@ -248,7 +303,7 @@ export default function AdaptiveStartScreen() {
             Objetivo: {goalDef?.label}{'\n'}
             Plano: {planLabel}{'\n'}
             Começamos numa semana de Adaptação (reps altas, cargas leves) e ajustamos a fase
-            todas as semanas consoante o que registares. Grátis, sem conta, tudo no telemóvel.
+            todas as semanas consoante o que registares.
           </Text>
         </ScrollView>
         <View style={styles.footer}>
@@ -291,6 +346,8 @@ const styles = StyleSheet.create({
   footer: { paddingHorizontal: 20, paddingBottom: 20, paddingTop: 8 },
   primaryBtn: { height: 56, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   primaryBtnText: { color: '#fff', fontFamily: 'Inter-Bold', fontSize: 17 },
+  secondaryBtn: { height: 56, borderRadius: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, marginTop: 10 },
+  secondaryBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   weekdayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 24 },
   weekdayPill: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12 },
   weekdayPillText: { fontFamily: 'Inter-Bold', fontSize: 14 },

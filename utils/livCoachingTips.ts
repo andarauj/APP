@@ -4,7 +4,6 @@
  */
 
 import { getDatabase } from '@/db/database';
-import type { Exercise } from '@/types';
 
 export interface CoachingTip {
   type: 'positive' | 'warning' | 'info' | 'tip';
@@ -31,7 +30,6 @@ interface SetContext {
 export async function generateLiveCoachingTips(context: SetContext): Promise<CoachingTip[]> {
   const tips: CoachingTip[] = [];
   const db = await getDatabase();
-  const now = Math.floor(Date.now() / 1000);
 
   try {
     // 1) RPE analysis — is the user pushing hard enough?

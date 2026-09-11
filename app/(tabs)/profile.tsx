@@ -9,15 +9,15 @@ import { detectMeasurementTrend } from '@/utils/bodyAnalysis';
 import { Button } from '@/components/ui/Button';
 import { Chip } from '@/components/ui/Chip';
 import { Badge } from '@/components/ui/Badge';
-import { getPersonalRecords, getWeeklyVolumeByMuscle } from '@/db/workoutDao';
+import { getPersonalRecords, getWeeklyVolumeByMuscle, getAchievementStats } from '@/db/workoutDao';
 import { getAllBodyMetrics, addBodyMetric, deleteBodyMetric, getLatestBodyMetric } from '@/db/bodyMetricsDao';
 import { getAllSettings, setSetting } from '@/db/settingsDao';
-import { getLatestAdaptivePlanAny, setAdaptivePlanActive, updateAdaptivePlanWeekStart, type AdaptivePlanRow } from '@/db/adaptiveDao';
+import { getLatestAdaptivePlanAny, setAdaptivePlanActive, updateAdaptivePlanWeekStart, updateAdaptivePlanExperience, type AdaptivePlanRow } from '@/db/adaptiveDao';
 import { exportFullBackupZip, restoreFullBackup, restoreFullBackupZip, exportHistoryAsCsv, exportTrainingReport, shareTextFile  } from '@/utils/xmlExport';
 import { pickBackupFile } from '@/utils/filePicker';
 import { calculate1RM, calculate1RMPercentages, calculatePlates, calculateWarmupSets } from '@/utils/calculators';
-import { scheduleWorkoutReminders, cancelAllWorkoutReminders, scheduleMotivationalNotification, cancelMotivationalNotification, WEEKDAY_LABELS } from '@/utils/reminders';
-import { formatDate } from '@/utils/format';
+import { scheduleWorkoutReminders, cancelAllWorkoutReminders, WEEKDAY_LABELS } from '@/utils/reminders';
+import { formatDate, formatVolume } from '@/utils/format';
 import { pickBodyPhoto, captureBodyPhoto, removeBodyPhoto } from '@/utils/bodyPhoto';
 import { exportTrainingReportWithPhotos, shareZipFile } from '@/utils/exportWithPhotos';
 import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
@@ -27,12 +27,17 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import {
   Trophy, Calculator, Scale, Settings as SettingsIcon, Download, Upload,
   Plus, Trash2, ChevronDown, ChevronUp, Dumbbell, Award, Zap, ScanLine, Sparkles,
-  Camera, ImagePlus, Ruler,
+  Camera, ImagePlus, Ruler, Flame,
 } from 'lucide-react-native';
-import * as FileSystem from 'expo-file-system';
 
 type Tab = 'records' | 'calc' | 'body' | 'settings';
 type BodyChartMetric = 'weight' | 'body_fat' | 'chest' | 'waist' | 'hips' | 'arm' | 'thigh' | 'back';
+
+const EXPERIENCE_LEVELS = [
+  { key: 'beginner', label: 'Iniciante' },
+  { key: 'intermediate', label: 'Intermédio' },
+  { key: 'advanced', label: 'Avançado' },
+] as const;
 
 export default function ProfileScreen() {
   const { colors } = useTheme();
@@ -47,6 +52,9 @@ export default function ProfileScreen() {
   const [showBackupMenu, setShowBackupMenu] = useState(false);
   const [weeklyVolume, setWeeklyVolume] = useState<{ muscle: string; sets: number; volume: number }[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [lifetimeStats, setLifetimeStats] = useState<{
+    totalWorkouts: number; currentStreak: number; prCount: number; totalVolume: number; firstWorkoutAt: number | null;
+  } | null>(null);
 
   useFocusEffect(useCallback(() => {
     if (!isReady) return;
@@ -61,18 +69,20 @@ export default function ProfileScreen() {
 
   const loadAll = async () => {
     try {
-      const [p, bm, lb, st, wv] = await Promise.all([
+      const [p, bm, lb, st, wv, ls] = await Promise.all([
         getPersonalRecords(),
         getAllBodyMetrics(),
         getLatestBodyMetric(),
         getAllSettings(),
         getWeeklyVolumeByMuscle(7),
+        getAchievementStats(),
       ]);
       setPrs(p);
       setBodyMetrics(bm);
       setLatestBody(lb);
       setSettings(st);
       setWeeklyVolume(wv);
+      setLifetimeStats(ls);
     } catch (err) {
       console.error('Failed to load profile:', err);
     }
@@ -202,6 +212,42 @@ export default function ProfileScreen() {
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>Perfil</Text>
       </View>
+
+      {/* Lifetime summary — a quick "how far have I come" snapshot, visible
+          regardless of which sub-tab is open below. There's no account/login
+          in this app, so this (not a name or avatar) is what "profile"
+          means here: the training itself. */}
+      {lifetimeStats && lifetimeStats.totalWorkouts > 0 && (
+        <View style={[styles.summaryBlock, { borderBottomColor: colors.border }]}>
+          <View style={styles.summaryRow}>
+            <View style={styles.summaryStat}>
+              <Dumbbell size={18} color={colors.primary} />
+              <Text style={[styles.summaryValue, { color: colors.text }]}>{lifetimeStats.totalWorkouts}</Text>
+              <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Treinos</Text>
+            </View>
+            <View style={styles.summaryStat}>
+              <Flame size={18} color={colors.accent} />
+              <Text style={[styles.summaryValue, { color: colors.text }]}>{lifetimeStats.currentStreak}</Text>
+              <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Dias seguidos</Text>
+            </View>
+            <View style={styles.summaryStat}>
+              <Award size={18} color={colors.warning} />
+              <Text style={[styles.summaryValue, { color: colors.text }]}>{lifetimeStats.prCount}</Text>
+              <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Recordes</Text>
+            </View>
+            <View style={styles.summaryStat}>
+              <Zap size={18} color={colors.success} />
+              <Text style={[styles.summaryValue, { color: colors.text }]}>{formatVolume(lifetimeStats.totalVolume)}</Text>
+              <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Levantados</Text>
+            </View>
+          </View>
+          {lifetimeStats.firstWorkoutAt && (
+            <Text style={[styles.summarySince, { color: colors.textTertiary }]}>
+              A treinar com a Changes desde {formatDate(lifetimeStats.firstWorkoutAt)}
+            </Text>
+          )}
+        </View>
+      )}
 
       {/* Tabs */}
       <View style={[styles.tabs, { borderBottomColor: colors.border }]}>
@@ -997,9 +1043,6 @@ function SettingsTab({ settings, colors, onChange, onBackup, onRestore, onExport
       {/* Workout reminders */}
       <ReminderSettings settings={settings} colors={colors} onChange={onChange} />
 
-      {/* Motivational quote notification */}
-      <MotivationalNotificationSettings settings={settings} colors={colors} onChange={onChange} />
-
       {/* Backup */}
       <Card>
         <Text style={[styles.sectionTitle, { color: colors.text }]}>Backup e Restauro</Text>
@@ -1012,15 +1055,21 @@ function SettingsTab({ settings, colors, onChange, onBackup, onRestore, onExport
         <Button title="Relatório para Partilhar" variant="outline" onPress={onExportReport} icon={<Sparkles size={18} color={colors.accent} />} style={{ marginBottom: 8 }} />
         <Button title="Relatório + Fotos (ZIP)" variant="outline" onPress={onExportReportWithPhotos} icon={<Camera size={18} color={colors.accent} />} loading={exportingPhotos} />
         <Text style={[styles.calcDesc, { color: colors.textTertiary, marginTop: 8, fontSize: 12 }]}>
-          O relatório é um resumo legível (recordes, volume, treinos recentes) que podes enviar por qualquer app de mensagens ou anexar numa conversa com um assistente. A versão em ZIP inclui também as tuas fotos de progresso. Tudo fica no ficheiro — a app em si não envia nada pela internet.
+          O relatório é um resumo legível (recordes, volume, treinos recentes) que podes enviar por qualquer app de mensagens ou anexar numa conversa com um assistente. A versão em ZIP inclui também as tuas fotos de progresso.
         </Text>
       </Card>
 
       {/* About */}
       <Card>
         <Text style={[styles.sectionTitle, { color: colors.text }]}>Sobre</Text>
-        <Text style={[styles.calcDesc, { color: colors.textSecondary }]}>Changes v1.0.0</Text>
-        <Text style={[styles.calcDesc, { color: colors.textSecondary }]}>App de treino 100% offline. Sem conta, sem anúncios.</Text>
+        <Text style={[styles.calcDesc, { color: colors.textSecondary, marginTop: 4 }]}>Changes v1.0.0</Text>
+        <Text style={[styles.calcDesc, { color: colors.textSecondary, marginTop: 8, lineHeight: 19 }]}>
+          Um treinador de treino de força no teu bolso: planos que se adaptam
+          semana a semana ao que realmente treinas, progressão de carga
+          orientada por dados, e cada série, recorde e medida registados com
+          precisão — para decidires o próximo passo com factos, não com
+          palpites.
+        </Text>
       </Card>
     </>
   );
@@ -1080,6 +1129,12 @@ function AdaptiveEngineSettings({ colors }: { colors: any }) {
     try { await updateAdaptivePlanWeekStart(plan.id, dow); } catch { /* best effort */ }
   };
 
+  const changeExperience = async (level: string) => {
+    if (!plan) return;
+    setPlan({ ...plan, experience: level });
+    try { await updateAdaptivePlanExperience(plan.id, level); } catch { /* best effort */ }
+  };
+
   if (loading) return null;
 
   if (!plan) {
@@ -1087,7 +1142,7 @@ function AdaptiveEngineSettings({ colors }: { colors: any }) {
       <Card>
         <Text style={[styles.sectionTitle, { color: colors.text }]}>Plano Adaptativo (NSPI)</Text>
         <Text style={[styles.calcDesc, { color: colors.textSecondary, marginBottom: 12 }]}>
-          Motor de periodização automática: ajusta séries, reps e peso a cada semana consoante o que registas. Grátis, sem conta.
+          Motor de periodização automática: ajusta séries, reps e peso a cada semana consoante o que registas.
         </Text>
         <Button title="Configurar" variant="outline" onPress={() => router.push('/adaptive/start')} icon={<Sparkles size={18} color={colors.accent} />} />
       </Card>
@@ -1105,7 +1160,16 @@ function AdaptiveEngineSettings({ colors }: { colors: any }) {
       />
       {plan.active === 1 && (
         <>
-          <Text style={[styles.calcLabel, { color: colors.textSecondary, marginTop: 10, marginBottom: 8 }]}>DIA DE INÍCIO DA SEMANA</Text>
+          <Text style={[styles.calcLabel, { color: colors.textSecondary, marginTop: 10, marginBottom: 8 }]}>NÍVEL</Text>
+          <View style={styles.settingChips}>
+            {EXPERIENCE_LEVELS.map(({ key, label }) => (
+              <Chip key={key} label={label} selected={plan.experience === key} onPress={() => changeExperience(key)} />
+            ))}
+          </View>
+          <Text style={[styles.calcDesc, { color: colors.textTertiary, marginTop: 6, fontSize: 11 }]}>
+            Iniciante avança mais depressa e mais leve na intensificação; avançado exige mais para avançar e descarrega mais fundo. Aplica-se a partir da próxima mudança de fase.
+          </Text>
+          <Text style={[styles.calcLabel, { color: colors.textSecondary, marginTop: 14, marginBottom: 8 }]}>DIA DE INÍCIO DA SEMANA</Text>
           <View style={styles.settingChips}>
             {WEEKDAY_LABELS.map((label, day) => (
               <Chip key={day} label={label} selected={plan.week_start_dow === day} onPress={() => changeWeekStart(day)} />
@@ -1217,96 +1281,6 @@ function ReminderSettings({ settings, colors, onChange }: {
               accessibilityLabel="Minuto do lembrete"
             />
           </View>
-          <Text style={[styles.calcDesc, { color: colors.textSecondary, marginTop: 8 }]}>
-            Notificação local no telemóvel, sem internet necessária.
-          </Text>
-        </>
-      )}
-    </Card>
-  );
-}
-
-function MotivationalNotificationSettings({ settings, colors, onChange }: {
-  settings: Record<string, string>; colors: any;
-  onChange: (key: string, value: string) => void;
-}) {
-  const enabled = settings.motivationalNotifyEnabled === '1';
-  const [hour, minute] = (settings.motivationalNotifyTime || '07:00').split(':');
-  const [saving, setSaving] = useState(false);
-  // Same fix as ReminderSettings' time fields — see its BUGFIX comment.
-  const [hourDraft, setHourDraft] = useState(hour);
-  const [minuteDraft, setMinuteDraft] = useState(minute);
-  useEffect(() => { setHourDraft(hour); setMinuteDraft(minute); }, [hour, minute]);
-
-  const apply = async (nextEnabled: boolean, nextTime: string) => {
-    setSaving(true);
-    try {
-      if (nextEnabled) {
-        const ok = await scheduleMotivationalNotification(nextTime);
-        if (!ok) {
-          Alert.alert(
-            'Permissão necessária',
-            'Ativa as notificações para a Changes nas definições do telemóvel para receberes a frase do dia.'
-          );
-          await onChange('motivationalNotifyEnabled', '0');
-          setSaving(false);
-          return;
-        }
-      } else {
-        await cancelMotivationalNotification();
-      }
-    } catch (e) {
-      console.error('Failed to schedule motivational notification:', e);
-    }
-    setSaving(false);
-  };
-
-  const commitTime = async (h: string, m: string) => {
-    const time = `${(h || '0').padStart(2, '0')}:${(m || '0').padStart(2, '0')}`;
-    await onChange('motivationalNotifyTime', time);
-    if (enabled) await apply(true, time);
-  };
-
-  const toggleEnabled = async () => {
-    const next = !enabled;
-    await onChange('motivationalNotifyEnabled', next ? '1' : '0');
-    await apply(next, `${hour}:${minute}`);
-  };
-
-  return (
-    <Card>
-      <Text style={[styles.sectionTitle, { color: colors.text }]}>Frase do Dia</Text>
-      <Text style={[styles.calcDesc, { color: colors.textSecondary, marginBottom: 10 }]}>
-        Uma notificação de manhã com uma frase para te dar vontade de ir treinar.
-      </Text>
-      <SettingToggle label={saving ? 'A atualizar…' : 'Ativar'} value={enabled} colors={colors} onToggle={toggleEnabled} />
-      {enabled && (
-        <>
-          <Text style={[styles.calcLabel, { color: colors.textSecondary, marginTop: 10, marginBottom: 8 }]}>HORA</Text>
-          <View style={styles.reminderTimeRow}>
-            <TextInput
-              style={[styles.reminderTimeInput, { color: colors.text, backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}
-              value={hourDraft}
-              onChangeText={v => setHourDraft(v.replace(/\D/g, '').slice(0, 2))}
-              onBlur={() => commitTime(hourDraft, minuteDraft)}
-              keyboardType="numeric"
-              maxLength={2}
-              accessibilityLabel="Hora da frase do dia"
-            />
-            <Text style={[styles.reminderTimeColon, { color: colors.text }]}>:</Text>
-            <TextInput
-              style={[styles.reminderTimeInput, { color: colors.text, backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}
-              value={minuteDraft}
-              onChangeText={v => setMinuteDraft(v.replace(/\D/g, '').slice(0, 2))}
-              onBlur={() => commitTime(hourDraft, minuteDraft)}
-              keyboardType="numeric"
-              maxLength={2}
-              accessibilityLabel="Minuto da frase do dia"
-            />
-          </View>
-          <Text style={[styles.calcDesc, { color: colors.textSecondary, marginTop: 8 }]}>
-            Notificação local no telemóvel, sem internet necessária.
-          </Text>
         </>
       )}
     </Card>
@@ -1317,6 +1291,12 @@ const styles = StyleSheet.create({
   screen: { flex: 1 },
   header: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
   headerTitle: { fontFamily: 'Inter-Bold', fontSize: 28 },
+  summaryBlock: { paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, gap: 8 },
+  summaryRow: { flexDirection: 'row', justifyContent: 'space-between' },
+  summaryStat: { alignItems: 'center', gap: 3 },
+  summaryValue: { fontFamily: 'Inter-Bold', fontSize: 17 },
+  summaryLabel: { fontFamily: 'Inter-Regular', fontSize: 11 },
+  summarySince: { fontFamily: 'Inter-Regular', fontSize: 11, textAlign: 'center' },
   tabs: { flexDirection: 'row', borderBottomWidth: 1 },
   tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12 },
   tabText: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16 },

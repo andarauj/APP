@@ -14,6 +14,7 @@
 
 export type AdaptiveGoal = 'bulking' | 'strength' | 'cutting' | 'general';
 export type AdaptivePhase = 'on_ramp' | 'accumulation' | 'intensification' | 'deload';
+export type AdaptiveExperience = 'beginner' | 'intermediate' | 'advanced';
 
 /** One main movement pattern's estimated-1RM this week vs the cycle baseline. */
 export interface LoadPoint {

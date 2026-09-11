@@ -28,6 +28,7 @@ import {
   computeNspi,
   type AdaptiveGoal,
   type AdaptivePhase,
+  type AdaptiveExperience,
   type NspiResult,
 } from './nspi';
 import {
@@ -51,6 +52,13 @@ import { mainPattern, movementBucket, type MovementBucketKey } from './movementC
 
 const DAY = 86400;
 const nowS = () => Math.floor(Date.now() / 1000);
+
+/** adaptive_plan.experience is stored as a plain TEXT column — normalize
+ *  whatever's in there to one of the three known tiers, defensively
+ *  falling back to the untouched baseline for anything unexpected. */
+function normalizeExperience(raw: string | null | undefined): AdaptiveExperience {
+  return raw === 'beginner' || raw === 'advanced' ? raw : 'intermediate';
+}
 
 // ---------------------------------------------------------------------------
 // history helpers (read-only)
@@ -147,13 +155,14 @@ interface ApplyResult {
 /**
  * Rewrite every plan_exercises row (sets / reps / weight) to the targets for
  * `phase`, and roll adaptive_exercise_state forward. Exercises and day order
- * are never touched (JeFit "periodization on your own plan").
+ * are never touched — periodization adjusts the numbers, not the plan itself.
  */
 async function applyPhaseToPlan(
   adaptivePlanId: number,
   planId: number,
   phase: AdaptivePhase,
   goal: AdaptiveGoal,
+  experience: AdaptiveExperience,
   opts: { seedBaseSets?: boolean } = {},
 ): Promise<ApplyResult> {
   const exs = await getPlanExercisesWithDetails(planId);
@@ -179,7 +188,7 @@ async function applyPhaseToPlan(
     let e1rm = await bestE1rmForExercise(pe.exercise_id);
     if (e1rm <= 0 && prevWeight > 0) e1rm = epley1RM(prevWeight, 8); // rough fallback
 
-    const t = phaseTargets(phase, goal, baseSets, e1rm, stall, increment);
+    const t = phaseTargets(phase, goal, baseSets, e1rm, stall, increment, experience);
     const newWeight = t.targetWeight > 0 ? t.targetWeight : (pe.weight_target || prevWeight || 0);
     const newReps = `${t.repLow}-${t.repHigh}`;
     const newSets = t.targetSets;
@@ -302,7 +311,7 @@ export async function startAdaptivePlan(opts: StartAdaptiveOptions): Promise<Sta
   let weekId!: number;
   let recap!: WeeklyRecap;
   await db.withTransactionAsync(async () => {
-    applied = await applyPhaseToPlan(adaptivePlanId, opts.planId, 'on_ramp', opts.goal, { seedBaseSets: true });
+    applied = await applyPhaseToPlan(adaptivePlanId, opts.planId, 'on_ramp', opts.goal, normalizeExperience(opts.experience), { seedBaseSets: true });
     recap = {
       phaseFrom: 'on_ramp',
       phaseTo: 'on_ramp',
@@ -385,6 +394,7 @@ export async function closeWeekIfDue(now: Date = new Date()): Promise<CloseWeekR
     if (await dao.planWeekExistsForStart(plan.id, nextStart)) return null; // already transitioned
 
     const goal = plan.goal;
+    const experience = normalizeExperience(plan.experience);
     const planned = parsePlanned(activeWeek.planned_json);
     const baseline = dao.parseBaseline(cycle);
 
@@ -424,6 +434,7 @@ export async function closeWeekIfDue(now: Date = new Date()): Promise<CloseWeekR
       goal,
       stallCount,
       fatigueFlag: false,
+      experience,
     });
 
     const db = await getDatabase();
@@ -433,7 +444,7 @@ export async function closeWeekIfDue(now: Date = new Date()): Promise<CloseWeekR
 
     await db.withTransactionAsync(async () => {
       // 1. rewrite the plan for the next phase
-      applied = await applyPhaseToPlan(plan.id, plan.plan_id, decision.nextPhase, goal);
+      applied = await applyPhaseToPlan(plan.id, plan.plan_id, decision.nextPhase, goal, experience);
 
       // 2. cycle bookkeeping
       let targetCycleId = cycle.id;
@@ -529,6 +540,7 @@ export interface AdaptiveStatus {
   planId: number;
   active: boolean;
   goal: AdaptiveGoal;
+  experience: AdaptiveExperience;
   cycleIndex: number;
   weekIndex: number;
   phase: AdaptivePhase;
@@ -581,6 +593,7 @@ export async function getAdaptiveStatus(): Promise<AdaptiveStatus | null> {
       planId: plan.plan_id,
       active: plan.active === 1,
       goal: plan.goal,
+      experience: normalizeExperience(plan.experience),
       cycleIndex: cycle.cycle_index,
       weekIndex: week.week_index,
       phase: week.phase,

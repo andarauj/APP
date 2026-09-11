@@ -90,6 +90,13 @@ export async function updateAdaptivePlanWeekStart(id: number, weekStartDow: numb
   await db.runAsync('UPDATE adaptive_plan SET week_start_dow = ? WHERE id = ?', [weekStartDow, id]);
 }
 
+/** Changes the experience tier (see EXPERIENCE_ADJUST in utils/adaptivePlan.ts)
+ *  — takes effect from the next phase change onward, not retroactively. */
+export async function updateAdaptivePlanExperience(id: number, experience: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync('UPDATE adaptive_plan SET experience = ? WHERE id = ?', [experience, id]);
+}
+
 // ---------------------------------------------------------------------------
 // adaptive_cycle
 // ---------------------------------------------------------------------------
