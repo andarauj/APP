@@ -128,7 +128,7 @@ export default function AdaptiveStartScreen() {
         weekStartDow,
       });
 
-      router.replace('/adaptive/recap');
+      router.replace('/adaptive/plan');
     } catch (err) {
       console.error('[adaptive] startAdaptivePlan failed:', err);
       setError('Não foi possível ligar o plano adaptativo. Tenta novamente.');

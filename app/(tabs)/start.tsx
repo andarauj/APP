@@ -449,7 +449,7 @@ export default function StartScreen() {
             {/* Plano Adaptativo — motor NSPI, sempre acessível a todos. */}
             <TouchableOpacity
               style={[styles.adaptiveCard, { backgroundColor: colors.accent }]}
-              onPress={() => router.push(adaptiveStatus || hasAdaptivePlanEver ? '/adaptive/recap' : '/adaptive/start')}
+              onPress={() => router.push(adaptiveStatus || hasAdaptivePlanEver ? '/adaptive/plan' : '/adaptive/start')}
               activeOpacity={0.88}
             >
               <View style={styles.quickIcon}><Sparkles size={28} color="#fff" /></View>

@@ -285,6 +285,25 @@ export async function planWeekExistsForStart(adaptivePlanId: number, weekStart: 
   return (row?.c ?? 0) > 0;
 }
 
+export interface AdaptiveWeekWithCycle extends AdaptiveWeekRow {
+  cycle_index: number;
+}
+
+/** Every week for a plan, oldest first, with its cycle_index attached —
+ *  feeds the "Progressão do treino" chart and per-week cards on the plan
+ *  overview screen (app/adaptive/plan.tsx). Realistically small (a handful
+ *  of rows per month) so no pagination. */
+export async function getAllWeeksForPlan(adaptivePlanId: number): Promise<AdaptiveWeekWithCycle[]> {
+  const db = await getDatabase();
+  return db.getAllAsync<AdaptiveWeekWithCycle>(
+    `SELECT w.*, c.cycle_index as cycle_index FROM adaptive_week w
+     JOIN adaptive_cycle c ON w.cycle_id = c.id
+     WHERE c.adaptive_plan_id = ?
+     ORDER BY w.week_start ASC, w.id ASC`,
+    [adaptivePlanId],
+  );
+}
+
 export async function getLatestRecapWeek(adaptivePlanId: number): Promise<AdaptiveWeekRow | null> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<AdaptiveWeekRow>(
