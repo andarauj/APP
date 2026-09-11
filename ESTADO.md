@@ -416,7 +416,8 @@ removidas do onboarding, do ecrã de confirmação do plano adaptativo e de
 `Treino › Explorar` — o dono já sabe, não precisa que a app repita. Frases
 motivacionais (`utils/motivationalQuotes.ts` e a notificação associada)
 foram apagadas por completo. Todas as referências de código ao JeFit foram
-removidas (`grep -ri jefit` limpo em todo o repositório).
+removidas (`grep -ri jefit` limpo em todo o repositório, incluindo um
+comentário residual em `app/workout/active.tsx` encontrado a 2026-09-11).
 
 ---
 
@@ -456,6 +457,58 @@ Todos **feitos** e verificados em emulador via `eas update`:
   ao contrário de `free_weights`). Acessível em `Treino › Explorar`.
 
 **Testes: 32 suites / 371.** `tsc` limpo, lint sem novos avisos.
+
+---
+
+## Terceiro lote — redesenho do plano adaptativo e onboarding (11 de setembro de 2026)
+
+Pedido: replicar os *padrões* (não o texto/cores/layout) de uma app de
+referência descrita pelo dono para o onboarding e o ecrã do plano
+adaptativo, mais validar os números do motor contra a literatura de
+periodização. Cinco peças, cada uma commitada e verificada em emulador via
+`eas update`:
+
+- **Fases nomeadas e explicadas.** Já existiam (`PHASE_LABEL_PT` em 5
+  sítios da UI) — o que faltava era o "porquê" do ciclo como narrativa, não
+  só por fase isolada. Card novo "Quatro fases, um objetivo cada" no Weekly
+  Recap (`CYCLE_RATIONALE_PT`); a semana de Adaptação a seguir a uma
+  Descarga deixa de reutilizar o texto da primeiríssima semana ("reencontrar
+  as cargas") e passa a falar de consolidar num patamar mais alto.
+- **Multiplicadores da fase fundamentados.** `PERIODIZATION_RESEARCH.md`
+  (29 fontes primárias, cada afirmação com nível de confiança). A
+  intensificação cortava só 10% do volume para 4-6 reps a ~85% e1RM —
+  fraco face à literatura (Baz-Valle et al. só valida "séries" como unidade
+  de volume até aos 6 reps) — revisto para 20%. A descarga (50%) já estava
+  bem fundamentada (Bell et al. 2025) e ficou como estava, agora com a
+  fonte em comentário.
+- **Ecrã do plano** (`app/adaptive/plan.tsx`, novo) — "aqui está o teu
+  programa", não uma lista de exercícios: resumo objetivo/experiência/
+  ciclo, gráfico de progressão (real a cheio, projeção tracejada e sem
+  números inventados), bloco das quatro fases, um cartão por semana do
+  ciclo atual, ciclo seguinte bloqueado, três cartões de benefício.
+  Diferença deliberada da referência: o motor daqui é reativo (decide a
+  semana seguinte só quando a atual fecha), não pré-calculado — por isso as
+  semanas futuras aparecem esbatidas como pré-visualização, e não há um
+  número fixo de "N ciclos totais".
+- **Onboarding redesenhado** (`app/onboarding.tsx`) — nível com frase
+  completa por opção, dias numa grelha 2/linha (1-6 + "Todos os dias"),
+  duração com selo IDEAL calculado a partir de `suggestedDaysPerWeek` (não
+  adivinhado), zonas-alvo (grelha 3/linha, sem arte anatómica — círculos de
+  cor, reutilizando a paleta do `MuscleBalanceRadar`), lesões
+  (Músculos/Articulações, "Não tenho lesões" desativa o resto), equipamento
+  (localização editável a pré-selecionar, checklist por categoria real da
+  app — 5 categorias, adaptadas ao vocabulário de 12 tags do dataset, não
+  copiadas da referência). `utils/planGenerator.ts` ganhou
+  `allowedEquipment` e `excludedMuscles` (aditivos, sem mudar chamadores
+  existentes) para que cada pergunta influencie mesmo o plano gerado — regra
+  explícita do pedido.
+- **Cartão de entrada** (`Treino › Explorar`) — variante rica quando há
+  plano ativo: etiqueta de fase, subtítulo, linha objetivo/duração/
+  equipamento (valores reais, não inventados), botão "Ver o meu plano".
+
+**Testes: 32 suites / 377** (6 novos: checklist de equipamento fino,
+exclusão de lesões, fallback do Gymleco, valor fundamentado da
+intensificação). `tsc` limpo, lint sem erros novos.
 
 ---
 
