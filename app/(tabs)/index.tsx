@@ -6,6 +6,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { useAppMode } from '@/hooks/useAppMode';
 import { useDatabase } from '@/hooks/useDatabase';
+import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { ExerciseTile , muscleColor } from '@/components/ui/ExerciseTile';
@@ -22,6 +23,7 @@ import { getWeeklyPlanner } from '@/db/plannerDao';
 import { getAllPlans } from '@/db/planDao';
 import { getSetting, setSetting } from '@/db/settingsDao';
 import { computeProgressIndex, type ProgressIndexResult } from '@/utils/progressIndex';
+import { PHASE_LABEL_PT, PHASE_COLOR } from '@/utils/adaptivePlan';
 import { getNewlyUnlocked, getUnlockedAchievementIds, type Achievement } from '@/utils/achievements';
 import { getQuoteForDate } from '@/utils/motivationalQuotes';
 import { scheduleMotivationalNotification } from '@/utils/reminders';
@@ -35,7 +37,8 @@ import { MUSCLE_GROUPS_PT } from '@/types';
 import { formatDateTime, formatTime, formatVolume } from '@/utils/format';
 import {
   Flame, TrendingUp, TrendingDown, Minus, Play, ChevronRight, AlertTriangle, Info, CheckCircle2,
-  Dumbbell, Repeat, ListChecks, Gauge, Sparkles, Calendar, Trophy, Activity,
+  Dumbbell, Repeat, ListChecks, Gauge, Sparkles, Calendar, Trophy, Activity, Settings as SettingsIcon,
+  Ruler, Camera, Radar, Star, Zap, History as HistoryIcon,
 } from 'lucide-react-native';
 
 const TIP_ICON = { warning: AlertTriangle, info: Info, positive: CheckCircle2 };
@@ -67,6 +70,7 @@ export default function HomeScreen() {
   const { colors } = useTheme();
   const { isSimple } = useAppMode();
   const { isReady } = useDatabase();
+  const { status: adaptiveStatus } = useAdaptiveStatus();
   const router = useRouter();
 
   const [streak, setStreak] = useState({ currentStreak: 0, longestStreak: 0, totalWorkouts: 0 });
@@ -87,6 +91,10 @@ export default function HomeScreen() {
   const chevronAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${chevronRotation.value}deg` }] }));
   const [loaded, setLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // JeFit "Progress" sub-tabs (see JEFIT_PARIDADE.md Fase 1c). Resumo is the
+  // old dashboard; Corpo and Atividade gather what used to live in the
+  // Perfil › Corpo tab and the /progress hub.
+  const [progTab, setProgTab] = useState<'resumo' | 'corpo' | 'atividade'>('resumo');
   const [bodyMetricsModalVisible, setBodyMetricsModalVisible] = useState(false);
   const [latestBodyMetric, setLatestBodyMetric] = useState<any>(null);
   const [weightChange, setWeightChange] = useState<any>(null);
@@ -204,7 +212,35 @@ export default function HomeScreen() {
   return (
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Início</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>Progresso</Text>
+        {/* JeFit-parity: settings live behind a gear in the Progress header
+            (see JEFIT_PARIDADE.md Fase 1c). Points at the Perfil tab, whose
+            "Definições" sub-tab holds them until Perfil is dissolved. */}
+        <TouchableOpacity
+          onPress={() => router.push('/(tabs)/profile')}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Definições e perfil"
+        >
+          <SettingsIcon size={22} color={colors.textSecondary} />
+        </TouchableOpacity>
+      </View>
+
+      {/* Sub-tabs — JeFit "Progress": Resumo · Corpo · Atividade */}
+      <View style={[styles.progTabs, { borderBottomColor: colors.border }]}>
+        {([
+          ['resumo', 'Resumo'],
+          ['corpo', 'Corpo'],
+          ['atividade', 'Atividade'],
+        ] as const).map(([key, label]) => (
+          <TouchableOpacity
+            key={key}
+            onPress={() => setProgTab(key)}
+            style={[styles.progTab, progTab === key && { borderBottomColor: colors.primary, borderBottomWidth: 2 }]}
+          >
+            <Text style={[styles.progTabLabel, { color: progTab === key ? colors.primary : colors.textSecondary }]}>{label}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
       <ScrollView
@@ -212,6 +248,108 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} colors={[colors.primary]} />}
       >
+        {progTab === 'corpo' && (
+          <>
+            <TouchableOpacity
+              style={[styles.smartCard, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+              onPress={() => setBodyMetricsModalVisible(true)}
+              activeOpacity={0.85}
+            >
+              <View style={[styles.statIcon, { backgroundColor: 'rgba(255,255,255,0.2)' }]}>
+                <Ruler size={22} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.smartTitle, { color: '#fff' }]}>Registar medidas</Text>
+                <Text style={[styles.smartDesc, { color: 'rgba(255,255,255,0.85)' }]}>
+                  {latestBodyMetric?.date ? `Último: ${formatDateTime(latestBodyMetric.date)}` : 'Peso, gordura, perímetros'}
+                </Text>
+              </View>
+            </TouchableOpacity>
+            {([
+              ['Medidas e fotos', 'Histórico completo do corpo', '/(tabs)/profile', Ruler],
+              ['Comparar fotos', 'Antes e depois lado a lado', '/photo-compare', Camera],
+              ['Equilíbrio muscular', 'Distribuição do volume por grupo', '/progress/balance', Radar],
+            ] as const).map(([label, sub, route, Icon]) => (
+              <TouchableOpacity
+                key={route}
+                style={[styles.linkRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                onPress={() => router.push(route as never)}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.linkIcon, { backgroundColor: colors.primaryContainer }]}><Icon size={18} color={colors.primary} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.linkTitle, { color: colors.text }]}>{label}</Text>
+                  <Text style={[styles.linkDesc, { color: colors.textSecondary }]} numberOfLines={1}>{sub}</Text>
+                </View>
+                <ChevronRight size={18} color={colors.textTertiary} />
+              </TouchableOpacity>
+            ))}
+          </>
+        )}
+
+        {progTab === 'atividade' && (
+          <>
+            <TouchableOpacity
+              style={[styles.smartCard, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+              onPress={() => router.push('/(tabs)/history')}
+              activeOpacity={0.85}
+            >
+              <View style={[styles.statIcon, { backgroundColor: 'rgba(255,255,255,0.2)' }]}>
+                <HistoryIcon size={22} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.smartTitle, { color: '#fff' }]}>Histórico completo</Text>
+                <Text style={[styles.smartDesc, { color: 'rgba(255,255,255,0.85)' }]}>Calendário, estatísticas e sessões</Text>
+              </View>
+            </TouchableOpacity>
+            {recentSessions.length > 0 && (
+              <View style={{ gap: 8 }}>
+                <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>ÚLTIMOS TREINOS</Text>
+                {recentSessions.map(session => (
+                  <TouchableOpacity
+                    key={session.id}
+                    style={[styles.sessionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                    onPress={() => router.push({ pathname: '/workout/summary', params: { sessionId: session.id } })}
+                    activeOpacity={0.7}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.sessionName, { color: colors.text }]} numberOfLines={1}>{session.name}</Text>
+                      <Text style={[styles.sessionDate, { color: colors.textTertiary }]}>{formatDateTime(session.started_at)}</Text>
+                    </View>
+                    <View style={styles.sessionStats}>
+                      <Text style={[styles.sessionStat, { color: colors.textSecondary }]}>⏱ {formatTime(session.total_duration)}</Text>
+                      <Text style={[styles.sessionStat, { color: colors.textSecondary }]}>{formatVolume(session.total_volume)}</Text>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+            <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>ANÁLISE</Text>
+            {([
+              ['Máximo estimado (1RM)', 'Progressão de força por exercício', '/progress/onerm', Zap],
+              ['Sinais de fadiga', 'Indicadores de acumulação de fadiga', '/fatigue-radar', Activity],
+              ['O teu mês', 'Resumo mensal com comparação', '/monthly-recap', Calendar],
+              ['Conquistas', 'Marcos atingidos', '/achievements', Trophy],
+              ['Exercícios favoritos', 'Os que marcaste com estrela', '/progress/favorites', Star],
+            ] as const).map(([label, sub, route, Icon]) => (
+              <TouchableOpacity
+                key={route}
+                style={[styles.linkRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
+                onPress={() => router.push(route as never)}
+                activeOpacity={0.7}
+              >
+                <View style={[styles.linkIcon, { backgroundColor: colors.primaryContainer }]}><Icon size={18} color={colors.primary} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.linkTitle, { color: colors.text }]}>{label}</Text>
+                  <Text style={[styles.linkDesc, { color: colors.textSecondary }]} numberOfLines={1}>{sub}</Text>
+                </View>
+                <ChevronRight size={18} color={colors.textTertiary} />
+              </TouchableOpacity>
+            ))}
+          </>
+        )}
+
+        {progTab === 'resumo' && (<>
         {/* Motivational quote — the first thing on the screen, deliberately:
             this is meant to spark "let's go", not be buried under stats. */}
         <View style={[styles.quoteCard, { backgroundColor: colors.primaryContainer }]}>
@@ -384,7 +522,39 @@ export default function HomeScreen() {
             computed transparently from data already tracked here, fully
             offline, with every point explained below instead of a
             subscription-gated black-box AI score. */}
-        {!isNewUser && progressIndex && (
+        {/* NSPI — the adaptive engine's own score, shown instead of the
+            generic Índice de Progresso once a plano adaptativo is active
+            (NSPI_ENGINE.md §7). Same visual language (ring + trend arrow)
+            so switching between the two doesn't feel like a different app. */}
+        {adaptiveStatus?.latestNspi && (
+          <Card>
+            <TouchableOpacity
+              style={styles.progressHeader}
+              onPress={() => { hapticSelect(); router.push('/adaptive/recap'); }}
+              accessibilityRole="button"
+              accessibilityLabel={`NSPI: ${Math.round(adaptiveStatus.latestNspi.score)} de 100. Toca para ver o Weekly Recap`}
+            >
+              <View style={[styles.progressRing, { borderColor: progressColor(adaptiveStatus.latestNspi.score, colors) }]}>
+                <AnimatedNumber value={adaptiveStatus.latestNspi.score} style={[styles.progressRingText, { color: progressColor(adaptiveStatus.latestNspi.score, colors) }]} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Sparkles size={16} color={colors.accent} />
+                  <Text style={[styles.sectionTitle, { color: colors.text }]}>NSPI</Text>
+                  {adaptiveStatus.latestNspi.trend === 'up' && <TrendingUp size={16} color={colors.success} />}
+                  {adaptiveStatus.latestNspi.trend === 'down' && <TrendingDown size={16} color={colors.warning} />}
+                  {adaptiveStatus.latestNspi.trend === 'stable' && <Minus size={16} color={colors.textTertiary} />}
+                </View>
+                <Text style={[styles.progressSub, { color: colors.textSecondary }]} numberOfLines={1}>
+                  Ciclo {adaptiveStatus.cycleIndex} · {PHASE_LABEL_PT[adaptiveStatus.phase]} · ver Weekly Recap
+                </Text>
+              </View>
+              <ChevronRight size={18} color={colors.textTertiary} />
+            </TouchableOpacity>
+          </Card>
+        )}
+
+        {!adaptiveStatus?.latestNspi && !isNewUser && progressIndex && (
           <Card>
             <TouchableOpacity
               style={styles.progressHeader}
@@ -397,7 +567,7 @@ export default function HomeScreen() {
               </View>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Gauge size={16} color={colors.textSecondary} />
+                  <Sparkles size={16} color={colors.accent} />
                   <Text style={[styles.sectionTitle, { color: colors.text }]}>Índice de Progresso</Text>
                   {progressIndex.trend === 'up' && <TrendingUp size={16} color={colors.success} />}
                   {progressIndex.trend === 'down' && <TrendingDown size={16} color={colors.warning} />}
@@ -612,6 +782,7 @@ export default function HomeScreen() {
             <Play size={20} color={colors.secondary} />
           </TouchableOpacity>
         )}
+        </>)}
       </ScrollView>
 
       {/* Achievement celebration — only for genuinely NEW unlocks since last
@@ -643,9 +814,19 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  header: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
-  headerTitle: { fontFamily: 'Inter-Bold', fontSize: 28 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
+  headerTitle: { fontFamily: 'Inter-ExtraBold', fontSize: 28 },
   content: { padding: 16, gap: 16, paddingBottom: 32 },
+  progTabs: { flexDirection: 'row', paddingHorizontal: 16, borderBottomWidth: 1 },
+  progTab: { flex: 1, paddingVertical: 12, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  progTabLabel: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
+  smartCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 18, padding: 16, gap: 14, borderWidth: 1 },
+  smartTitle: { fontFamily: 'Inter-Bold', fontSize: 17 },
+  smartDesc: { fontFamily: 'Inter-Regular', fontSize: 13, marginTop: 2 },
+  linkRow: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, padding: 14 },
+  linkIcon: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  linkTitle: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
+  linkDesc: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
   quoteCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, borderRadius: 14, padding: 14 },
   recapBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, padding: 14 },
   recapBannerIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },

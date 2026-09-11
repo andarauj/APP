@@ -78,16 +78,23 @@ export async function importExerciseDb(
 
   let inserted = 0;
   await conn.withTransactionAsync(async () => {
+    // OR IGNORE: the curated Portuguese seed already owns some of these names,
+    // and the dataset repeats a few of its own. exercises.name has a partial
+    // UNIQUE index (is_custom = 0), so a plain INSERT throws on the first
+    // collision, rolls the whole transaction back, and the rejection escapes
+    // far enough to crash startup. Skipping the colliding rows keeps the
+    // curated entry as the quality layer, which is the intended precedence.
     const stmt = await conn.prepareAsync(
-      `INSERT INTO exercises
+      `INSERT OR IGNORE INTO exercises
          (name, primary_muscle, secondary_muscles, equipment, type,
           instructions, image_url, api_id, api_source, is_custom)
        VALUES ($name, $primary, $secondary, $equipment, $type,
                $instructions, $image, $apiId, $source, 0)`
     );
     try {
+      let processed = 0;
       for (const ex of pending) {
-        await stmt.executeAsync({
+        const res = await stmt.executeAsync({
           $name: ex.name,
           $primary: ex.primary_muscle,
           $secondary: ex.secondary_muscles,
@@ -98,8 +105,10 @@ export async function importExerciseDb(
           $apiId: ex.api_id,
           $source: EXERCISE_DB_SOURCE,
         });
-        inserted++;
-        if (inserted % 100 === 0) onProgress?.(inserted, pending.length);
+        // OR IGNORE makes a skipped collision report 0 changes.
+        if (res.changes > 0) inserted++;
+        processed++;
+        if (processed % 100 === 0) onProgress?.(processed, pending.length);
       }
     } finally {
       await stmt.finalizeAsync();

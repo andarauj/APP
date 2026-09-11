@@ -75,7 +75,14 @@ export default function OneRepMaxScreen() {
   }, [exerciseId]);
 
   useEffect(() => {
-    if (!isReady || !exerciseId) return;
+    if (!isReady) return;
+    // Opened from the progress hub there is no exerciseId: there is nothing to
+    // load, so drop out of the loading state and let the empty view render
+    // instead of spinning forever.
+    if (!exerciseId) {
+      setLoading(false);
+      return;
+    }
     loadData();
   }, [isReady, exerciseId, loadData]);
 

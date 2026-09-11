@@ -168,7 +168,7 @@ export default function MuscleBalanceScreen() {
               <Text style={[styles.tipsTitle, { color: colors.text }]}>Dicas</Text>
               <Text style={[styles.tipsText, { color: colors.textSecondary }]}>
                 • Ideal: cada grupo muscular 15-20% do volume total{'\n'}
-                • Evita desequilíbrios que podem levar a injury{'\n'}
+                • Evita desequilíbrios que podem levar a lesão{'\n'}
                 • Usa este gráfico para ajustar o plano de treino
               </Text>
             </Card>

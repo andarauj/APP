@@ -174,7 +174,7 @@ export const EQUIPMENT_PT: Record<Equipment, string> = {
   dumbbell: 'Halteres',
   machine: 'Máquina',
   cable: 'Cabo',
-  bodyweight: 'Peso Corporpo',
+  bodyweight: 'Peso Corporal',
   kettlebell: 'Kettlebell',
   band: 'Elastico',
   plate: 'Disco',

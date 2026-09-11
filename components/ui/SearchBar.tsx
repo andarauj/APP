@@ -11,7 +11,7 @@ interface SearchBarProps {
 export function SearchBar({ value, onChangeText, placeholder = 'Pesquisar...' }: SearchBarProps) {
   const { colors } = useTheme();
   return (
-    <View style={[styles.container, { backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}>
+    <View style={[styles.container, { backgroundColor: colors.surfaceVariant }]}>
       <Search size={18} color={colors.textTertiary} />
       <TextInput
         style={[styles.input, { color: colors.text }]}
@@ -34,10 +34,9 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 12,
-    paddingHorizontal: 12,
+    borderRadius: 14,
+    paddingHorizontal: 14,
     height: 48,
-    borderWidth: 1,
     gap: 8,
   },
   input: {

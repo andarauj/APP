@@ -304,6 +304,113 @@ export async function initDatabase(): Promise<void> {
   // populates don't exist yet until the step above creates them, so this
   // has to come after, not before.
   await runStep('migrateExerciseAltNames', () => migrateExerciseAltNames(db), db, applied);
+  await runStep('migrateSecondaryMuscleTokens', () => migrateSecondaryMuscleTokens(db), db, applied);
+  await runStep('migrateAdaptiveEngine', () => migrateAdaptiveEngine(db), db, applied);
+  await runStep('migrateExerciseDbInstructionsPt', () => migrateExerciseDbInstructionsPt(db), db, applied);
+}
+
+/**
+ * Back-fills the Portuguese instruction text onto free-exercise-db rows that
+ * were imported before the vendored dataset was translated (PT-PT). A plain
+ * data UPDATE keyed on api_id — no ALTER — and a no-op on a fresh install
+ * where the seed already carried the translated text.
+ */
+async function migrateExerciseDbInstructionsPt(db: SQLite.SQLiteDatabase): Promise<void> {
+  const dataset = require('../assets/data/exercise-db.json') as {
+    api_id?: string;
+    instructions?: string;
+  }[];
+  for (const ex of dataset) {
+    const id = ex.api_id?.trim();
+    const text = ex.instructions?.trim();
+    if (!id || !text) continue;
+    await db.runAsync(
+      `UPDATE exercises SET instructions = ?
+       WHERE api_id = ? AND api_source = 'free-exercise-db' AND instructions != ?`,
+      [text, id, text],
+    );
+  }
+}
+
+/**
+ * Tables for the adaptive periodization engine (see NSPI_ENGINE.md §1).
+ * All CREATE ... IF NOT EXISTS, no ALTER on existing tables — safe on a real
+ * upgrade and re-runnable.
+ */
+async function migrateAdaptiveEngine(db: SQLite.SQLiteDatabase): Promise<void> {
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS adaptive_plan (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plan_id INTEGER NOT NULL,
+      goal TEXT NOT NULL,
+      experience TEXT NOT NULL,
+      days_per_week INTEGER NOT NULL,
+      session_minutes INTEGER NOT NULL,
+      equipment_pref TEXT NOT NULL DEFAULT 'any',
+      week_start_dow INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS adaptive_cycle (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      adaptive_plan_id INTEGER NOT NULL,
+      cycle_index INTEGER NOT NULL,
+      baseline_json TEXT NOT NULL DEFAULT '{}',
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS adaptive_week (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cycle_id INTEGER NOT NULL,
+      week_index INTEGER NOT NULL,
+      phase TEXT NOT NULL,
+      is_bridge INTEGER NOT NULL DEFAULT 0,
+      planned_json TEXT NOT NULL DEFAULT '{}',
+      nspi_load REAL, nspi_volume REAL, nspi_balance REAL, nspi_score REAL,
+      decision TEXT,
+      recap_json TEXT,
+      week_start INTEGER NOT NULL,
+      week_end INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active'
+    );
+    CREATE INDEX IF NOT EXISTS idx_adaptive_week_cycle ON adaptive_week(cycle_id, week_index);
+
+    CREATE TABLE IF NOT EXISTS adaptive_exercise_state (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      adaptive_plan_id INTEGER NOT NULL,
+      exercise_id INTEGER NOT NULL,
+      base_sets INTEGER NOT NULL DEFAULT 3,
+      current_weight REAL NOT NULL DEFAULT 0,
+      current_reps_low INTEGER NOT NULL DEFAULT 8,
+      current_reps_high INTEGER NOT NULL DEFAULT 12,
+      step_stall_count INTEGER NOT NULL DEFAULT 0,
+      last_progressed_at INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_adaptive_exstate
+      ON adaptive_exercise_state(adaptive_plan_id, exercise_id);
+  `);
+}
+
+/**
+ * The curated seed used a few non-standard tokens in secondary_muscles
+ * ("hip", "hips", "legs") that don't map to a Portuguese label, so they
+ * rendered raw. Normalise them to the canonical groups. Idempotent.
+ */
+async function migrateSecondaryMuscleTokens(db: SQLite.SQLiteDatabase): Promise<void> {
+  // NOTE: SQLite's TRIM does NOT support the `TRIM(BOTH x FROM y)` standard-SQL
+  // form (that was the original bug here — "near ',': syntax error"). SQLite
+  // uses TRIM(str, chars), which strips any leading/trailing chars in `chars`.
+  await db.execAsync(`
+    UPDATE exercises SET secondary_muscles =
+      TRIM(
+        REPLACE(REPLACE(REPLACE(',' || secondary_muscles || ',',
+          ',hips,', ',glutes,'), ',hip,', ',glutes,'), ',legs,', ',quads,'),
+        ','
+      )
+    WHERE secondary_muscles LIKE '%hip%' OR secondary_muscles LIKE '%legs%';
+  `);
 }
 
 /**

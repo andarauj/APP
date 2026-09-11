@@ -8,12 +8,20 @@ interface CardProps {
 }
 
 export function Card({ children, style, variant = 'default' }: CardProps) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
+  const highlight = variant === 'highlight';
   return (
     <View
       style={[
         styles.card,
-        { backgroundColor: variant === 'highlight' ? colors.surfaceVariant : colors.surface, borderColor: colors.border },
+        {
+          backgroundColor: highlight ? colors.surfaceVariant : colors.surface,
+          // JeFit-parity: near-borderless cards — a hairline only on the
+          // plain white card, none on the grey "highlight" fill.
+          borderColor: colors.borderLight,
+          borderWidth: highlight ? 0 : StyleSheet.hairlineWidth,
+        },
+        !highlight && !isDark && styles.shadow,
         style,
       ]}
     >
@@ -25,7 +33,13 @@ export function Card({ children, style, variant = 'default' }: CardProps) {
 const styles = StyleSheet.create({
   card: {
     borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
+    padding: 18,
+  },
+  shadow: {
+    shadowColor: 'rgba(16,24,40,0.10)',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 1,
+    shadowRadius: 8,
+    elevation: 1,
   },
 });

@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/Badge';
 import { getPersonalRecords, getWeeklyVolumeByMuscle } from '@/db/workoutDao';
 import { getAllBodyMetrics, addBodyMetric, deleteBodyMetric, getLatestBodyMetric } from '@/db/bodyMetricsDao';
 import { getAllSettings, setSetting } from '@/db/settingsDao';
+import { getLatestAdaptivePlanAny, setAdaptivePlanActive, updateAdaptivePlanWeekStart, type AdaptivePlanRow } from '@/db/adaptiveDao';
 import { exportFullBackupZip, restoreFullBackup, restoreFullBackupZip, exportHistoryAsCsv, exportTrainingReport, shareTextFile  } from '@/utils/xmlExport';
 import { pickBackupFile } from '@/utils/filePicker';
 import { calculate1RM, calculate1RMPercentages, calculatePlates, calculateWarmupSets } from '@/utils/calculators';
@@ -990,6 +991,9 @@ function SettingsTab({ settings, colors, onChange, onBackup, onRestore, onExport
         <SettingToggle label="Manter ecrã ligado" value={settings.keepScreenAwake === '1'} colors={colors} onToggle={() => onChange('keepScreenAwake', settings.keepScreenAwake === '1' ? '0' : '1')} />
       </Card>
 
+      {/* Adaptive engine (NSPI) */}
+      <AdaptiveEngineSettings colors={colors} />
+
       {/* Workout reminders */}
       <ReminderSettings settings={settings} colors={colors} onChange={onChange} />
 
@@ -1030,6 +1034,89 @@ function SettingToggle({ label, value, colors, onToggle }: { label: string; valu
         <View style={[styles.toggleKnob, { backgroundColor: '#fff', transform: [{ translateX: value ? 20 : 0 }] }]} />
       </View>
     </TouchableOpacity>
+  );
+}
+
+/**
+ * "Periodização automática" toggle + dia de início de semana (NSPI_ENGINE.md
+ * §7). Self-contained (not part of the k/v `settings` object): the flag it
+ * flips lives on adaptive_plan.active, not in the settings table. Turning it
+ * on/off never deletes the cycle — just whether closeWeekIfDue looks at it.
+ */
+function AdaptiveEngineSettings({ colors }: { colors: any }) {
+  const router = useRouter();
+  const [plan, setPlan] = useState<AdaptivePlanRow | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const p = await getLatestAdaptivePlanAny();
+      setPlan(p);
+    } catch {
+      setPlan(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const toggleActive = async () => {
+    if (!plan) return;
+    setSaving(true);
+    try {
+      const next = plan.active !== 1;
+      await setAdaptivePlanActive(plan.id, next);
+      setPlan({ ...plan, active: next ? 1 : 0 });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const changeWeekStart = async (dow: number) => {
+    if (!plan) return;
+    setPlan({ ...plan, week_start_dow: dow });
+    try { await updateAdaptivePlanWeekStart(plan.id, dow); } catch { /* best effort */ }
+  };
+
+  if (loading) return null;
+
+  if (!plan) {
+    return (
+      <Card>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Plano Adaptativo (NSPI)</Text>
+        <Text style={[styles.calcDesc, { color: colors.textSecondary, marginBottom: 12 }]}>
+          Motor de periodização automática: ajusta séries, reps e peso a cada semana consoante o que registas. Grátis, sem conta.
+        </Text>
+        <Button title="Configurar" variant="outline" onPress={() => router.push('/adaptive/start')} icon={<Sparkles size={18} color={colors.accent} />} />
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <Text style={[styles.sectionTitle, { color: colors.text }]}>Plano Adaptativo (NSPI)</Text>
+      <SettingToggle
+        label={saving ? 'A atualizar…' : 'Periodização automática'}
+        value={plan.active === 1}
+        colors={colors}
+        onToggle={toggleActive}
+      />
+      {plan.active === 1 && (
+        <>
+          <Text style={[styles.calcLabel, { color: colors.textSecondary, marginTop: 10, marginBottom: 8 }]}>DIA DE INÍCIO DA SEMANA</Text>
+          <View style={styles.settingChips}>
+            {WEEKDAY_LABELS.map((label, day) => (
+              <Chip key={day} label={label} selected={plan.week_start_dow === day} onPress={() => changeWeekStart(day)} />
+            ))}
+          </View>
+        </>
+      )}
+      <TouchableOpacity onPress={() => router.push('/adaptive/recap')} style={{ marginTop: 12 }}>
+        <Text style={[styles.calcDesc, { color: colors.primary, fontFamily: 'Inter-SemiBold' }]}>Ver Weekly Recap →</Text>
+      </TouchableOpacity>
+    </Card>
   );
 }
 

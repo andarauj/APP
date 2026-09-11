@@ -7,7 +7,7 @@ import { Chip } from '@/components/ui/Chip';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { ExerciseTile } from '@/components/ui/ExerciseTile';
+import { ExerciseTile, muscleColor } from '@/components/ui/ExerciseTile';
 import { ExerciseListItem } from '@/components/ui/ExerciseListItem';
 import { useDatabase } from '@/hooks/useDatabase';
 import { searchExercises, createCustomExercise, deleteCustomExercise, getExerciseUsage } from '@/db/exerciseDao';
@@ -18,6 +18,9 @@ import { Dumbbell, Plus, SlidersHorizontal, X } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 
 const MUSCLES: (MuscleGroup | null)[] = [null, 'chest', 'back', 'shoulders', 'biceps', 'triceps', 'forearms', 'abs', 'quads', 'hamstrings', 'glutes', 'calves', 'traps', 'lats', 'cardio', 'mobility', 'fullbody'];
+
+// JeFit "Exercise" landing: a grid of muscle groups you tap to drill into.
+const MUSCLE_GRID: MuscleGroup[] = ['chest', 'back', 'shoulders', 'biceps', 'triceps', 'forearms', 'abs', 'quads', 'hamstrings', 'glutes', 'calves', 'cardio'];
 const EQUIPMENTS: (Equipment | null)[] = [null, 'barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'kettlebell', 'band', 'ez_bar', 'smith', 'plate', 'other'];
 const TYPES: (ExerciseType | null)[] = [null, 'strength', 'cardio', 'mobility'];
 
@@ -33,6 +36,8 @@ export default function ExercisesScreen() {
   const [filterType, setFilterType] = useState<ExerciseType | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  // 'grid' = JeFit muscle-group landing; 'list' = the filtered list.
+  const [browse, setBrowse] = useState<'grid' | 'list'>('grid');
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -187,7 +192,21 @@ export default function ExercisesScreen() {
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
       {/* Header */}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Exercícios</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+          {browse === 'list' && (
+            <TouchableOpacity
+              onPress={() => { setBrowse('grid'); setFilterMuscle(null); setQuery(''); }}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Voltar aos grupos musculares"
+            >
+              <X size={22} color={colors.textSecondary} />
+            </TouchableOpacity>
+          )}
+          <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>
+            {browse === 'list' && filterMuscle ? MUSCLE_GROUPS_PT[filterMuscle] : 'Exercícios'}
+          </Text>
+        </View>
         <View style={styles.headerRight}>
           <TouchableOpacity
             style={[styles.iconBtn, { backgroundColor: activeFilters > 0 ? colors.primaryContainer : colors.surfaceVariant }]}
@@ -213,10 +232,91 @@ export default function ExercisesScreen() {
         </View>
       </View>
 
+      {browse === 'grid' && (
+        <ScrollView contentContainerStyle={styles.gridContent} showsVerticalScrollIndicator={false}>
+          <View style={styles.searchRow}>
+            <SearchBar
+              value={query}
+              onChangeText={(t) => { setQuery(t); if (t) setBrowse('list'); }}
+              placeholder="Pesquisar exercícios..."
+            />
+          </View>
+          <View style={styles.muscleGrid}>
+            {MUSCLE_GRID.map(m => {
+              const c = muscleColor(m);
+              return (
+                <TouchableOpacity
+                  key={m}
+                  style={styles.muscleTile}
+                  onPress={() => { setFilterMuscle(m); setBrowse('list'); }}
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel={MUSCLE_GROUPS_PT[m]}
+                >
+                  <View style={[styles.muscleCircle, { backgroundColor: c + '22' }]}>
+                    <Dumbbell size={26} color={c} />
+                  </View>
+                  <Text style={[styles.muscleLabel, { color: colors.text }]} numberOfLines={1}>{MUSCLE_GROUPS_PT[m]}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <TouchableOpacity
+            style={[styles.seeAllBtn, { backgroundColor: colors.primary }]}
+            onPress={() => { setFilterMuscle(null); setBrowse('list'); }}
+            accessibilityRole="button"
+            accessibilityLabel="Ver todos os exercícios"
+          >
+            <Text style={styles.seeAllBtnText}>Ver todos os {exercises.length || ''} exercícios</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      )}
+
+      {browse === 'list' && (<>
       {/* Search */}
       <View style={styles.searchRow}>
         <SearchBar value={query} onChangeText={setQuery} placeholder="Pesquisar exercícios..." />
       </View>
+
+      {/* JeFit-parity inline filter pills. The full picker stays in the
+          bottom-sheet modal; these surface what's active and open it. */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.filterPillsWrap}
+        contentContainerStyle={styles.filterPills}
+        keyboardShouldPersistTaps="handled"
+      >
+        <TouchableOpacity
+          onPress={() => setShowFilters(true)}
+          style={[styles.pill, { backgroundColor: activeFilters > 0 ? colors.primary : colors.surfaceVariant }]}
+        >
+          <SlidersHorizontal size={14} color={activeFilters > 0 ? '#fff' : colors.textSecondary} />
+          <Text style={[styles.pillText, { color: activeFilters > 0 ? '#fff' : colors.textSecondary }]}>
+            Filtros{activeFilters > 0 ? ` · ${activeFilters}` : ''}
+          </Text>
+        </TouchableOpacity>
+        {filterMuscle && (
+          <TouchableOpacity onPress={() => setFilterMuscle(null)} style={[styles.pill, { backgroundColor: colors.primaryContainer }]}>
+            <Text style={[styles.pillText, { color: colors.onPrimaryContainer }]}>{MUSCLE_GROUPS_PT[filterMuscle]}</Text>
+            <X size={13} color={colors.onPrimaryContainer} />
+          </TouchableOpacity>
+        )}
+        {filterEquip && (
+          <TouchableOpacity onPress={() => setFilterEquip(null)} style={[styles.pill, { backgroundColor: colors.primaryContainer }]}>
+            <Text style={[styles.pillText, { color: colors.onPrimaryContainer }]}>{EQUIPMENT_PT[filterEquip]}</Text>
+            <X size={13} color={colors.onPrimaryContainer} />
+          </TouchableOpacity>
+        )}
+        {filterType && (
+          <TouchableOpacity onPress={() => setFilterType(null)} style={[styles.pill, { backgroundColor: colors.primaryContainer }]}>
+            <Text style={[styles.pillText, { color: colors.onPrimaryContainer }]}>
+              {filterType === 'strength' ? 'Força' : filterType === 'cardio' ? 'Cardio' : 'Mobilidade'}
+            </Text>
+            <X size={13} color={colors.onPrimaryContainer} />
+          </TouchableOpacity>
+        )}
+      </ScrollView>
 
       {/* Count */}
       <Text style={[styles.count, { color: colors.textTertiary }]}>
@@ -241,10 +341,16 @@ export default function ExercisesScreen() {
         // getItemLayout is deliberately not used: row height varies with
         // whether an exercise has an illustration, so a fixed estimate would
         // misplace rows rather than speed anything up.
+        //
+        // removeClippedSubviews is deliberately NOT set: on the New
+        // Architecture (Fabric) it crashes this list hard once it holds the
+        // full ~1400 rows — "addViewAt: failed to insert view ... index=N
+        // count=0" out of ReactClippingViewManager. The three windowing props
+        // below already bound how many rows mount, so the perf intent stands
+        // without it.
         initialNumToRender={12}
         maxToRenderPerBatch={12}
         windowSize={7}
-        removeClippedSubviews
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} colors={[colors.primary]} />}
         ListEmptyComponent={
           loading ? (
@@ -259,6 +365,7 @@ export default function ExercisesScreen() {
         }
         showsVerticalScrollIndicator={false}
       />
+      </>)}
 
       {/* Filter Modal */}
       <Modal visible={showFilters} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowFilters(false)}>
@@ -351,7 +458,18 @@ export default function ExercisesScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
-  headerTitle: { fontFamily: 'Inter-Bold', fontSize: 28 },
+  headerTitle: { fontFamily: 'Inter-ExtraBold', fontSize: 28 },
+  gridContent: { padding: 16, gap: 16, paddingBottom: 32 },
+  muscleGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between' },
+  muscleTile: { width: '30%', alignItems: 'center', gap: 8, paddingVertical: 8 },
+  muscleCircle: { width: 72, height: 72, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
+  muscleLabel: { fontFamily: 'Inter-SemiBold', fontSize: 13, textAlign: 'center' },
+  seeAllBtn: { height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  seeAllBtnText: { fontFamily: 'Inter-Bold', fontSize: 15, color: '#fff' },
+  filterPillsWrap: { flexGrow: 0, flexShrink: 0 },
+  filterPills: { paddingHorizontal: 16, paddingVertical: 4, gap: 8, flexDirection: 'row', alignItems: 'center' },
+  pill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999 },
+  pillText: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
   headerRight: { flexDirection: 'row', gap: 8 },
   iconBtn: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   badge: { position: 'absolute', top: -4, right: -4, width: 16, height: 16, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },

@@ -52,16 +52,16 @@ export function Button({ title, onPress, variant = 'primary', size = 'medium', d
 
   const getHeight = () => {
     switch (size) {
-      case 'small': return 36;
+      case 'small': return 38;
       case 'large': return 56;
-      default: return 48;
+      default: return 50;
     }
   };
 
   const getFontSize = () => {
     switch (size) {
       case 'small': return 14;
-      case 'large': return 18;
+      case 'large': return 17;
       default: return 16;
     }
   };
@@ -120,7 +120,8 @@ function AnimatedButtonInner({
 
 const styles = StyleSheet.create({
   button: {
-    borderRadius: 12,
+    // JeFit-parity: rounded, near-pill CTAs.
+    borderRadius: 14,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,
@@ -131,7 +132,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   text: {
-    fontFamily: 'Inter-SemiBold',
-    fontWeight: '600',
+    fontFamily: 'Inter-Bold',
+    fontWeight: '700',
   },
 });

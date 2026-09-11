@@ -15,7 +15,8 @@ export function Chip({ label, selected, onPress }: ChipProps) {
         styles.chip,
         {
           backgroundColor: selected ? colors.primaryContainer : colors.chip,
-          borderColor: selected ? colors.primary : colors.border,
+          // JeFit-parity: pill chips, no ring on the unselected state.
+          borderColor: selected ? colors.primary : 'transparent',
         },
       ]}
       onPress={onPress}
@@ -30,9 +31,9 @@ export function Chip({ label, selected, onPress }: ChipProps) {
 
 const styles = StyleSheet.create({
   chip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
     borderWidth: 1,
   },
   label: {

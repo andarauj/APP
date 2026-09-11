@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Home, Dumbbell, ListChecks, History, User, Search } from 'lucide-react-native';
+import { Compass, ClipboardCheck, Dumbbell, CalendarDays, User, ListChecks, History } from 'lucide-react-native';
 import * as QuickActions from 'expo-quick-actions';
 import { useQuickActionRouting } from 'expo-quick-actions/router';
 import { getAllSessions } from '@/db/workoutDao';
@@ -96,36 +96,27 @@ export default function TabsLayout() {
         tabBarAllowFontScaling: false,
       }}
     >
+      {/* JeFit-parity bar: Descobrir · Treino · Exercícios · Progresso.
+          "Perfil" left the bar in Fase 1c — records/calculators/settings are
+          reached from the ⚙️ in the Progresso header. */}
+
+      {/* Descobrir (JeFit "Discover") — no social back-end, so it is a small
+          always-available library: today's line, personalised tips, and
+          evergreen coaching notes. */}
       <Tabs.Screen
-        name="index"
+        name="discover"
         options={{
-          title: 'Início',
-          tabBarIcon: ({ size, color }) => <Home size={22} color={color} />,
+          title: 'Descobrir',
+          tabBarIcon: ({ color }) => <Compass size={24} color={color} />,
         }}
       />
 
-      {/* Holds the Meu Plano / Treino Livre / Histórico top tabs. */}
+      {/* Holds the Explorar / Plano / Instantâneo top tabs. */}
       <Tabs.Screen
         name="start"
         options={{
           title: 'Treino',
-          tabBarIcon: ({ size, color }) => <Dumbbell size={22} color={color} />,
-        }}
-      />
-
-      <Tabs.Screen
-        name="plans"
-        options={{
-          title: 'Planos',
-          tabBarIcon: ({ size, color }) => <ListChecks size={22} color={color} />,
-        }}
-      />
-
-      <Tabs.Screen
-        name="profile"
-        options={{
-          title: 'Perfil',
-          tabBarIcon: ({ size, color }) => <User size={22} color={color} />,
+          tabBarIcon: ({ color }) => <ClipboardCheck size={24} color={color} />,
         }}
       />
 
@@ -133,19 +124,53 @@ export default function TabsLayout() {
         name="exercises"
         options={{
           title: 'Exercícios',
-          tabBarIcon: ({ size, color }) => <Search size={22} color={color} />,
+          tabBarIcon: ({ color }) => <Dumbbell size={24} color={color} />,
         }}
       />
-      {/* Not in the tab bar: reached from the "Histórico" top tab inside
-          Treino. It is also the only route to the balance/1RM/favourites
-          screens, whose entry cards live in its Estatísticas tab — so if
-          that link ever goes away, four screens go unreachable with it. */}
+
+      {/* The old "Início" dashboard — streak, volume, consistency heatmap,
+          Progress Index — which is JeFit's "Progress › Overview" in all but
+          name. Renamed here; a real Resumo/Corpo/Atividade split follows in
+          Fase 1c. Still the index route, so it is where the app lands. */}
+      <Tabs.Screen
+        name="index"
+        options={{
+          title: 'Progresso',
+          tabBarIcon: ({ color }) => <CalendarDays size={24} color={color} />,
+        }}
+      />
+
+      {/* Off the bar (JeFit has no Perfil tab). Reached from the ⚙️ in the
+          Progresso header; holds Recordes · Calc. · Corpo · Definições. */}
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: 'Perfil',
+          href: null,
+          tabBarIcon: ({ color }) => <User size={24} color={color} />,
+        }}
+      />
+
+      {/* Off the bar. Reachable from the "Planos" link in the Treino header
+          and from the plan pickers. Merges into Treino's "Explorar" sub-tab
+          in Fase 1b. */}
+      <Tabs.Screen
+        name="plans"
+        options={{
+          title: 'Planos',
+          href: null,
+          tabBarIcon: ({ color }) => <ListChecks size={24} color={color} />,
+        }}
+      />
+
+      {/* Off the bar: reached from the "Histórico" top tab inside Treino, the
+          progress hub, and (soon) Progresso › Atividade. */}
       <Tabs.Screen
         name="history"
         options={{
           title: 'Histórico',
           href: null,
-          tabBarIcon: ({ size, color }) => <History size={22} color={color} />,
+          tabBarIcon: ({ color }) => <History size={24} color={color} />,
         }}
       />
     </Tabs>

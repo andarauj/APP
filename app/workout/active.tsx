@@ -7,6 +7,10 @@ import { useTheme } from '@/hooks/useTheme';
 import { useAppMode } from '@/hooks/useAppMode';
 import { useStopwatch, useCountdown } from '@/hooks/useTimers';
 import { getPlanExercisesWithDetails } from '@/db/planDao';
+import { getAdaptiveStatus } from '@/utils/adaptiveService';
+import { getExerciseStates, type AdaptiveExerciseStateRow } from '@/db/adaptiveDao';
+import { PHASE_LABEL_PT, PHASE_COLOR, phaseSpec } from '@/utils/adaptivePlan';
+import type { AdaptiveGoal, AdaptivePhase } from '@/utils/nspi';
 import { createSession, updateSession, discardSession, addSet, getLastSetForExercise, getHistoricalRpeAtWeight , getProgressionSuggestion, getSessionTemplate } from '@/db/workoutDao';
 import { searchExercises, getAlternativeExercises, setExerciseUserNotes } from '@/db/exerciseDao';
 import { getSettingWithDefault, DEFAULT_SETTINGS } from '@/db/settingsDao';
@@ -28,7 +32,7 @@ import { suggestSetAdjustment, type AutoRegulationSuggestion } from '@/utils/aut
 import { TempoMetronomeBox } from '@/components/workout/TempoMetronomeBox';
 import { generateLiveCoachingTips, type CoachingTip } from '@/utils/livCoachingTips';
 import { LiveCoachingStack } from '@/components/ui/LiveCoachingTip';
-import { X, Plus, Check, Timer, RotateCcw, ChevronDown, ChevronUp, Trophy, StickyNote, Repeat, TrendingUp, Pause, Play, Gauge, Sparkles, Image as ImageIcon } from 'lucide-react-native';
+import { X, Plus, Check, Timer, RotateCcw, ChevronDown, ChevronUp, Trophy, StickyNote, Repeat, TrendingUp, Pause, Play, Gauge, Sparkles, Star, Image as ImageIcon } from 'lucide-react-native';
 import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
 
 interface ActiveExercise {
@@ -113,6 +117,37 @@ export default function ActiveWorkoutScreen() {
   const [restRemindersEnabled, setRestRemindersEnabled] = useState(true);
   const [coachingTips, setCoachingTips] = useState<CoachingTip[]>([]);
   const [coachingExerciseIdx, setCoachingExerciseIdx] = useState<number | null>(null);
+
+  // Adaptive engine ("porquê este alvo" — NSPI_ENGINE.md §7). Purely
+  // additive and read-only: a separate effect from init() below so it can
+  // never affect session creation or set logging even if it fails. Only
+  // populated when this workout's plan is the one the NSPI engine is
+  // actively periodizing.
+  const [adaptiveInfo, setAdaptiveInfo] = useState<{
+    phase: AdaptivePhase; goal: AdaptiveGoal; states: Map<number, AdaptiveExerciseStateRow>;
+  } | null>(null);
+  const [whyTargetFor, setWhyTargetFor] = useState<number | null>(null);
+  useEffect(() => {
+    if (!(Number(planId) > 0)) return;
+    let mounted = true;
+    (async () => {
+      try {
+        const status = await getAdaptiveStatus();
+        if (!status || !status.active || status.planId !== Number(planId)) return;
+        const states = await getExerciseStates(status.adaptivePlanId);
+        if (!mounted) return;
+        setAdaptiveInfo({
+          phase: status.phase,
+          goal: status.goal,
+          states: new Map(states.map(s => [s.exercise_id, s])),
+        });
+      } catch (err) {
+        console.error('[adaptive] failed to load "porquê este alvo" info:', err);
+      }
+    })();
+    return () => { mounted = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Total workout timer
   // The total workout timer previously ran unconditionally (useStopwatch(true)
@@ -956,6 +991,17 @@ export default function ActiveWorkoutScreen() {
                   <ImageIcon size={17} color={colors.textTertiary} />
                 </TouchableOpacity>
               )}
+              {adaptiveInfo?.states.has(ex.exerciseId) && (
+                <TouchableOpacity
+                  onPress={() => setWhyTargetFor(exIdx)}
+                  hitSlop={8}
+                  style={{ marginRight: 10 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Porquê este alvo em ${ex.name}`}
+                >
+                  <Star size={17} color={colors.accent} fill={colors.accent} />
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
                 onPress={() => openSubstitute(exIdx)}
                 hitSlop={8}
@@ -1294,6 +1340,79 @@ export default function ActiveWorkoutScreen() {
             </View>
           )}
         </SafeAreaView>
+      </Modal>
+
+      {/* "Porquê este alvo" — the adaptive engine's explanation for this
+          exercise's current sets/reps/weight (NSPI_ENGINE.md §7). Read-only,
+          purely informational: never mutates anything here, the plan itself
+          was already rewritten when the week closed (utils/adaptiveService).
+          transparent + overFullScreen renders as a small centered card
+          rather than a full pageSheet, since the content is a few lines. */}
+      <Modal
+        visible={whyTargetFor !== null}
+        transparent
+        animationType="fade"
+        presentationStyle="overFullScreen"
+        onRequestClose={() => setWhyTargetFor(null)}
+      >
+        <TouchableOpacity
+          style={styles.whyOverlay}
+          activeOpacity={1}
+          onPress={() => setWhyTargetFor(null)}
+        >
+          {(() => {
+            if (whyTargetFor === null || !adaptiveInfo) return null;
+            const ex = exercises[whyTargetFor];
+            if (!ex) return null;
+            const state = adaptiveInfo.states.get(ex.exerciseId);
+            if (!state) return null;
+            const spec = phaseSpec(adaptiveInfo.phase, adaptiveInfo.goal);
+            return (
+              <TouchableOpacity activeOpacity={1} onPress={() => {}} style={[styles.whyCard, { backgroundColor: colors.surface }]}>
+                <View style={styles.whyHeaderRow}>
+                  <Star size={18} color={colors.accent} fill={colors.accent} />
+                  <Text style={[styles.whyTitle, { color: colors.text }]}>Porquê este alvo</Text>
+                </View>
+                <Text style={[styles.whyExName, { color: colors.textSecondary }]}>{ex.name}</Text>
+
+                <View style={[styles.whyPhaseRow, { backgroundColor: PHASE_COLOR[adaptiveInfo.phase] + '1A' }]}>
+                  <View style={[styles.phaseDotSmall, { backgroundColor: PHASE_COLOR[adaptiveInfo.phase] }]} />
+                  <Text style={[styles.whyPhaseText, { color: PHASE_COLOR[adaptiveInfo.phase] }]}>
+                    Fase de {PHASE_LABEL_PT[adaptiveInfo.phase]}
+                  </Text>
+                </View>
+
+                <View style={styles.whyRow}>
+                  <Text style={[styles.whyLabel, { color: colors.textSecondary }]}>Peso alvo</Text>
+                  <Text style={[styles.whyValue, { color: colors.text }]}>
+                    ~{Math.round(spec.intensityPct * 100)}% do teu 1RM estimado
+                  </Text>
+                </View>
+                <View style={styles.whyRow}>
+                  <Text style={[styles.whyLabel, { color: colors.textSecondary }]}>Janela de reps</Text>
+                  <Text style={[styles.whyValue, { color: colors.text }]}>{state.current_reps_low}–{state.current_reps_high}</Text>
+                </View>
+                {state.step_stall_count > 0 && (
+                  <View style={styles.whyRow}>
+                    <Text style={[styles.whyLabel, { color: colors.textSecondary }]}>Sem progressão há</Text>
+                    <Text style={[styles.whyValue, { color: colors.text }]}>{state.step_stall_count} semana{state.step_stall_count > 1 ? 's' : ''}</Text>
+                  </View>
+                )}
+
+                <Text style={[styles.whyExpect, { color: colors.textTertiary }]}>{spec.expect}</Text>
+
+                <TouchableOpacity
+                  style={[styles.whyCloseBtn, { backgroundColor: colors.surfaceVariant }]}
+                  onPress={() => setWhyTargetFor(null)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Fechar"
+                >
+                  <Text style={[styles.whyCloseBtnText, { color: colors.text }]}>Entendido</Text>
+                </TouchableOpacity>
+              </TouchableOpacity>
+            );
+          })()}
+        </TouchableOpacity>
       </Modal>
     </SafeAreaView>
   );
@@ -1650,4 +1769,18 @@ const styles = StyleSheet.create({
   confirmFinishText: { color: '#fff', fontFamily: 'Inter-Bold', fontSize: 17 },
   continueBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', borderWidth: 1 },
   continueBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
+  whyOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 28 },
+  whyCard: { width: '100%', borderRadius: 20, padding: 20, gap: 10 },
+  whyHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  whyTitle: { fontFamily: 'Inter-Bold', fontSize: 17 },
+  whyExName: { fontFamily: 'Inter-Regular', fontSize: 13, marginTop: -6, marginBottom: 4 },
+  whyPhaseRow: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 2 },
+  phaseDotSmall: { width: 8, height: 8, borderRadius: 4 },
+  whyPhaseText: { fontFamily: 'Inter-Bold', fontSize: 13 },
+  whyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  whyLabel: { fontFamily: 'Inter-Regular', fontSize: 13 },
+  whyValue: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
+  whyExpect: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 17, marginTop: 6 },
+  whyCloseBtn: { borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 6 },
+  whyCloseBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
 });
