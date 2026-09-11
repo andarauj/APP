@@ -6,7 +6,7 @@ import { useDatabase } from '@/hooks/useDatabase';
 import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
 import { usePlansManager } from '@/hooks/usePlansManager';
 import { getAllPlans, getPlanDays, getPlanExercisesWithDetails } from '@/db/planDao';
-import { getLatestAdaptivePlanAny } from '@/db/adaptiveDao';
+import { getLatestAdaptivePlanAny, type AdaptivePlanRow } from '@/db/adaptiveDao';
 import { getWeeklyPlanner, setPlannerDay, type WeeklyPlanner, type PlannerEntry } from '@/db/plannerDao';
 import { getUnfinishedSession, discardSession, getAllSessions } from '@/db/workoutDao';
 import type { WorkoutPlan } from '@/types';
@@ -27,6 +27,19 @@ interface AdaptiveDayPreview {
 }
 
 const WEEKDAY_FULL = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+
+const GOAL_LABEL_PT: Record<string, string> = {
+  bulking: 'Ganhar músculo',
+  strength: 'Ficar mais forte',
+  cutting: 'Perder gordura',
+  general: 'Manter / geral',
+};
+const EQUIP_PREF_LABEL_PT: Record<string, string> = {
+  any: 'Qualquer',
+  gymleco: 'Gymleco',
+  free_weights: 'Pesos Livres',
+  home_dumbbell: 'Halteres',
+};
 
 export default function StartScreen() {
   const { colors } = useTheme();
@@ -57,13 +70,14 @@ export default function StartScreen() {
   // reactivate it) instead of re-running the wizard and creating a second
   // adaptive plan on top of the paused one.
   const [hasAdaptivePlanEver, setHasAdaptivePlanEver] = useState(false);
+  const [adaptivePlanRow, setAdaptivePlanRow] = useState<AdaptivePlanRow | null>(null);
   const [adaptivePreview, setAdaptivePreview] = useState<AdaptiveDayPreview[]>([]);
   const [expandedPreviewDay, setExpandedPreviewDay] = useState<number | null>(null);
 
   const loadStart = useCallback(async () => {
     getUnfinishedSession().then(s => setUnfinished(s as any)).catch(() => setUnfinished(null));
     getAllSessions(1, 0).then(s => setLastSession((s[0] as any) || null)).catch(() => setLastSession(null));
-    getLatestAdaptivePlanAny().then(p => setHasAdaptivePlanEver(!!p)).catch(() => setHasAdaptivePlanEver(false));
+    getLatestAdaptivePlanAny().then(p => { setHasAdaptivePlanEver(!!p); setAdaptivePlanRow(p); }).catch(() => { setHasAdaptivePlanEver(false); setAdaptivePlanRow(null); });
 
     try {
       const [allPlans, p] = await Promise.all([getAllPlans(), getWeeklyPlanner()]);
@@ -446,23 +460,64 @@ export default function StartScreen() {
             fica no ecrã de detalhe e no link "Gerir". */}
         {activeTab === 'explorar' && (
           <>
-            {/* Plano Adaptativo — motor NSPI, sempre acessível a todos. */}
-            <TouchableOpacity
-              style={[styles.adaptiveCard, { backgroundColor: colors.accent }]}
-              onPress={() => router.push(adaptiveStatus || hasAdaptivePlanEver ? '/adaptive/plan' : '/adaptive/start')}
-              activeOpacity={0.88}
-            >
-              <View style={styles.quickIcon}><Sparkles size={28} color="#fff" /></View>
-              <View style={styles.quickInfo}>
-                <Text style={styles.quickTitle}>Plano Adaptativo</Text>
-                <Text style={styles.quickDesc} numberOfLines={2}>
-                  {adaptiveStatus
-                    ? `Ciclo ${adaptiveStatus.cycleIndex} · ${PHASE_LABEL_PT[adaptiveStatus.phase]} — ver Weekly Recap`
-                    : 'Periodização automática: NSPI ajusta a tua semana sozinho'}
-                </Text>
-              </View>
-              <ChevronRight size={24} color="#fff" />
-            </TouchableOpacity>
+            {/* Plano Adaptativo — motor NSPI, sempre acessível a todos. Rich
+                variant (phase pill, subtitle, 3-value row) once a plan
+                exists — matches the plan overview screen's hero language
+                (app/adaptive/plan.tsx) so it reads as the same feature
+                rather than two different cards. Before that, a plain
+                "get started" card, since there's no goal/duration/
+                equipment yet to show. */}
+            {adaptiveStatus ? (
+              <TouchableOpacity
+                style={[styles.adaptiveHero, { backgroundColor: colors.accent }]}
+                onPress={() => router.push('/adaptive/plan')}
+                activeOpacity={0.9}
+              >
+                <View style={[styles.adaptivePhasePill, { backgroundColor: PHASE_COLOR[adaptiveStatus.phase] }]}>
+                  <Text style={styles.adaptivePhasePillText}>
+                    Ciclo {adaptiveStatus.cycleIndex} · {PHASE_LABEL_PT[adaptiveStatus.phase]}
+                  </Text>
+                </View>
+                <Text style={styles.adaptiveHeroTitle}>Plano Adaptativo</Text>
+                <Text style={styles.adaptiveHeroSub}>O teu programa atualiza-se todas as semanas</Text>
+                <View style={styles.adaptiveHeroRow}>
+                  <View style={styles.adaptiveHeroCol}>
+                    <Text style={styles.adaptiveHeroValue} numberOfLines={1}>{GOAL_LABEL_PT[adaptiveStatus.goal] ?? adaptiveStatus.goal}</Text>
+                    <Text style={styles.adaptiveHeroLabel}>Objetivo</Text>
+                  </View>
+                  <View style={styles.adaptiveHeroDivider} />
+                  <View style={styles.adaptiveHeroCol}>
+                    <Text style={styles.adaptiveHeroValue}>{adaptivePlanRow ? `${adaptivePlanRow.session_minutes} min` : '—'}</Text>
+                    <Text style={styles.adaptiveHeroLabel}>Duração</Text>
+                  </View>
+                  <View style={styles.adaptiveHeroDivider} />
+                  <View style={styles.adaptiveHeroCol}>
+                    <Text style={styles.adaptiveHeroValue} numberOfLines={1}>{adaptivePlanRow ? (EQUIP_PREF_LABEL_PT[adaptivePlanRow.equipment_pref] ?? adaptivePlanRow.equipment_pref) : '—'}</Text>
+                    <Text style={styles.adaptiveHeroLabel}>Equipamento</Text>
+                  </View>
+                </View>
+                <View style={styles.adaptiveHeroBtn}>
+                  <Text style={[styles.adaptiveHeroBtnText, { color: colors.accent }]}>Ver o meu plano</Text>
+                </View>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={[styles.adaptiveCard, { backgroundColor: colors.accent }]}
+                onPress={() => router.push(hasAdaptivePlanEver ? '/adaptive/plan' : '/adaptive/start')}
+                activeOpacity={0.88}
+              >
+                <View style={styles.quickIcon}><Sparkles size={28} color="#fff" /></View>
+                <View style={styles.quickInfo}>
+                  <Text style={styles.quickTitle}>Plano Adaptativo</Text>
+                  <Text style={styles.quickDesc} numberOfLines={2}>
+                    {hasAdaptivePlanEver
+                      ? 'Plano em pausa — toca para reativar'
+                      : 'Periodização automática: NSPI ajusta a tua semana sozinho'}
+                  </Text>
+                </View>
+                <ChevronRight size={24} color="#fff" />
+              </TouchableOpacity>
+            )}
 
             <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>CRIAR NOVO PLANO</Text>
 
@@ -686,6 +741,18 @@ const styles = StyleSheet.create({
   repeatSub: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
   quickCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, padding: 20, gap: 14 },
   adaptiveCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, padding: 18, gap: 14 },
+  adaptiveHero: { borderRadius: 20, padding: 20 },
+  adaptivePhasePill: { alignSelf: 'flex-start', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, marginBottom: 10 },
+  adaptivePhasePillText: { color: '#fff', fontFamily: 'Inter-Bold', fontSize: 11 },
+  adaptiveHeroTitle: { color: '#fff', fontFamily: 'Inter-ExtraBold', fontSize: 21, marginBottom: 2 },
+  adaptiveHeroSub: { color: 'rgba(255,255,255,0.8)', fontFamily: 'Inter-Regular', fontSize: 13 },
+  adaptiveHeroRow: { flexDirection: 'row', marginTop: 16, marginBottom: 16 },
+  adaptiveHeroCol: { flex: 1, alignItems: 'center', gap: 2 },
+  adaptiveHeroDivider: { width: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.3)' },
+  adaptiveHeroValue: { color: '#fff', fontFamily: 'Inter-Bold', fontSize: 14 },
+  adaptiveHeroLabel: { color: 'rgba(255,255,255,0.7)', fontFamily: 'Inter-Regular', fontSize: 11 },
+  adaptiveHeroBtn: { backgroundColor: '#fff', borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
+  adaptiveHeroBtnText: { fontFamily: 'Inter-Bold', fontSize: 15 },
   phaseBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1 },
   phaseDot: { width: 8, height: 8, borderRadius: 4 },
   phaseBadgeText: { flex: 1, fontFamily: 'Inter-SemiBold', fontSize: 13 },
