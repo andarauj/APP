@@ -14,7 +14,7 @@ import { PLAN_TYPE_PT } from '@/types';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Play, Zap, Plus, AlertCircle, RotateCcw, RefreshCw, Calendar, Check as CheckIcon, X as XIcon, Sparkles, ListChecks, ChevronRight, Home as HomeIcon } from 'lucide-react-native';
 import { WEEKDAY_LABELS } from '@/utils/reminders';
-import { PHASE_LABEL_PT, PHASE_COLOR } from '@/utils/adaptivePlan';
+import { PHASE_LABEL_PT, PHASE_COLOR, PHASE_RPE_PT } from '@/utils/adaptivePlan';
 import { PlanGroupCard } from '@/components/ui/PlanGroupCard';
 import { PlanVersionModal } from '@/components/ui/PlanVersionModal';
 
@@ -55,6 +55,7 @@ export default function StartScreen() {
   const [planner, setPlanner] = useState<WeeklyPlanner>({});
   const [planNames, setPlanNames] = useState<Record<number, string>>({});
   const [planDayLabels, setPlanDayLabels] = useState<Record<string, string>>({});
+  const [planDayExerciseCounts, setPlanDayExerciseCounts] = useState<Record<string, number>>({});
   const [editingDay, setEditingDay] = useState<number | null>(null);
   const [pickerPlanId, setPickerPlanId] = useState<number | null>(null);
   const [pickerDays, setPickerDays] = useState<{ day_index: number; day_label: string }[]>([]);
@@ -89,16 +90,21 @@ export default function StartScreen() {
       const planIds = Array.from(new Set(Object.values(p).map(e => e!.planId)));
       const names: Record<number, string> = {};
       const dayLabels: Record<string, string> = {};
+      const dayExerciseCounts: Record<string, number> = {};
       for (const planId of planIds) {
         const found = allPlans.find(pl => pl.id === planId);
         if (found) names[planId] = found.name;
         const days = await getPlanDays(planId);
-        for (const d of days) dayLabels[`${planId}:${d.day_index}`] = d.day_label;
+        for (const d of days) {
+          dayLabels[`${planId}:${d.day_index}`] = d.day_label;
+          dayExerciseCounts[`${planId}:${d.day_index}`] = d.exercise_count;
+        }
       }
       setPlanNames(names);
       setPlanDayLabels(dayLabels);
+      setPlanDayExerciseCounts(dayExerciseCounts);
     } catch {
-      setPlans([]); setPlanner({}); setPlanNames({}); setPlanDayLabels({});
+      setPlans([]); setPlanner({}); setPlanNames({}); setPlanDayLabels({}); setPlanDayExerciseCounts({});
     } finally {
       setPlannerLoaded(true);
     }
@@ -306,6 +312,16 @@ export default function StartScreen() {
                   <Text style={styles.quickDesc} numberOfLines={1}>
                     {planDayLabels[`${todayEntry.planId}:${todayEntry.dayIndex}`] || planNames[todayEntry.planId] || 'Treino'}
                   </Text>
+                  {/* Real NSPI output for this specific day — exercise count
+                      the equipment/injury filter actually left in the plan,
+                      plus the active phase's RPE window (see PHASE_RPE_PT) —
+                      not shown for a day pointing at a non-adaptive plan. */}
+                  {adaptiveStatus && todayEntry.planId === adaptiveStatus.planId && (
+                    <Text style={styles.quickDesc} numberOfLines={1}>
+                      {planDayExerciseCounts[`${todayEntry.planId}:${todayEntry.dayIndex}`] ?? '—'} exercícios
+                      {PHASE_RPE_PT[adaptiveStatus.phase] ? ` · RPE ${PHASE_RPE_PT[adaptiveStatus.phase]}` : ''}
+                    </Text>
+                  )}
                 </View>
               </TouchableOpacity>
             ) : adaptiveStatus && (

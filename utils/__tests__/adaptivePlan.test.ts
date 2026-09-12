@@ -1,5 +1,5 @@
 import {
-  PHASE_ORDER, nextPhase, phaseSpec, phaseTargets, roundToIncrement, epley1RM, loadIncrement,
+  PHASE_ORDER, nextPhase, phaseSpec, phaseTargets, roundToIncrement, epley1RM, loadIncrement, PHASE_RPE_PT,
 } from '../adaptivePlan';
 
 describe('phase order + wrap', () => {
@@ -12,6 +12,15 @@ describe('phase order + wrap', () => {
   it('flags the cycle wrap only on deload -> on_ramp', () => {
     expect(nextPhase('deload').wrapsCycle).toBe(true);
     expect(nextPhase('accumulation').wrapsCycle).toBe(false);
+  });
+});
+
+describe('PHASE_RPE_PT', () => {
+  it('has an RPE hint for the three phases whose expect text states one, none for deload', () => {
+    expect(PHASE_RPE_PT.on_ramp).toBe('6–7');
+    expect(PHASE_RPE_PT.accumulation).toBe('7–8');
+    expect(PHASE_RPE_PT.intensification).toBe('8–9');
+    expect(PHASE_RPE_PT.deload).toBeUndefined();
   });
 });
 

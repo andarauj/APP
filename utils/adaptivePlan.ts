@@ -26,6 +26,20 @@ export const PHASE_COLOR: Record<AdaptivePhase, string> = {
 };
 
 /**
+ * The RPE range each phase's `expect` line already states in prose (see
+ * BASE_PHASES below) — pulled out so screens that need just the number (the
+ * "Treino de hoje" card, the weekly planner tile) don't have to embed or
+ * re-derive it. Goal/experience tilt reps and %e1RM, never this — deload has
+ * no entry because BASE_PHASES.deload's own text never commits to one
+ * ("cargas leves, recuperar" is deliberately looser than a number).
+ */
+export const PHASE_RPE_PT: Partial<Record<AdaptivePhase, string>> = {
+  on_ramp: '6–7',
+  accumulation: '7–8',
+  intensification: '8–9',
+};
+
+/**
  * Standing explainer for why the 4-phase order is what it is — not tied to
  * any one week's transition (that's `WeeklyRecap.why`), just the stable
  * rationale behind the cycle shape itself. Grounded in what BASE_PHASES
