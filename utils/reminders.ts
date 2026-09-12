@@ -3,6 +3,9 @@ import * as Notifications from 'expo-notifications';
 
 // Weekday numbers used across the app's settings: 0=Domingo ... 6=Sábado
 export const WEEKDAY_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+/** Full weekday names, for accessibility labels and headers that spell the
+ *  day out rather than abbreviating it. */
+export const WEEKDAY_FULL_LABELS = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({

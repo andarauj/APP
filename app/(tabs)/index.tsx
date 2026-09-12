@@ -7,11 +7,14 @@ import { useTheme } from '@/hooks/useTheme';
 import { useAppMode } from '@/hooks/useAppMode';
 import { useDatabase } from '@/hooks/useDatabase';
 import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
+import { useTodayWorkoutStatus } from '@/hooks/useTodayWorkoutStatus';
+import { useActiveWorkout } from '@/hooks/useActiveWorkout';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { ExerciseTile , muscleColor } from '@/components/ui/ExerciseTile';
 import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
 import { BodyMetricsInput } from '@/components/ui/BodyMetricsInput';
+import { HeroCard } from '@/components/ui/HeroCard';
 import { hapticSelect, hapticSuccess } from '@/utils/haptics';
 import { getLatestBodyMetric, getWeightChange } from '@/db/bodyMetricsDao';
 import {
@@ -95,10 +98,18 @@ export default function HomeScreen() {
   const [bodyMetricsModalVisible, setBodyMetricsModalVisible] = useState(false);
   const [latestBodyMetric, setLatestBodyMetric] = useState<any>(null);
   const [weightChange, setWeightChange] = useState<any>(null);
+  // Quick Metrics Grid: this week's total working volume (warmup excluded,
+  // matching every other volume figure in the app) and PRs in the last 30
+  // days — prCountRecent already comes bundled in getProgressIndexData, so
+  // only the weekly-volume sum needed its own query.
+  const [weeklyVolume, setWeeklyVolume] = useState<number | null>(null);
+  const [prCountRecent, setPrCountRecent] = useState<number | null>(null);
+  const todayStatus = useTodayWorkoutStatus();
+  const { minimized } = useActiveWorkout();
 
   const loadDashboard = useCallback(async () => {
     try {
-      const [s, sessions, exs, plans, t, progressData, previousScoreRaw, muscleVol, achievementStats, achievementsSeenRaw, heatmapRaw, planner, allPlans, completedWeekdays, latestMetric, weightDelta] = await Promise.all([
+      const [s, sessions, exs, plans, t, progressData, previousScoreRaw, muscleVol, weeklyVol, achievementStats, achievementsSeenRaw, heatmapRaw, planner, allPlans, completedWeekdays, latestMetric, weightDelta] = await Promise.all([
         getStreakData(),
         getAllSessions(4, 0),
         getMostTrainedExercises(5, 60),
@@ -107,6 +118,7 @@ export default function HomeScreen() {
         getProgressIndexData(),
         getSetting('progressIndexLastScore'),
         getWeeklyVolumeByMuscle(30), // named "weekly" but takes any window — 30 days gives a representative picture, not just the current week
+        getWeeklyVolumeByMuscle(7), // the actual trailing-7-days figure for the Quick Metrics Grid
         getAchievementStats(),
         getSetting('achievementsSeen'),
         getTrainingHeatmapData(91), // 13 weeks — a full GitHub-style year would be too wide for a phone screen
@@ -122,6 +134,8 @@ export default function HomeScreen() {
       setTopPlans(plans);
       setTips(t);
       setMuscleDistribution(muscleVol);
+      setWeeklyVolume(weeklyVol.reduce((sum, m) => sum + m.volume, 0));
+      setPrCountRecent(progressData.prCountRecent);
       setLatestBodyMetric(latestMetric);
       setWeightChange(weightDelta);
       setWeeklyConsistency(aggregateWeeklyConsistency(heatmapRaw));
@@ -237,12 +251,16 @@ export default function HomeScreen() {
               onPress={() => setBodyMetricsModalVisible(true)}
               activeOpacity={0.85}
             >
-              <View style={[styles.statIcon, { backgroundColor: 'rgba(255,255,255,0.2)' }]}>
-                <Ruler size={22} color="#fff" />
+              <View style={[styles.statIcon, { backgroundColor: colors.onPrimary + '33' }]}>
+                <Ruler size={22} color={colors.onPrimary} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.smartTitle, { color: '#fff' }]}>Registar medidas</Text>
-                <Text style={[styles.smartDesc, { color: 'rgba(255,255,255,0.85)' }]}>
+                <Text style={[styles.smartTitle, { color: colors.onPrimary }]}>Registar medidas</Text>
+                {/* BUGFIX (WCAG AA audit): onPrimary at reduced opacity drops
+                    below 4.5:1 against colors.primary (the pairing is
+                    already only ~4.5:1 at full opacity) — hierarchy comes
+                    from font size/weight here instead of alpha. */}
+                <Text style={[styles.smartDesc, { color: colors.onPrimary }]}>
                   {latestBodyMetric?.date ? `Último: ${formatDateTime(latestBodyMetric.date)}` : 'Peso, gordura, perímetros'}
                 </Text>
               </View>
@@ -276,12 +294,12 @@ export default function HomeScreen() {
               onPress={() => router.push('/(tabs)/history')}
               activeOpacity={0.85}
             >
-              <View style={[styles.statIcon, { backgroundColor: 'rgba(255,255,255,0.2)' }]}>
-                <HistoryIcon size={22} color="#fff" />
+              <View style={[styles.statIcon, { backgroundColor: colors.onPrimary + '33' }]}>
+                <HistoryIcon size={22} color={colors.onPrimary} />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.smartTitle, { color: '#fff' }]}>Histórico completo</Text>
-                <Text style={[styles.smartDesc, { color: 'rgba(255,255,255,0.85)' }]}>Calendário, estatísticas e sessões</Text>
+                <Text style={[styles.smartTitle, { color: colors.onPrimary }]}>Histórico completo</Text>
+                <Text style={[styles.smartDesc, { color: colors.onPrimary }]}>Calendário, estatísticas e sessões</Text>
               </View>
             </TouchableOpacity>
             {recentSessions.length > 0 && (
@@ -332,6 +350,20 @@ export default function HomeScreen() {
         )}
 
         {progTab === 'resumo' && (<>
+        {/* Hero card — strict 4-priority fallback (active session in
+            progress > overdue/backlog day > today's scheduled day > rest
+            day), computed by useTodayWorkoutStatus from the exact same
+            underlying signals app/(tabs)/start.tsx already uses, so the two
+            screens can't disagree about what "today" means. Suppressed
+            while a session is minimized: the global mini-player (mounted in
+            (tabs)/_layout.tsx, visible on every tab) already is the
+            "resume" affordance in that case — showing both would mean two
+            competing primary actions, which the priority system this card
+            itself enforces is specifically meant to avoid. Also suppressed
+            for a brand-new account: the welcome card below already offers
+            the same "start training" action. */}
+        {!isNewUser && !minimized && <HeroCard status={todayStatus} />}
+
         {/* Weekly commitment — "what are we doing this week, and how's it
             gone" — distinct from Progress Index (which compares to your
             own rolling average, not an explicit plan you set). Only shows
@@ -344,28 +376,47 @@ export default function HomeScreen() {
           </Card>
         )}
 
-        {/* Quick stats */}
+        {/* Quick Metrics Grid — recent-activity signals (streak, this
+            week's volume, recent PRs), not lifetime totals; those live one
+            tap away in Conquistas/Recordes. Fixed-height cards regardless
+            of loading state (a skeleton bar in place of the number) so
+            these three cards never shift the rest of the page as the
+            SQLite queries resolve. */}
         <View style={styles.statsRow}>
           <Card style={styles.statCard}>
             <View style={[styles.statIcon, { backgroundColor: colors.accentContainer }]}>
               <Flame size={20} color={colors.accent} />
             </View>
-            <Text style={[styles.statValue, { color: colors.text }]}>{streak.currentStreak}</Text>
+            {loaded ? (
+              <Text style={[styles.statValue, { color: colors.text }]}>{streak.currentStreak}</Text>
+            ) : (
+              <View style={[styles.statSkeleton, { backgroundColor: colors.surfaceVariant }]} />
+            )}
             <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Dias seguidos</Text>
           </Card>
           <Card style={styles.statCard}>
             <View style={[styles.statIcon, { backgroundColor: colors.primaryContainer }]}>
-              <TrendingUp size={20} color={colors.primary} />
+              <Dumbbell size={20} color={colors.primary} />
             </View>
-            <Text style={[styles.statValue, { color: colors.text }]}>{streak.longestStreak}</Text>
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Recorde</Text>
+            {loaded && weeklyVolume !== null ? (
+              <Text style={[styles.statValue, styles.statValueCompact, { color: colors.text }]} numberOfLines={1} adjustsFontSizeToFit>
+                {formatVolume(weeklyVolume)}
+              </Text>
+            ) : (
+              <View style={[styles.statSkeleton, { backgroundColor: colors.surfaceVariant }]} />
+            )}
+            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Volume semanal</Text>
           </Card>
           <Card style={styles.statCard}>
             <View style={[styles.statIcon, { backgroundColor: colors.secondaryContainer }]}>
-              <Dumbbell size={20} color={colors.secondary} />
+              <Trophy size={20} color={colors.secondary} />
             </View>
-            <Text style={[styles.statValue, { color: colors.text }]}>{streak.totalWorkouts}</Text>
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Treinos</Text>
+            {loaded && prCountRecent !== null ? (
+              <Text style={[styles.statValue, { color: colors.text }]}>{prCountRecent}</Text>
+            ) : (
+              <View style={[styles.statSkeleton, { backgroundColor: colors.surfaceVariant }]} />
+            )}
+            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>PRs (30 dias)</Text>
           </Card>
         </View>
 
@@ -382,8 +433,8 @@ export default function HomeScreen() {
               accessibilityRole="button"
               accessibilityLabel="Ir para Treinar"
             >
-              <Play size={16} color="#fff" />
-              <Text style={styles.ctaBtnText}>Começar a treinar</Text>
+              <Play size={16} color={colors.onPrimary} />
+              <Text style={[styles.ctaBtnText, { color: colors.onPrimary }]}>Começar a treinar</Text>
             </TouchableOpacity>
           </Card>
         )}
@@ -814,7 +865,11 @@ const styles = StyleSheet.create({
   statCard: { flex: 1, alignItems: 'center', gap: 6, paddingVertical: 14 },
   statIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   statValue: { fontFamily: 'Inter-Black', fontSize: 26 },
+  statValueCompact: { fontSize: 20 },
   statLabel: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16 },
+  // Same box as the real 26px value it stands in for, so nothing reflows
+  // once the SQLite query resolves and the skeleton is replaced.
+  statSkeleton: { width: 40, height: 26, borderRadius: 6 },
   weightCard: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, padding: 14, marginVertical: 8 },
   weightLabel: { fontFamily: 'Inter-Regular', fontSize: 12 },
   weightValue: { fontFamily: 'Inter-Bold', fontSize: 28 },
@@ -833,7 +888,7 @@ const styles = StyleSheet.create({
   progressBarFill: { height: 6, borderRadius: 3 },
   progressCompExplain: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 14, marginTop: 3 },
   progressFootnote: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 14, fontStyle: 'italic', marginTop: 4 },
-  ctaBtnText: { color: '#fff', fontFamily: 'Inter-SemiBold', fontSize: 15 },
+  ctaBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   sectionTitle: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, letterSpacing: 1 },
   sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   seeAllRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },

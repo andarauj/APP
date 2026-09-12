@@ -59,4 +59,14 @@ describe('computeWeeklyCommitment', () => {
   it('never crashes with a fully empty week', () => {
     expect(() => computeWeeklyCommitment({}, {}, new Set(), 0)).not.toThrow();
   });
+
+  it('marks isSkipped only for a planned, past, uncompleted day', () => {
+    // Mon(1) planned+done, Tue(2) planned+missed, Wed(3, today) planned+not-yet-done, Thu(4) unplanned.
+    const planner = { 1: { planId: 1, dayIndex: 0 }, 2: { planId: 2, dayIndex: 0 }, 3: { planId: 3, dayIndex: 0 } };
+    const result = computeWeeklyCommitment(planner, labels, new Set([1]), 3);
+    expect(result.days[1].isSkipped).toBe(false); // Mon: completed
+    expect(result.days[2].isSkipped).toBe(true);  // Tue: planned, past, not completed
+    expect(result.days[3].isSkipped).toBe(false); // Wed: today, not past
+    expect(result.days[4].isSkipped).toBe(false); // Thu: not planned at all
+  });
 });

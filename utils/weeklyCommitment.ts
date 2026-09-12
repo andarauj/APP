@@ -5,6 +5,12 @@ export interface WeekDayStatus {
   completed: boolean;
   isToday: boolean;
   isPast: boolean; // strictly before today
+  /** A planned day, now in the past, that never happened — the "missed
+   *  workout" state. Derived (planned && isPast && !completed) rather than
+   *  computed separately, so it can never disagree with the other two
+   *  fields; exposed explicitly so presentational code reads intent
+   *  instead of re-deriving the same condition itself. */
+  isSkipped: boolean;
 }
 
 export interface WeeklyCommitment {
@@ -62,6 +68,7 @@ export function computeWeeklyCommitment(
       completed,
       isToday,
       isPast,
+      isSkipped: planned && isPast && !completed,
     });
   }
 
