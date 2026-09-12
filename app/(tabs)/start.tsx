@@ -1,32 +1,28 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, Modal, FlatList, RefreshControl } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, Modal, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
 import { usePlansManager } from '@/hooks/usePlansManager';
-import { getAllPlans, getPlanDays, getPlanExercisesWithDetails } from '@/db/planDao';
+import { getAllPlans, getPlanDays } from '@/db/planDao';
 import { getLatestAdaptivePlanAny, deleteAdaptivePlanData, type AdaptivePlanRow } from '@/db/adaptiveDao';
 import { getWeeklyPlanner, setPlannerDay, type WeeklyPlanner, type PlannerEntry } from '@/db/plannerDao';
 import { getUnfinishedSession, discardSession, getAllSessions } from '@/db/workoutDao';
 import type { WorkoutPlan } from '@/types';
 import { PLAN_TYPE_PT } from '@/types';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { Play, Zap, Plus, AlertCircle, RotateCcw, RefreshCw, Calendar, Check as CheckIcon, X as XIcon, Sparkles, ListChecks, ChevronRight, Clock, ChevronDown, Home as HomeIcon } from 'lucide-react-native';
+import { Play, Zap, Plus, AlertCircle, RotateCcw, RefreshCw, Calendar, Check as CheckIcon, X as XIcon, Sparkles, ListChecks, ChevronRight, Home as HomeIcon } from 'lucide-react-native';
 import { WEEKDAY_LABELS } from '@/utils/reminders';
 import { PHASE_LABEL_PT, PHASE_COLOR } from '@/utils/adaptivePlan';
-import { estimateDayMinutes, formatMinutes } from '@/utils/workoutTime';
 import { PlanGroupCard } from '@/components/ui/PlanGroupCard';
 import { PlanVersionModal } from '@/components/ui/PlanVersionModal';
 
-interface AdaptiveDayPreview {
-  dayIndex: number;
-  dayLabel: string;
-  minutes: number;
-  exercises: { id: number; name: string; sets: number; reps: string }[];
-}
-
 const WEEKDAY_FULL = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+// Planner state stays keyed 0=Sun..6=Sat everywhere (matches every other
+// weekday convention in the app); this only reorders how the row is drawn,
+// Monday-first, which reads more naturally as "the training week".
+const WEEKDAY_DISPLAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 
 const GOAL_LABEL_PT: Record<string, string> = {
   bulking: 'Ganhar músculo',
@@ -71,9 +67,12 @@ export default function StartScreen() {
   // adaptive plan on top of the paused one.
   const [hasAdaptivePlanEver, setHasAdaptivePlanEver] = useState(false);
   const [adaptivePlanRow, setAdaptivePlanRow] = useState<AdaptivePlanRow | null>(null);
-  const [adaptivePreview, setAdaptivePreview] = useState<AdaptiveDayPreview[]>([]);
-  const [expandedPreviewDay, setExpandedPreviewDay] = useState<number | null>(null);
   const [creatingNewPlan, setCreatingNewPlan] = useState(false);
+  // Distinguishes "still loading" from "genuinely nothing scheduled" — without
+  // this, the very first render after a cold launch (or right after finishing
+  // onboarding) briefly shows the planner as if no plan existed at all, before
+  // the async loads below resolve, which reads as "nothing happened".
+  const [plannerLoaded, setPlannerLoaded] = useState(false);
 
   const loadStart = useCallback(async () => {
     getUnfinishedSession().then(s => setUnfinished(s as any)).catch(() => setUnfinished(null));
@@ -100,6 +99,8 @@ export default function StartScreen() {
       setPlanDayLabels(dayLabels);
     } catch {
       setPlans([]); setPlanner({}); setPlanNames({}); setPlanDayLabels({});
+    } finally {
+      setPlannerLoaded(true);
     }
   }, []);
 
@@ -114,36 +115,6 @@ export default function StartScreen() {
     await Promise.all([loadStart(), plansManager.load()]);
     setRefreshing(false);
   };
-
-  // Per-day preview for the "Plano" tab — what's planned for each day of the
-  // active adaptive plan, with a rough time estimate. plan_exercises always
-  // holds the current phase's targets (rewritten in place each week by the
-  // adaptive engine — see utils/adaptiveService's applyPhaseToPlan), so this
-  // reflects whatever week/phase is active right now.
-  useEffect(() => {
-    let cancelled = false;
-    if (!adaptiveStatus) { setAdaptivePreview([]); return; }
-    getPlanExercisesWithDetails(adaptiveStatus.planId).then(rows => {
-      if (cancelled) return;
-      const byDay = new Map<number, any[]>();
-      for (const r of rows) {
-        const idx = r.day_index ?? 0;
-        const list = byDay.get(idx) ?? [];
-        list.push(r);
-        byDay.set(idx, list);
-      }
-      const days: AdaptiveDayPreview[] = Array.from(byDay.entries())
-        .sort(([a], [b]) => a - b)
-        .map(([dayIndex, exs]) => ({
-          dayIndex,
-          dayLabel: exs[0]?.day_label || 'Treino',
-          exercises: exs.map(e => ({ id: e.id, name: e.exercise_name, sets: e.sets, reps: e.reps_target })),
-          minutes: estimateDayMinutes(exs.map(e => ({ sets: e.sets, restSeconds: e.rest_seconds }))),
-        }));
-      setAdaptivePreview(days);
-    }).catch(() => setAdaptivePreview([]));
-    return () => { cancelled = true; };
-  }, [adaptiveStatus?.planId, adaptiveStatus?.phase, adaptiveStatus?.weekIndex]);
 
   const openDayPicker = (weekday: number) => {
     setEditingDay(weekday);
@@ -310,139 +281,92 @@ export default function StartScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} colors={[colors.primary]} />}
       >
         {/* TAB: MEU PLANO */}
-        {activeTab === 'plano' && (
+        {activeTab === 'plano' && !plannerLoaded && (
+          <View style={[styles.center, { paddingVertical: 60 }]}>
+            <ActivityIndicator color={colors.primary} />
+          </View>
+        )}
+        {activeTab === 'plano' && plannerLoaded && (
           <>
-            {/* Weekly planner — "Monday: Push, Wednesday: Pull...", inspired by
-                EvolveYou's weekly schedule. Tapping an assigned day starts that
-                workout directly; tapping an empty day opens the assignment picker. */}
-        <View style={[styles.plannerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <View style={styles.plannerHeader}>
-            <Calendar size={16} color={colors.textSecondary} />
-            <Text style={[styles.plannerTitle, { color: colors.textSecondary }]}>PLANEADOR SEMANAL</Text>
-          </View>
-          <View style={styles.plannerRow}>
-            {WEEKDAY_LABELS.map((label, weekday) => {
-              const entry = planner[weekday];
-              const isToday = weekday === today;
-              return (
-                <TouchableOpacity
-                  key={weekday}
-                  style={[
-                    styles.plannerDay,
-                    { backgroundColor: entry ? colors.primaryContainer : colors.surfaceVariant },
-                    isToday && { borderWidth: 2, borderColor: colors.primary },
-                  ]}
-                  onPress={() => entry ? startPlannerDay(entry) : openDayPicker(weekday)}
-                  onLongPress={() => openDayPicker(weekday)}
-                  delayLongPress={400}
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    entry
-                      ? `${WEEKDAY_FULL[weekday]}: ${planNames[entry.planId] || 'Treino'}, toca para iniciar, mantém para editar`
-                      : `${WEEKDAY_FULL[weekday]}: sem treino atribuído, toca para atribuir`
-                  }
-                >
-                  <Text style={[styles.plannerDayLabel, { color: isToday ? colors.primary : colors.textSecondary }]}>{label}</Text>
-                  {entry ? (
-                    <Text style={[styles.plannerDayPlan, { color: colors.primary }]} numberOfLines={1}>
-                      {(planDayLabels[`${entry.planId}:${entry.dayIndex}`] || planNames[entry.planId] || 'Treino').slice(0, 4)}
-                    </Text>
-                  ) : (
-                    <Plus size={14} color={colors.textTertiary} />
-                  )}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-
-        {/* Adaptive plan's day-by-day preview — what's planned for each
-            training day this week, plus a rough time estimate (sets, rest,
-            and time to switch exercise/weight). */}
-        {adaptiveStatus && adaptivePreview.length > 0 && (
-          <View style={[styles.plannerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <View style={styles.plannerHeader}>
-              <ListChecks size={16} color={colors.textSecondary} />
-              <Text style={[styles.plannerTitle, { color: colors.textSecondary }]}>O QUE ESTÁ PLANEADO</Text>
-            </View>
-            {adaptivePreview.map((day, i) => {
-              const expanded = expandedPreviewDay === day.dayIndex;
-              const totalSets = day.exercises.reduce((s, e) => s + e.sets, 0);
-              return (
-                <View key={day.dayIndex} style={i > 0 ? [styles.previewDayBlock, { borderTopColor: colors.border }] : undefined}>
-                  <TouchableOpacity
-                    style={styles.previewDayRow}
-                    onPress={() => setExpandedPreviewDay(expanded ? null : day.dayIndex)}
-                    accessibilityRole="button"
-                    accessibilityLabel={`${day.dayLabel}: ${day.exercises.length} exercícios, ${totalSets} séries, cerca de ${formatMinutes(day.minutes)}`}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.previewDayLabel, { color: colors.text }]}>{day.dayLabel}</Text>
-                      <Text style={[styles.previewDayMeta, { color: colors.textSecondary }]}>
-                        {day.exercises.length} exercícios · {totalSets} séries
-                      </Text>
-                    </View>
-                    <View style={styles.previewTimeChip}>
-                      <Clock size={13} color={colors.primary} />
-                      <Text style={[styles.previewTimeText, { color: colors.primary }]}>{formatMinutes(day.minutes)}</Text>
-                    </View>
-                    <ChevronDown size={16} color={colors.textTertiary} style={expanded ? styles.previewChevronOpen : undefined} />
-                  </TouchableOpacity>
-                  {expanded && (
-                    <View style={styles.previewExList}>
-                      {day.exercises.map(ex => (
-                        <View key={ex.id} style={styles.previewExRow}>
-                          <Text style={[styles.previewExName, { color: colors.text }]} numberOfLines={1}>{ex.name}</Text>
-                          <Text style={[styles.previewExMeta, { color: colors.textSecondary }]}>{ex.sets}×{ex.reps}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  )}
+            {/* Ação Principal — sempre uma e só uma: o treino de hoje (se
+                estiver agendado) ou o aviso de descanso com o próximo
+                treino. Vem primeiro porque é a única coisa que a pessoa
+                precisa de decidir agora. */}
+            {todayEntry ? (
+              <TouchableOpacity
+                style={[styles.todayCard, { backgroundColor: colors.secondary }]}
+                onPress={() => startPlannerDay(todayEntry)}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel={`Iniciar treino de hoje: ${planNames[todayEntry.planId] || 'Treino'}`}
+              >
+                <View style={styles.quickIcon}><Play size={28} color="#fff" /></View>
+                <View style={styles.quickInfo}>
+                  <Text style={styles.quickTitle}>Iniciar Treino de Hoje</Text>
+                  <Text style={styles.quickDesc} numberOfLines={1}>
+                    {planDayLabels[`${todayEntry.planId}:${todayEntry.dayIndex}`] || planNames[todayEntry.planId] || 'Treino'}
+                  </Text>
                 </View>
-              );
-            })}
-          </View>
-        )}
+              </TouchableOpacity>
+            ) : adaptiveStatus && (
+              <View style={[styles.todayCard, { backgroundColor: colors.surfaceVariant }]}>
+                <View style={[styles.quickIcon, { backgroundColor: colors.surface }]}>
+                  <Calendar size={28} color={colors.textSecondary} />
+                </View>
+                <View style={styles.quickInfo}>
+                  <Text style={[styles.quickTitle, { color: colors.text }]}>Dia de Descanso</Text>
+                  <Text style={[styles.quickDesc, { color: colors.textSecondary }]} numberOfLines={1}>
+                    {nextPlannedEntry
+                      ? `Próximo: ${nextPlannedEntry.weekday === (today + 1) % 7 ? 'Amanhã' : WEEKDAY_FULL[nextPlannedEntry.weekday]} · ${planDayLabels[`${nextPlannedEntry.entry.planId}:${nextPlannedEntry.entry.dayIndex}`] || planNames[nextPlannedEntry.entry.planId] || 'Treino'}`
+                      : 'Sem treinos agendados esta semana'}
+                  </Text>
+                </View>
+              </View>
+            )}
 
-        {/* Today's assigned workout gets a prominent CTA when set. */}
-        {todayEntry && (
-          <TouchableOpacity
-            style={[styles.todayCard, { backgroundColor: colors.secondary }]}
-            onPress={() => startPlannerDay(todayEntry)}
-            activeOpacity={0.85}
-            accessibilityRole="button"
-            accessibilityLabel={`Iniciar treino de hoje: ${planNames[todayEntry.planId] || 'Treino'}`}
-          >
-            <View style={styles.quickIcon}><Calendar size={28} color="#fff" /></View>
-            <View style={styles.quickInfo}>
-              <Text style={styles.quickTitle}>Treino de hoje</Text>
-              <Text style={styles.quickDesc} numberOfLines={1}>
-                {planNames[todayEntry.planId] || 'Treino'}
-                {planDayLabels[`${todayEntry.planId}:${todayEntry.dayIndex}`] ? ` · ${planDayLabels[`${todayEntry.planId}:${todayEntry.dayIndex}`]}` : ''}
-              </Text>
+            {/* Planeador Semanal — toca num dia atribuído para o iniciar,
+                mantém premido (ou toca num dia vazio) para atribuir/editar. */}
+            <View style={[styles.plannerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <View style={styles.plannerHeader}>
+                <Calendar size={16} color={colors.textSecondary} />
+                <Text style={[styles.plannerTitle, { color: colors.textSecondary }]}>PLANEADOR SEMANAL</Text>
+              </View>
+              <View style={styles.plannerRow}>
+                {WEEKDAY_DISPLAY_ORDER.map(weekday => {
+                  const label = WEEKDAY_LABELS[weekday];
+                  const entry = planner[weekday];
+                  const isToday = weekday === today;
+                  return (
+                    <TouchableOpacity
+                      key={weekday}
+                      style={[
+                        styles.plannerDay,
+                        { backgroundColor: entry ? colors.primaryContainer : colors.surfaceVariant },
+                        isToday && { borderWidth: 2, borderColor: colors.primary },
+                      ]}
+                      onPress={() => entry ? startPlannerDay(entry) : openDayPicker(weekday)}
+                      onLongPress={() => openDayPicker(weekday)}
+                      delayLongPress={400}
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        entry
+                          ? `${WEEKDAY_FULL[weekday]}: ${planNames[entry.planId] || 'Treino'}, toca para iniciar, mantém para editar`
+                          : `${WEEKDAY_FULL[weekday]}: sem treino atribuído, toca para atribuir`
+                      }
+                    >
+                      <Text style={[styles.plannerDayLabel, { color: isToday ? colors.primary : colors.textSecondary }]}>{label}</Text>
+                      {entry ? (
+                        <Text style={[styles.plannerDayPlan, { color: colors.primary }]} numberOfLines={1}>
+                          {(planDayLabels[`${entry.planId}:${entry.dayIndex}`] || planNames[entry.planId] || 'Treino').slice(0, 4)}
+                        </Text>
+                      ) : (
+                        <Plus size={14} color={colors.textTertiary} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             </View>
-            <Play size={28} color="#fff" />
-          </TouchableOpacity>
-        )}
-
-        {/* Rest-day counterpart to the CTA above — only once the adaptive
-            plan has actually populated the weekly planner, so this never
-            shows to someone who simply never assigned any day by hand. */}
-        {adaptiveStatus && !todayEntry && (
-          <View style={[styles.todayCard, { backgroundColor: colors.surfaceVariant }]}>
-            <View style={[styles.quickIcon, { backgroundColor: colors.surface }]}>
-              <Calendar size={28} color={colors.textSecondary} />
-            </View>
-            <View style={styles.quickInfo}>
-              <Text style={[styles.quickTitle, { color: colors.text }]}>Dia de Descanso</Text>
-              <Text style={[styles.quickDesc, { color: colors.textSecondary }]} numberOfLines={1}>
-                {nextPlannedEntry
-                  ? `Próximo treino: ${WEEKDAY_FULL[nextPlannedEntry.weekday]} · ${planNames[nextPlannedEntry.entry.planId] || 'Treino'}`
-                  : 'Sem treinos agendados esta semana'}
-              </Text>
-            </View>
-          </View>
-        )}
 
         {/* Unfinished workout recovery. A session row is created the moment a
             workout starts, so closing the app mid-workout used to leave it
@@ -861,17 +785,7 @@ const styles = StyleSheet.create({
   plannerDayLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14 },
   plannerDayPlan: { fontFamily: 'Inter-Bold', fontSize: 10, lineHeight: 13 },
   todayCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, padding: 18, gap: 14 },
-  previewDayBlock: { borderTopWidth: 1, marginTop: 4, paddingTop: 4 },
-  previewDayRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
-  previewDayLabel: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
-  previewDayMeta: { fontFamily: 'Inter-Regular', fontSize: 12, marginTop: 2 },
-  previewTimeChip: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  previewTimeText: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
-  previewChevronOpen: { transform: [{ rotate: '180deg' }] },
-  previewExList: { paddingLeft: 2, paddingBottom: 10, gap: 7 },
-  previewExRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  previewExName: { fontFamily: 'Inter-Regular', fontSize: 13, flex: 1, marginRight: 8 },
-  previewExMeta: { fontFamily: 'Inter-SemiBold', fontSize: 12 },
+  center: { alignItems: 'center', justifyContent: 'center' },
   picker: { flex: 1 },
   pickerHeader: { flexDirection: 'row', alignItems: 'center', padding: 16, borderBottomWidth: 1, gap: 12 },
   pickerTitle: { fontFamily: 'Inter-Bold', fontSize: 18 },

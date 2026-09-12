@@ -223,6 +223,11 @@ export default function OnboardingScreen() {
           equipmentPref: locDef?.equip ?? 'any',
           weekStartDow: 1,
         });
+        // Straight to the populated cycle overview — landing on the generic
+        // tabs root instead left the person to go find "Treino > Plano"
+        // themselves before seeing anything the onboarding answers produced.
+        router.replace('/adaptive/plan');
+        return;
       }
     } catch (err) {
       console.error('Onboarding finish failed:', err);
