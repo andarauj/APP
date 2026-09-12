@@ -420,12 +420,21 @@ export default function StartScreen() {
                   const entry = effectivePlanner[weekday];
                   const isToday = weekday === today;
                   const isBacklog = rollingByWeekday[weekday]?.isBacklog ?? false;
+                  // BUGFIX (reported: with 0 sessions done all week, Mon–Fri
+                  // still showed their native plan names as if those workouts
+                  // had actually happened). A past day this far behind the
+                  // real completion count was never trained — see
+                  // computeRollingSchedule's isSkipped. Shown muted, with a
+                  // neutral "Saltado" label instead of the plan name, so a
+                  // skipped day can never be mistaken for a done one.
+                  const isSkipped = rollingByWeekday[weekday]?.isSkipped ?? false;
                   return (
                     <TouchableOpacity
                       key={weekday}
                       style={[
                         styles.plannerDay,
-                        { backgroundColor: isBacklog ? colors.errorContainer : entry ? colors.primaryContainer : colors.surfaceVariant },
+                        { backgroundColor: isBacklog ? colors.errorContainer : isSkipped ? colors.surfaceVariant : entry ? colors.primaryContainer : colors.surfaceVariant },
+                        isSkipped && [styles.plannerDaySkipped, { borderColor: colors.border }],
                         isToday && { borderWidth: 2, borderColor: isBacklog ? colors.error : colors.primary },
                       ]}
                       onPress={() => entry ? startPlannerDay(entry) : openDayPicker(weekday)}
@@ -433,13 +442,19 @@ export default function StartScreen() {
                       delayLongPress={400}
                       accessibilityRole="button"
                       accessibilityLabel={
-                        entry
-                          ? `${WEEKDAY_FULL[weekday]}: ${planNames[entry.planId] || 'Treino'}, toca para iniciar, mantém para editar`
-                          : `${WEEKDAY_FULL[weekday]}: sem treino atribuído, toca para atribuir`
+                        isSkipped
+                          ? `${WEEKDAY_FULL[weekday]}: treino saltado, não foi realizado, toca para registar na mesma`
+                          : entry
+                            ? `${WEEKDAY_FULL[weekday]}: ${planNames[entry.planId] || 'Treino'}, toca para iniciar, mantém para editar`
+                            : `${WEEKDAY_FULL[weekday]}: sem treino atribuído, toca para atribuir`
                       }
                     >
                       <Text style={[styles.plannerDayLabel, { color: isToday ? colors.primary : colors.textSecondary }]}>{label}</Text>
-                      {entry ? (
+                      {isSkipped ? (
+                        <Text style={[styles.plannerDaySkippedLabel, { color: colors.textTertiary }]} numberOfLines={1}>
+                          Saltado
+                        </Text>
+                      ) : entry ? (
                         <Text style={[styles.plannerDayPlan, { color: colors.primary }]} numberOfLines={1}>
                           {(planDayLabels[`${entry.planId}:${entry.dayIndex}`] || planNames[entry.planId] || 'Treino').slice(0, 4)}
                         </Text>
@@ -869,8 +884,10 @@ const styles = StyleSheet.create({
   plannerTitle: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14, letterSpacing: 1 },
   plannerRow: { flexDirection: 'row', gap: 6 },
   plannerDay: { flex: 1, aspectRatio: 0.72, borderRadius: 10, alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 2 },
+  plannerDaySkipped: { opacity: 0.5, borderWidth: 1, borderStyle: 'dashed' },
   plannerDayLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14 },
   plannerDayPlan: { fontFamily: 'Inter-Bold', fontSize: 10, lineHeight: 13 },
+  plannerDaySkippedLabel: { fontFamily: 'Inter-Regular', fontSize: 9, lineHeight: 12, textDecorationLine: 'line-through' },
   todayCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, padding: 18, gap: 14 },
   center: { alignItems: 'center', justifyContent: 'center' },
   picker: { flex: 1 },

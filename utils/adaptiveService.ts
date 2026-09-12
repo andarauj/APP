@@ -314,6 +314,11 @@ export interface RollingScheduleEntry {
   weekday: number;   // 0=Sun..6=Sat
   dayIndex: number;  // which plan_exercises day_index this weekday shows
   isBacklog: boolean; // true only for today, and only when it's standing in for a missed earlier day
+  /** True only for a day strictly before today whose native slot was never
+   *  actually completed — see computeRollingSchedule's past-day comment.
+   *  Always false for today/backlog/upcoming entries. A caller rendering a
+   *  weekly grid should not show this day's dayIndex as if it happened. */
+  isSkipped: boolean;
 }
 
 /**
@@ -327,17 +332,27 @@ export interface RollingScheduleEntry {
  * completed since the week started, and treats that count as "how far
  * through the day-sequence the person really is."
  *
- * Days strictly before today are left showing their native assignment —
- * this doesn't rewrite history, only what's still ahead. From today onward,
- * slot k (0 = today, 1 = the next scheduled day after today, ...) shows
- * day-sequence position `completedCount + k`, cycling through the plan's
- * days with `% planDayIndices.length`. When there's a genuine backlog
- * (completedCount is behind how many native slots have already elapsed
- * before today), today is forced to show the first not-yet-done day —
- * even on a weekday the plan never natively scheduled — and every later
- * native slot shifts to absorb the delay, so the sequence (Push→Pull→
- * Pernas) keeps its order instead of jumping ahead over what was missed.
- * Caught up (or ahead), the formula collapses to exactly the native
+ * Days strictly before today keep their native dayIndex — this doesn't
+ * rewrite history, only what's still ahead — but each is also marked
+ * `isSkipped` when it falls beyond how many sessions actually completed
+ * this week (BUGFIX, reported: with 0 sessions done all week, the weekly
+ * grid still showed Mon–Fri's native plan names as if those workouts had
+ * happened, when in fact none had and the very first one had rolled all the
+ * way to today). Completions are assumed to consume past native slots in
+ * chronological order — the same assumption the forward cascade already
+ * relies on — so slot index `i` (0 = the earliest past native day) is
+ * `isSkipped: i >= completedCount`: the first `completedCount` past slots
+ * are treated as done, everything past that was never trained.
+ *
+ * From today onward, slot k (0 = today, 1 = the next scheduled day after
+ * today, ...) shows day-sequence position `completedCount + k`, cycling
+ * through the plan's days with `% planDayIndices.length`. When there's a
+ * genuine backlog (completedCount is behind how many native slots have
+ * already elapsed before today), today is forced to show the first
+ * not-yet-done day — even on a weekday the plan never natively scheduled —
+ * and every later native slot shifts to absorb the delay, so the sequence
+ * (Push→Pull→Pernas) keeps its order instead of jumping ahead over what was
+ * missed. Caught up (or ahead), the formula collapses to exactly the native
  * assignment — this is the only code path start.tsx needs for the week.
  */
 export function computeRollingSchedule(
@@ -363,6 +378,7 @@ export function computeRollingSchedule(
     weekday: wd,
     dayIndex: planDayIndices[i % D],
     isBacklog: false,
+    isSkipped: i >= completedCount,
   }));
 
   let k = 0;
@@ -370,16 +386,16 @@ export function computeRollingSchedule(
     // Forced catch-up slot — today, whether or not it was ever natively
     // scheduled. If it WAS native, this replaces (not duplicates) its own
     // entry below, since `upcoming` still contains it.
-    result.push({ weekday: today, dayIndex: planDayIndices[completedCount % D], isBacklog: true });
+    result.push({ weekday: today, dayIndex: planDayIndices[completedCount % D], isBacklog: true, isSkipped: false });
     k = 1;
   } else if (isTodayNative) {
-    result.push({ weekday: today, dayIndex: planDayIndices[completedCount % D], isBacklog: false });
+    result.push({ weekday: today, dayIndex: planDayIndices[completedCount % D], isBacklog: false, isSkipped: false });
     k = 1;
   }
 
   for (const wd of upcoming) {
     if (wd === today) continue; // already emitted above, either forced or native
-    result.push({ weekday: wd, dayIndex: planDayIndices[(completedCount + k) % D], isBacklog: false });
+    result.push({ weekday: wd, dayIndex: planDayIndices[(completedCount + k) % D], isBacklog: false, isSkipped: false });
     k += 1;
   }
 

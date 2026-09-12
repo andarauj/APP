@@ -179,13 +179,13 @@ describe('computeRollingSchedule', () => {
     // (completedCount=1), Wednesday's Pull was not. Checking on Thursday.
     const result = computeRollingSchedule([1, 3, 5], PPL, 1, 4, 1);
     const thursday = result.find(e => e.weekday === 4);
-    expect(thursday).toEqual({ weekday: 4, dayIndex: 1, isBacklog: true }); // Pull, forced, labelled late
+    expect(thursday).toEqual({ weekday: 4, dayIndex: 1, isBacklog: true, isSkipped: false }); // Pull, forced, labelled late
   });
 
   it('same backlog, checking on Friday instead: still shows the missed Wednesday session, not Friday\'s own', () => {
     const result = computeRollingSchedule([1, 3, 5], PPL, 1, 5, 1);
     const friday = result.find(e => e.weekday === 5);
-    expect(friday).toEqual({ weekday: 5, dayIndex: 1, isBacklog: true });
+    expect(friday).toEqual({ weekday: 5, dayIndex: 1, isBacklog: true, isSkipped: false });
   });
 
   it('cascades every later native day by the backlog amount ("efeito dominó")', () => {
@@ -194,20 +194,52 @@ describe('computeRollingSchedule', () => {
     // sequence AFTER the forced catch-up, not repeat or skip a day.
     const result = computeRollingSchedule([1, 3, 5], PPL, 1, 4, 1);
     const friday = result.find(e => e.weekday === 5);
-    expect(friday).toEqual({ weekday: 5, dayIndex: 2, isBacklog: false }); // Pernas
+    expect(friday).toEqual({ weekday: 5, dayIndex: 2, isBacklog: false, isSkipped: false }); // Pernas
   });
 
   it('leaves days before today showing their native assignment, untouched', () => {
     const result = computeRollingSchedule([1, 3, 5], PPL, 1, 4, 1);
     const monday = result.find(e => e.weekday === 1);
-    expect(monday).toEqual({ weekday: 1, dayIndex: 0, isBacklog: false }); // Push, native, past
+    expect(monday).toEqual({ weekday: 1, dayIndex: 0, isBacklog: false, isSkipped: false }); // Push, native, past — done, not skipped
   });
 
   it('caught up exactly: today shows its own native day, nothing marked late', () => {
     // Wednesday, having done Monday's session — right on schedule.
     const result = computeRollingSchedule([1, 3, 5], PPL, 1, 3, 1);
     const wednesday = result.find(e => e.weekday === 3);
-    expect(wednesday).toEqual({ weekday: 3, dayIndex: 1, isBacklog: false });
+    expect(wednesday).toEqual({ weekday: 3, dayIndex: 1, isBacklog: false, isSkipped: false });
+  });
+
+  it('BUGFIX: 0 sessions done all week — every past native day is marked skipped, not shown as done', () => {
+    // Mon-Fri split (5 distinct days), week starts Monday, checking on
+    // Saturday with completedCount=0. Reported bug: the weekly grid kept
+    // showing Mon–Fri's native plan names as if those workouts had actually
+    // happened, even though nothing was ever logged and the very first
+    // session had rolled all the way to today (Saturday).
+    const MTWTF = [0, 1, 2, 3, 4]; // 5 distinct plan days
+    const result = computeRollingSchedule([1, 2, 3, 4, 5], MTWTF, 0, 6, 1);
+    const pastDays = result.filter(e => e.weekday >= 1 && e.weekday <= 5);
+    expect(pastDays).toHaveLength(5);
+    expect(pastDays.every(e => e.isSkipped)).toBe(true);
+    expect(pastDays.every(e => !e.isBacklog)).toBe(true); // isBacklog is only ever true for today
+
+    const saturday = result.find(e => e.weekday === 6);
+    expect(saturday).toEqual({ weekday: 6, dayIndex: 0, isBacklog: true, isSkipped: false }); // first day, forced onto today
+  });
+
+  it('BUGFIX: partial progress — only the past days beyond completedCount are marked skipped', () => {
+    // Same Mon-Fri split, but two sessions were actually completed this
+    // week (Monday and Tuesday) before checking on Saturday. Only
+    // Wed/Thu/Fri — the ones genuinely never trained — should be skipped.
+    const MTWTF = [0, 1, 2, 3, 4];
+    const result = computeRollingSchedule([1, 2, 3, 4, 5], MTWTF, 2, 6, 1);
+    const byWeekday = new Map(result.map(e => [e.weekday, e]));
+    expect(byWeekday.get(1)?.isSkipped).toBe(false); // Monday — done
+    expect(byWeekday.get(2)?.isSkipped).toBe(false); // Tuesday — done
+    expect(byWeekday.get(3)?.isSkipped).toBe(true);  // Wednesday — never happened
+    expect(byWeekday.get(4)?.isSkipped).toBe(true);  // Thursday — never happened
+    expect(byWeekday.get(5)?.isSkipped).toBe(true);  // Friday — never happened
+    expect(byWeekday.get(6)).toEqual({ weekday: 6, dayIndex: 2, isBacklog: true, isSkipped: false }); // 3rd day, forced onto Saturday
   });
 
   it('a genuinely free rest day (no backlog) stays a rest day — no session is forced', () => {
@@ -223,7 +255,7 @@ describe('computeRollingSchedule', () => {
     // slots simply advance further in the sequence.
     const result = computeRollingSchedule([1, 3, 5], PPL, 2, 2, 1);
     const wednesday = result.find(e => e.weekday === 3);
-    expect(wednesday).toEqual({ weekday: 3, dayIndex: 2, isBacklog: false }); // Pernas, not Pull
+    expect(wednesday).toEqual({ weekday: 3, dayIndex: 2, isBacklog: false, isSkipped: false }); // Pernas, not Pull
   });
 
   it('multiple missed days still force just one catch-up session onto today, oldest first', () => {
@@ -231,7 +263,7 @@ describe('computeRollingSchedule', () => {
     // at all this week.
     const result = computeRollingSchedule([1, 3, 5], PPL, 0, 5, 1);
     const friday = result.find(e => e.weekday === 5);
-    expect(friday).toEqual({ weekday: 5, dayIndex: 0, isBacklog: true }); // Push — the oldest undone
+    expect(friday).toEqual({ weekday: 5, dayIndex: 0, isBacklog: true, isSkipped: false }); // Push — the oldest undone
   });
 
   it('wraps correctly through the plan\'s own day count once the backlog exceeds it', () => {
@@ -246,7 +278,7 @@ describe('computeRollingSchedule', () => {
     // Week starts Friday; native days Fri/Sun/Tue. Checking on Sunday.
     const result = computeRollingSchedule([5, 0, 2], PPL, 1, 0, 5);
     const sunday = result.find(e => e.weekday === 0);
-    expect(sunday).toEqual({ weekday: 0, dayIndex: 1, isBacklog: false }); // caught up, native Pull
+    expect(sunday).toEqual({ weekday: 0, dayIndex: 1, isBacklog: false, isSkipped: false }); // caught up, native Pull
   });
 
   it('returns nothing for a plan with no distinct days', () => {
@@ -279,7 +311,7 @@ describe('getRollingScheduleForPlan', () => {
     const result = await getRollingScheduleForPlan(42, 1, thursday);
 
     expect(result?.find(e => e.weekday === thursday.getDay())).toEqual({
-      weekday: thursday.getDay(), dayIndex: 1, isBacklog: true,
+      weekday: thursday.getDay(), dayIndex: 1, isBacklog: true, isSkipped: false,
     });
   });
 
