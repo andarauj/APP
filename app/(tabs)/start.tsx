@@ -40,7 +40,7 @@ const EQUIP_PREF_LABEL_PT: Record<string, string> = {
 export default function StartScreen() {
   const { colors } = useTheme();
   const { isReady } = useDatabase();
-  const { status: adaptiveStatus } = useAdaptiveStatus();
+  const { status: adaptiveStatus, loaded: adaptiveLoaded } = useAdaptiveStatus();
   const router = useRouter();
 
   // Top tabs: Explorar (criar/gerar planos), Plano (o planeador semanal),
@@ -265,8 +265,13 @@ export default function StartScreen() {
         ))}
       </View>
 
-      {/* Phase badge — NSPI_ENGINE.md §7: cor da fase + ‹ Ciclo N · Fase M › */}
-      {activeTab === 'plano' && adaptiveStatus && (
+      {/* Phase badge — NSPI_ENGINE.md §7: cor da fase + ‹ Ciclo N · Fase M ›.
+          Gated on adaptiveLoaded too (not just adaptiveStatus truthy) — this
+          comes from a separate hook than the planner load below, and without
+          waiting for both, the hero card/planner could render a beat before
+          this badge, or the "exercícios · RPE" line on the hero, making an
+          already-correct state look broken for that one frame. */}
+      {activeTab === 'plano' && adaptiveLoaded && adaptiveStatus && (
         <TouchableOpacity
           style={[styles.phaseBadgeRow, { borderBottomColor: colors.border }]}
           onPress={() => router.push('/adaptive/recap')}
@@ -287,12 +292,12 @@ export default function StartScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} colors={[colors.primary]} />}
       >
         {/* TAB: MEU PLANO */}
-        {activeTab === 'plano' && !plannerLoaded && (
+        {activeTab === 'plano' && (!plannerLoaded || !adaptiveLoaded) && (
           <View style={[styles.center, { paddingVertical: 60 }]}>
             <ActivityIndicator color={colors.primary} />
           </View>
         )}
-        {activeTab === 'plano' && plannerLoaded && (
+        {activeTab === 'plano' && plannerLoaded && adaptiveLoaded && (
           <>
             {/* Ação Principal — sempre uma e só uma: o treino de hoje (se
                 estiver agendado) ou o aviso de descanso com o próximo
@@ -383,44 +388,47 @@ export default function StartScreen() {
                 })}
               </View>
             </View>
-
-        {/* Unfinished workout recovery. A session row is created the moment a
-            workout starts, so closing the app mid-workout used to leave it
-            stranded with no way to resume or clear it. */}
-        {unfinished && (
-          <View style={[styles.resumeCard, { backgroundColor: colors.accentContainer, borderColor: colors.accent }]}>
-            <View style={styles.resumeTop}>
-              <AlertCircle size={20} color={colors.accent} />
-              <Text style={[styles.resumeTitle, { color: colors.accent }]}>Treino por terminar</Text>
-            </View>
-            <Text style={[styles.resumeName, { color: colors.text }]} numberOfLines={1}>{unfinished.name}</Text>
-            <View style={styles.resumeActions}>
-              <TouchableOpacity
-                style={[styles.resumeBtn, { backgroundColor: colors.accent }]}
-                onPress={() => router.push({ pathname: '/workout/summary', params: { sessionId: unfinished.id } })}
-                accessibilityRole="button"
-                accessibilityLabel="Ver resumo do treino por terminar"
-              >
-                <Text style={styles.resumeBtnText}>Ver resumo</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.resumeBtnOutline, { borderColor: colors.accent }]}
-                onPress={handleDiscardUnfinished}
-                accessibilityRole="button"
-                accessibilityLabel="Descartar treino por terminar"
-              >
-                <Text style={[styles.resumeBtnOutlineText, { color: colors.accent }]}>Descartar</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
           </>
         )}
 
         {/* TAB: INSTANTÂNEO — começar já, sem plano fixo */}
         {activeTab === 'instantaneo' && (
           <>
+            {/* Unfinished workout recovery. A session row is created the
+                moment a workout starts, so closing the app mid-workout used
+                to leave it stranded with no way to resume or clear it. Lives
+                here (not on the Plano tab) so an active adaptive cycle's
+                screen stays exactly the 3 blocks it's meant to be — this is
+                about an ad-hoc interrupted session, the same family as
+                Treino Livre/Repetir below, not about which plan is running. */}
+            {unfinished && (
+              <View style={[styles.resumeCard, { backgroundColor: colors.accentContainer, borderColor: colors.accent }]}>
+                <View style={styles.resumeTop}>
+                  <AlertCircle size={20} color={colors.accent} />
+                  <Text style={[styles.resumeTitle, { color: colors.accent }]}>Treino por terminar</Text>
+                </View>
+                <Text style={[styles.resumeName, { color: colors.text }]} numberOfLines={1}>{unfinished.name}</Text>
+                <View style={styles.resumeActions}>
+                  <TouchableOpacity
+                    style={[styles.resumeBtn, { backgroundColor: colors.accent }]}
+                    onPress={() => router.push({ pathname: '/workout/summary', params: { sessionId: unfinished.id } })}
+                    accessibilityRole="button"
+                    accessibilityLabel="Ver resumo do treino por terminar"
+                  >
+                    <Text style={styles.resumeBtnText}>Ver resumo</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.resumeBtnOutline, { borderColor: colors.accent }]}
+                    onPress={handleDiscardUnfinished}
+                    accessibilityRole="button"
+                    accessibilityLabel="Descartar treino por terminar"
+                  >
+                    <Text style={[styles.resumeBtnOutlineText, { color: colors.accent }]}>Descartar</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
             <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>COMEÇAR AGORA</Text>
 
             <TouchableOpacity
