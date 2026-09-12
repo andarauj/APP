@@ -11,13 +11,13 @@ import { Button } from '@/components/ui/Button';
 import { SearchBar } from '@/components/ui/SearchBar';
 import { ExerciseTile } from '@/components/ui/ExerciseTile';
 import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
-import { getPlanById, getPlanExercisesWithDetails, addExerciseToPlan, deletePlanExercise, updatePlanExercise } from '@/db/planDao';
+import { getPlanById, getPlanExercisesWithDetails, addExerciseToPlan, deletePlanExercise, updatePlanExercise, reorderPlanExercises } from '@/db/planDao';
 import { searchExercises } from '@/db/exerciseDao';
 import { exportPlanAsXml, shareXmlFile } from '@/utils/xmlExport';
 import { parseTempo } from '@/utils/calculators';
 import type { WorkoutPlan, SetType, MuscleGroup , Exercise } from '@/types';
 import { PLAN_TYPE_PT, SPLIT_TYPE_PT, MUSCLE_GROUPS_PT, EQUIPMENT_PT, SET_TYPE_PT } from '@/types';
-import { Play, Plus, Trash2, Download, X, CalendarDays } from 'lucide-react-native';
+import { Play, Plus, Trash2, Download, X, CalendarDays, ChevronUp, ChevronDown } from 'lucide-react-native';
 
 const REST_OPTIONS = [30, 60, 90, 120, 180, 240, 300];
 const SET_TYPES: SetType[] = ['normal', 'warmup', 'dropset', 'failure', 'amrap'];
@@ -84,6 +84,19 @@ export default function PlanDetailScreen() {
 
   const handleUpdate = async (pe: any) => {
     await updatePlanExercise(pe);
+    load();
+  };
+
+  // Swaps pe with its neighbor within its own day and persists the new
+  // order_index for just that day's rows — reorderPlanExercises only
+  // touches the ids it's given, so passing this day's ids leaves every
+  // other day's order_index untouched.
+  const handleReorder = async (dayExs: any[], index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= dayExs.length) return;
+    const reordered = [...dayExs];
+    [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
+    await reorderPlanExercises(Number(id), reordered.map(e => e.id));
     load();
   };
 
@@ -239,6 +252,26 @@ export default function PlanDetailScreen() {
                 <Text style={[styles.exSub, { color: colors.textSecondary }]}>
                   {ex.sets} séries · {ex.reps_target} reps{ex.weight_target > 0 ? ` · ${ex.weight_target}kg` : ''} · {ex.rest_seconds}s descanso
                 </Text>
+              </View>
+              <View style={styles.reorderBtns}>
+                <TouchableOpacity
+                  onPress={() => handleReorder(dayExercises, i, -1)}
+                  disabled={i === 0}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Mover ${ex.exercise_name} para cima`}
+                >
+                  <ChevronUp size={18} color={i === 0 ? colors.textTertiary : colors.textSecondary} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => handleReorder(dayExercises, i, 1)}
+                  disabled={i === dayExercises.length - 1}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Mover ${ex.exercise_name} para baixo`}
+                >
+                  <ChevronDown size={18} color={i === dayExercises.length - 1 ? colors.textTertiary : colors.textSecondary} />
+                </TouchableOpacity>
               </View>
               <TouchableOpacity onPress={() => handleDeleteExercise(ex.id)} hitSlop={8}>
                 <Trash2 size={18} color={colors.error} />
@@ -396,6 +429,7 @@ const styles = StyleSheet.create({
   },
   exIndexText: { fontFamily: 'Inter-Bold', fontSize: 10, lineHeight: 13, color: '#fff' },
   exInfo: { flex: 1 },
+  reorderBtns: { alignItems: 'center', justifyContent: 'center' },
   exName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   exSub: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
   addExBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 12, borderWidth: 2, borderStyle: 'dashed', paddingVertical: 14, marginBottom: 32 },
