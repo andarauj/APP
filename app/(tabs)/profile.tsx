@@ -18,6 +18,7 @@ import { pickBackupFile } from '@/utils/filePicker';
 import { calculate1RM, calculate1RMPercentages, calculatePlates, calculateWarmupSets } from '@/utils/calculators';
 import { scheduleWorkoutReminders, cancelAllWorkoutReminders, WEEKDAY_LABELS } from '@/utils/reminders';
 import { formatDate, formatVolume } from '@/utils/format';
+import { RADIUS } from '@/constants/tokens';
 import { pickBodyPhoto, captureBodyPhoto, removeBodyPhoto } from '@/utils/bodyPhoto';
 import { exportTrainingReportWithPhotos, shareZipFile } from '@/utils/exportWithPhotos';
 import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
@@ -407,15 +408,21 @@ function RecordsTab({ prs, colors, weeklyVolume }: {
       </>
     );
   }
+  // getPersonalRecords orders by max_weight DESC (heaviest lift first) —
+  // right for other callers (the training report export, history tab), but
+  // a "timeline" reads chronologically. Sorted here, not in the DAO, so
+  // this is the only consumer affected.
+  const timeline = [...prs].sort((a, b) => b.date_achieved - a.date_achieved);
   return (
     <>
       {volumeCard}
       <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>RECORDES PESSOAIS ({prs.length})</Text>
-      {prs.map((pr, i) => (
+      {timeline.map((pr, i) => (
         <Card key={i} style={styles.prCard}>
           <View style={styles.prHeader}>
             <Award size={16} color={colors.accent} />
             <Text style={[styles.prName, { color: colors.text }]} numberOfLines={1}>{pr.exercise_name}</Text>
+            <Text style={[styles.prDate, { color: colors.textTertiary }]}>{formatDate(pr.date_achieved * 1000)}</Text>
           </View>
           <View style={styles.prStats}>
             <View style={styles.prStat}>
@@ -548,7 +555,7 @@ function CalculatorTab({ colors }: { colors: any }) {
               accessibilityLabel={bw === 0 ? 'Sem barra' : `Barra de ${bw} quilos`}
               accessibilityState={{ selected: barWeight === bw }}
             >
-              <Text style={[styles.barChipText, { color: barWeight === bw ? '#fff' : colors.textSecondary }]}>
+              <Text style={[styles.barChipText, { color: barWeight === bw ? colors.onAccent : colors.textSecondary }]}>
                 {bw === 0 ? 'Sem barra' : `${bw}kg`}
               </Text>
             </TouchableOpacity>
@@ -762,7 +769,7 @@ function BodyTab({ metrics, latest, colors, onAdd, onDelete, onAnalyze, heightCm
         </Card>
       )}
 
-      <Button title="Registar Medidas" onPress={onAdd} icon={<Plus size={18} color="#fff" />} style={{ marginBottom: 8 }} />
+      <Button title="Registar Medidas" onPress={onAdd} icon={<Plus size={18} color={colors.onPrimary} />} style={{ marginBottom: 8 }} />
 
       {latest && (
         <TouchableOpacity
@@ -1049,7 +1056,7 @@ function SettingsTab({ settings, colors, onChange, onBackup, onRestore, onExport
         <Text style={[styles.calcDesc, { color: colors.textSecondary, marginBottom: 12 }]}>
           Exporta todos os dados (exercícios, planos, treinos, medidas) para um ficheiro XML. Usa para mudar de telemóvel ou prevenir perda de dados.
         </Text>
-        <Button title="Backup Completo" onPress={onBackup} icon={<Download size={18} color="#fff" />} style={{ marginBottom: 8 }} />
+        <Button title="Backup Completo" onPress={onBackup} icon={<Download size={18} color={colors.onPrimary} />} style={{ marginBottom: 8 }} />
         <Button title="Restaurar Backup" variant="outline" onPress={onRestore} icon={<Upload size={18} color={colors.primary} />} style={{ marginBottom: 8 }} />
         <Button title="Exportar Histórico (CSV)" variant="outline" onPress={onExportCsv} icon={<Download size={18} color={colors.primary} />} style={{ marginBottom: 8 }} />
         <Button title="Relatório para Partilhar" variant="outline" onPress={onExportReport} icon={<Sparkles size={18} color={colors.accent} />} style={{ marginBottom: 8 }} />
@@ -1305,38 +1312,37 @@ const styles = StyleSheet.create({
   prCard: { gap: 10 },
   prHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   prName: { fontFamily: 'Inter-SemiBold', fontSize: 15, flex: 1 },
+  prDate: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16 },
   prStats: { flexDirection: 'row', alignItems: 'center' },
   prStat: { flex: 1, alignItems: 'center' },
   prStatVal: { fontFamily: 'Inter-Bold', fontSize: 18 },
-  prStatLabel: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 14, marginTop: 2 },
+  prStatLabel: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
   prStatDiv: { width: 1, height: 32 },
   calcHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
-  calcDesc: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 19 },
+  calcDesc: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 17 },
   calcRow: { flexDirection: 'row', gap: 10, marginTop: 12, alignItems: 'flex-end' },
   calcField: { flex: 1 },
-  calcLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14, letterSpacing: 1, marginBottom: 6 },
-  calcInput: { borderRadius: 10, padding: 12, fontFamily: 'Inter-Regular', fontSize: 16, borderWidth: 1, textAlign: 'center' },
-  calcBtn: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 10, justifyContent: 'center' },
-  calcBtnText: { color: '#fff', fontFamily: 'Inter-SemiBold', fontSize: 14 },
+  calcLabel: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, letterSpacing: 1, marginBottom: 6 },
+  calcInput: { borderRadius: RADIUS.input, padding: 12, fontFamily: 'Inter-Regular', fontSize: 16, borderWidth: 1, textAlign: 'center' },
   calcResult: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderRadius: 12, padding: 14, marginTop: 12 },
   calcResultLabel: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   calcResultVal: { fontFamily: 'Inter-Bold', fontSize: 28 },
-  calcHint: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17, marginTop: 12 },
+  calcHint: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 12 },
   // A left-accent-border card reads as a clean highlight; the old solid
   // low-opacity accentContainer fill looked muddy against the dark theme.
   heroResult: { borderRadius: 12, borderLeftWidth: 4, padding: 14, marginTop: 14, gap: 4 },
-  heroResultLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14, letterSpacing: 1 },
+  heroResultLabel: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, letterSpacing: 1 },
   heroResultVal: { fontFamily: 'Inter-Bold', fontSize: 32 },
   percentGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   percentCell: { width: '31%', borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
-  percentLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14 },
+  percentLabel: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16 },
   percentValue: { fontFamily: 'Inter-Bold', fontSize: 16, marginTop: 2 },
   barRow: { flexDirection: 'row', gap: 8 },
   barChip: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
-  barChipText: { fontFamily: 'Inter-SemiBold', fontSize: 13, lineHeight: 17 },
+  barChipText: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16 },
   warmupRow: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12 },
   warmupPercentBadge: { width: 44, paddingVertical: 4, borderRadius: 8, alignItems: 'center' },
-  warmupPercentText: { fontFamily: 'Inter-Bold', fontSize: 13, lineHeight: 17 },
+  warmupPercentText: { fontFamily: 'Inter-Bold', fontSize: 12, lineHeight: 16 },
   warmupSetText: { fontFamily: 'Inter-Bold', fontSize: 15 },
   plateInputRow: { flexDirection: 'row', gap: 10, marginTop: 12, alignItems: 'flex-end' },
   plateField: { flex: 1 },
@@ -1360,7 +1366,7 @@ const styles = StyleSheet.create({
   photoOverlay: { flex: 1, backgroundColor: '#000000dd', alignItems: 'center', justifyContent: 'center', padding: 24 },
   metricLeft: { flex: 1 },
   metricDate: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
-  metricVals: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17, marginTop: 2 },
+  metricVals: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
   analyzeBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 12, borderWidth: 2, paddingVertical: 12, marginBottom: 8 },
   analyzeBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   modalScreen: { flex: 1 },
@@ -1371,12 +1377,12 @@ const styles = StyleSheet.create({
   volLabel: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, width: 76 },
   volTrack: { flex: 1, height: 8, borderRadius: 4, overflow: 'hidden' },
   volFill: { height: 8, borderRadius: 4 },
-  volValue: { fontFamily: 'Inter-Bold', fontSize: 13, lineHeight: 17, width: 26, textAlign: 'right' },
+  volValue: { fontFamily: 'Inter-Bold', fontSize: 12, lineHeight: 16, width: 26, textAlign: 'right' },
   settingChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   reminderTimeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   reminderTimeInput: { width: 64, height: 48, borderRadius: 12, borderWidth: 1, textAlign: 'center', fontFamily: 'Inter-Bold', fontSize: 20 },
   reminderTimeColon: { fontFamily: 'Inter-Bold', fontSize: 20 },
-  toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10 },
+  toggleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10, minHeight: 44 },
   toggleLabel: { fontFamily: 'Inter-Regular', fontSize: 15 },
   toggleSwitch: { width: 48, height: 28, borderRadius: 14, padding: 4 },
   toggleKnob: { width: 20, height: 20, borderRadius: 10 },

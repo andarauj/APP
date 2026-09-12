@@ -9,7 +9,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { Card } from '@/components/ui/Card';
-import { LineChart } from '@/components/ui/Charts';
+import { LineChart } from '@/components/ui/LineChart';
 import { getDatabase } from '@/db/database';
 import { formatDate } from '@/utils/format';
 import { calculate1RM as estimate1RM } from '@/utils/calculators';
@@ -33,6 +33,7 @@ export default function OneRepMaxScreen() {
   const [exerciseName, setExerciseName] = useState('');
   const [records, setRecords] = useState<OneRepMaxRecord[]>([]);
   const [chartData, setChartData] = useState<number[]>([]);
+  const [chartDates, setChartDates] = useState<string[]>([]);
 
   const loadData = useCallback(async () => {
     try {
@@ -66,7 +67,11 @@ export default function OneRepMaxScreen() {
       }));
 
       setRecords(recordsData);
-      setChartData(recordsData.map(r => r.estimated1RM).reverse());
+      // recordsData is newest-first (matches the query's ORDER BY); the
+      // chart reads left-to-right chronologically, so both need reversing.
+      const chronological = [...recordsData].reverse();
+      setChartData(chronological.map(r => r.estimated1RM));
+      setChartDates(chronological.map(r => formatDate(r.date * 1000)));
     } catch (err) {
       console.error('Failed to load 1RM data:', err);
     } finally {
@@ -208,19 +213,19 @@ export default function OneRepMaxScreen() {
                 </View>
               </Card>
 
-              {/* Progression Chart */}
-              {chartData.length > 1 && (
-                <Card>
-                  <Text style={[styles.chartTitle, { color: colors.text }]}>Progressão</Text>
-                  <LineChart
-                    data={chartData.map((value, idx) => ({ value, label: String(idx) }))}
-                    width={300}
-                    height={200}
-                    lineColor={colors.primary}
-                    backgroundColor={colors.surface}
-                  />
-                </Card>
-              )}
+              {/* Progression Chart — LineChart renders its own clean
+                  "Sem dados suficientes" placeholder below 2 points, so this
+                  card shows whenever there's at least one record instead of
+                  disappearing outright while there's too little to plot. */}
+              <Card>
+                <Text style={[styles.chartTitle, { color: colors.text }]}>Progressão</Text>
+                <LineChart
+                  data={chartDates.map((label, idx) => ({ value: chartData[idx], label }))}
+                  height={200}
+                  color={colors.primary}
+                  unit="kg"
+                />
+              </Card>
 
               {/* Records List */}
               <Card>
@@ -268,7 +273,7 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   emptyState: { alignItems: 'center', gap: 10, paddingVertical: 32 },
   emptyText: { fontFamily: 'Inter-SemiBold', fontSize: 16 },
-  emptySubText: { fontFamily: 'Inter-Regular', fontSize: 13, textAlign: 'center' },
+  emptySubText: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, textAlign: 'center' },
   currentrmContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -285,7 +290,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 12,
   },
-  improvementText: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
+  improvementText: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16 },
   chartTitle: { fontFamily: 'Inter-SemiBold', fontSize: 14, marginBottom: 12 },
   recordsTitle: { fontFamily: 'Inter-SemiBold', fontSize: 14, marginBottom: 8 },
   recordRow: {
@@ -294,10 +299,13 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingVertical: 10,
     borderBottomWidth: 1,
+    // 44dp minimum touch target — this row has no onPress today, but stays
+    // consistent with every other tappable/near-tappable row in the app.
+    minHeight: 44,
   },
-  recordDate: { fontFamily: 'Inter-Regular', fontSize: 12 },
-  recordWeight: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
-  record1RM: { fontFamily: 'Inter-Bold', fontSize: 13, minWidth: 60, textAlign: 'right' },
-  infoTitle: { fontFamily: 'Inter-SemiBold', fontSize: 13, marginBottom: 8 },
+  recordDate: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16 },
+  recordWeight: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16 },
+  record1RM: { fontFamily: 'Inter-Bold', fontSize: 12, lineHeight: 16, minWidth: 60, textAlign: 'right' },
+  infoTitle: { fontFamily: 'Inter-SemiBold', fontSize: 14, marginBottom: 8 },
   infoText: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 18 },
 });
