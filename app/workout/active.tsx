@@ -916,64 +916,6 @@ export default function ActiveWorkoutScreen() {
         </View>
       </View>
 
-      {/* Rest timer — circular ring clock (redesigned from a slim text bar
-          per a request for a circular countdown instead). Same countdown
-          state/notification logic as before; this only changes how it's
-          drawn. */}
-      {restActive && !restFinished && (
-        <View style={[styles.restCard, { backgroundColor: colors.surface, borderColor: restRemaining <= 10 ? colors.error : colors.border }]}>
-          <TouchableOpacity
-            onPress={() => { setRestActive(false); cancelRestEndNotification().catch(() => {}); }}
-            style={styles.restCloseBtn}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            accessibilityRole="button"
-            accessibilityLabel="Fechar descanso"
-          >
-            <X size={16} color={colors.textTertiary} />
-          </TouchableOpacity>
-
-          <Text style={[styles.restLabel, { color: colors.textSecondary }]}>DESCANSO</Text>
-
-          <View style={styles.restRingRow}>
-            <TouchableOpacity
-              onPress={() => {
-                addRestTime(-15);
-                // Keep the scheduled notification's timing in sync with a
-                // manual -15s/+15s adjustment, using the post-adjustment
-                // remaining time rather than the stale pre-adjustment value.
-                if (restRemindersEnabled) scheduleRestEndNotification(Math.max(1, restRemaining - 15), '').catch(() => {});
-              }}
-              style={[styles.restAdjPill, { backgroundColor: colors.surfaceVariant }]}
-              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
-              accessibilityRole="button"
-              accessibilityLabel="Reduzir descanso em 15 segundos"
-            >
-              <Text style={[styles.restAdjText, { color: colors.text }]}>-15s</Text>
-            </TouchableOpacity>
-
-            <RestRing
-              remaining={restRemaining}
-              duration={restDuration}
-              color={restRemaining <= 10 ? colors.error : colors.primary}
-              trackColor={colors.surfaceVariant}
-            />
-
-            <TouchableOpacity
-              onPress={() => {
-                addRestTime(15);
-                if (restRemindersEnabled) scheduleRestEndNotification(restRemaining + 15, '').catch(() => {});
-              }}
-              style={[styles.restAdjPill, { backgroundColor: colors.surfaceVariant }]}
-              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
-              accessibilityRole="button"
-              accessibilityLabel="Aumentar descanso em 15 segundos"
-            >
-              <Text style={[styles.restAdjText, { color: colors.text }]}>+15s</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
       {/* PR notification */}
       {newPrs.length > 0 && (
         <Animated.View
@@ -1089,8 +1031,8 @@ export default function ActiveWorkoutScreen() {
               <View style={[styles.exDot, { backgroundColor: ex.sets.every(s => s.done) ? colors.secondary : colors.primary }]} />
               <View style={styles.exHeaderInfo}>
                 <Text style={[styles.exName, { color: colors.text }]}>{ex.name}</Text>
-                <Text style={[styles.exMeta, { color: colors.textSecondary }]}>
-                  {MUSCLE_GROUPS_PT[ex.primaryMuscle as MuscleGroup] || ex.primaryMuscle} · {ex.sets.filter(s => s.done).length}/{ex.sets.length} séries
+                <Text style={[styles.exMeta, { color: colors.textSecondary }]} numberOfLines={1}>
+                  {MUSCLE_GROUPS_PT[ex.primaryMuscle as MuscleGroup] || ex.primaryMuscle} · {EQUIPMENT_PT[ex.equipment as keyof typeof EQUIPMENT_PT] || ex.equipment} · {ex.sets.filter(s => s.done).length}/{ex.sets.length} séries
                 </Text>
               </View>
               {adaptiveInfo?.states.has(ex.exerciseId) && (
@@ -1215,8 +1157,8 @@ export default function ActiveWorkoutScreen() {
                 <View style={styles.setHeaderRow}>
                   <Text style={[styles.setHeaderCell, styles.setNumCell, { color: colors.textTertiary }]}>S</Text>
                   <Text style={[styles.setHeaderCell, styles.setPrevCell, { color: colors.textTertiary }]}>ANTERIOR</Text>
-                  <Text style={[styles.setHeaderCell, styles.setRepsCell, { color: colors.textTertiary }]}>REPS</Text>
                   <Text style={[styles.setHeaderCell, styles.setWeightCell, { color: colors.textTertiary }]}>KG</Text>
+                  <Text style={[styles.setHeaderCell, styles.setRepsCell, { color: colors.textTertiary }]}>REPS</Text>
                   {!isSimple && <Text style={[styles.setHeaderCell, styles.setRpeCell, { color: colors.textTertiary }]}>RPE</Text>}
                   <View style={styles.setDoneCell} />
                 </View>
@@ -1278,7 +1220,9 @@ export default function ActiveWorkoutScreen() {
           </View>
         </View>
 
-        <View style={{ height: 32 }} />
+        {/* Extra clearance so the last card can scroll clear of the floating
+            rest bar (see below) instead of ending up hidden behind it. */}
+        <View style={{ height: restActive && !restFinished ? 84 : 32 }} />
       </ScrollView>
       </KeyboardAvoidingView>
 
@@ -1292,6 +1236,58 @@ export default function ActiveWorkoutScreen() {
           <View style={[styles.progressFooterTrack, { backgroundColor: colors.surfaceVariant }]}>
             <View style={[styles.progressFooterFill, { backgroundColor: colors.secondary, width: `${Math.min(100, (totalSets / totalPlannedSets) * 100)}%` }]} />
           </View>
+        </View>
+      )}
+
+      {/* Floating rest timer — a discreet, non-blocking toast at the bottom
+          of the screen instead of an inline card that used to push the
+          exercise list down while resting. It floats over the list (which
+          keeps scrolling underneath it) so the next sets stay reachable
+          during rest instead of waiting for the timer to end. Same
+          countdown state/notification logic as before; only the chrome
+          around it changed. */}
+      {restActive && !restFinished && (
+        <View
+          style={[
+            styles.floatingRestBar,
+            { bottom: totalPlannedSets > 0 ? 66 : 14 },
+            { backgroundColor: colors.surface, borderColor: restRemaining <= 10 ? colors.error : colors.border },
+          ]}
+        >
+          <RestRing
+            remaining={restRemaining}
+            duration={restDuration}
+            size={40}
+            strokeWidth={4}
+            color={restRemaining <= 10 ? colors.error : colors.primary}
+            trackColor={colors.surfaceVariant}
+          />
+          <Text style={[styles.floatingRestLabel, { color: colors.textSecondary }]}>DESCANSO</Text>
+          <View style={{ flex: 1 }} />
+          <TouchableOpacity
+            onPress={() => {
+              addRestTime(30);
+              // Keep the scheduled notification's timing in sync with the
+              // manual +30s adjustment, using the post-adjustment remaining
+              // time rather than the stale pre-adjustment value.
+              if (restRemindersEnabled) scheduleRestEndNotification(restRemaining + 30, '').catch(() => {});
+            }}
+            style={[styles.floatingRestBtn, { backgroundColor: colors.surfaceVariant }]}
+            hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+            accessibilityRole="button"
+            accessibilityLabel="Adicionar 30 segundos ao descanso"
+          >
+            <Text style={[styles.floatingRestBtnText, { color: colors.text }]}>+30s</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => { setRestActive(false); cancelRestEndNotification().catch(() => {}); }}
+            style={[styles.floatingRestBtn, { backgroundColor: colors.secondary }]}
+            hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+            accessibilityRole="button"
+            accessibilityLabel="Saltar descanso"
+          >
+            <Text style={[styles.floatingRestBtnText, { color: '#fff' }]}>Saltar</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -1564,6 +1560,10 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
   // Editable either because it's done (correcting a mistake) or because
   // it's the current set; a future, not-yet-reached set is neither.
   const editable = set.done || !locked;
+  // Highlights the one set that's actually actionable right now — the first
+  // undone, unlocked one — so a glance at a card mid-workout shows exactly
+  // where to pick up, instead of every not-yet-done row looking the same.
+  const isActive = !set.done && !locked;
   const repsInputRef = useRef<TextInput>(null);
   const weightInputRef = useRef<TextInput>(null);
   const [showRpe, setShowRpe] = useState(false);
@@ -1611,7 +1611,12 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
   return (
     <>
       <TouchableOpacity
-        style={[styles.setRow, set.done && { opacity: 0.5 }, locked && { opacity: 0.4 }]}
+        style={[
+          styles.setRow,
+          isActive && { backgroundColor: colors.primaryContainer + '40', borderRadius: 10 },
+          set.done && { opacity: 0.5 },
+          locked && { opacity: 0.4 },
+        ]}
         onLongPress={() => onRemove(exIdx, setIdx)}
         delayLongPress={600}
       >
@@ -1625,25 +1630,12 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
             {set.reps && set.weight ? `${set.reps}×${set.weight}` : '–'}
           </Text>
         </View>
-        <View style={styles.setRepsCell}>
-          <TextInput
-            ref={repsInputRef}
-            style={[styles.setInput, { color: colors.text, backgroundColor: editable ? colors.surfaceVariant : 'transparent', borderColor: colors.border }]}
-            value={set.reps}
-            onChangeText={v => onUpdate(exIdx, setIdx, 'reps', v)}
-            onFocus={() => onFocusInput(repsInputRef.current)}
-            onBlur={() => onCorrect(exIdx, setIdx)}
-            keyboardType="numeric"
-            selectTextOnFocus
-            editable={editable}
-          />
-        </View>
         <View style={[styles.setWeightCell, styles.weightCellRow]}>
           {editable && (
             <TouchableOpacity
               style={styles.weightStepBtn}
               onPress={() => { adjustWeight(-2.5); if (set.done) onCorrect(exIdx, setIdx, { weight: String(Math.max(0, (parseFloat(set.weight) || 0) - 2.5)) }); }}
-              hitSlop={6}
+              hitSlop={{ top: 12, bottom: 12, left: 8, right: 4 }}
               accessibilityRole="button"
               accessibilityLabel="Reduzir peso em 2.5 quilos"
             >
@@ -1665,13 +1657,26 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
             <TouchableOpacity
               style={styles.weightStepBtn}
               onPress={() => { adjustWeight(2.5); if (set.done) onCorrect(exIdx, setIdx, { weight: String((parseFloat(set.weight) || 0) + 2.5) }); }}
-              hitSlop={6}
+              hitSlop={{ top: 12, bottom: 12, left: 4, right: 8 }}
               accessibilityRole="button"
               accessibilityLabel="Aumentar peso em 2.5 quilos"
             >
               <Text style={[styles.weightStepText, { color: colors.secondary }]}>+</Text>
             </TouchableOpacity>
           )}
+        </View>
+        <View style={styles.setRepsCell}>
+          <TextInput
+            ref={repsInputRef}
+            style={[styles.setInput, { color: colors.text, backgroundColor: editable ? colors.surfaceVariant : 'transparent', borderColor: colors.border }]}
+            value={set.reps}
+            onChangeText={v => onUpdate(exIdx, setIdx, 'reps', v)}
+            onFocus={() => onFocusInput(repsInputRef.current)}
+            onBlur={() => onCorrect(exIdx, setIdx)}
+            keyboardType="numeric"
+            selectTextOnFocus
+            editable={editable}
+          />
         </View>
         {/* A done set stays editable (to fix a mistake), unlike a future,
             not-yet-reached one — see the `editable`/`locked` comments above.
@@ -1781,6 +1786,9 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
       {showRpe && (
         <View style={[styles.rpePicker, { backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}>
           <Text style={[styles.rpeTitle, { color: colors.textSecondary }]}>RPE (Esforço Percebido)</Text>
+          <Text style={[styles.rpeHint, { color: colors.textTertiary }]}>
+            RPE 10 = até à falha · cada ponto abaixo ≈ +1 rep em reserva (ex.: RPE 8 ≈ 2 reps em reserva)
+          </Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ height: 48 }}>
             <View style={styles.rpeRow}>
               {RPE_VALUES.map(r => (
@@ -1822,12 +1830,15 @@ const styles = StyleSheet.create({
   statValue: { fontFamily: 'Inter-Bold', fontSize: 16 },
   statLabel: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 14 },
   statDiv: { width: 1, height: 28 },
-  restCard: { alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: 1, gap: 8 },
-  restCloseBtn: { position: 'absolute', top: 10, right: 12, zIndex: 1, padding: 4 },
-  restLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, letterSpacing: 1 },
-  restRingRow: { flexDirection: 'row', alignItems: 'center', gap: 20 },
-  restAdjPill: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20 },
-  restAdjText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
+  floatingRestBar: {
+    position: 'absolute', left: 12, right: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, borderWidth: 1,
+    elevation: 6, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 8, shadowOffset: { width: 0, height: 3 },
+  },
+  floatingRestLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, letterSpacing: 1 },
+  floatingRestBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, minWidth: 44, alignItems: 'center', justifyContent: 'center' },
+  floatingRestBtnText: { fontFamily: 'Inter-Bold', fontSize: 13 },
   prNotif: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 8 },
   prText: { fontFamily: 'Inter-Bold', fontSize: 14 },
   adjustNotif: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingHorizontal: 14, paddingVertical: 10, marginHorizontal: 12, marginTop: 8, borderRadius: 12 },
@@ -1855,14 +1866,14 @@ const styles = StyleSheet.create({
   setWeightCell: { flex: 1.3, alignItems: 'center' },
   weightCellRow: { flexDirection: 'row', gap: 2 },
   setInputInRow: { width: undefined, flex: 1 },
-  weightStepBtn: { width: 18, alignItems: 'center', justifyContent: 'center' },
+  weightStepBtn: { width: 26, height: 44, alignItems: 'center', justifyContent: 'center' },
   weightStepText: { fontFamily: 'Inter-Black', fontSize: 18, lineHeight: 20 },
-  setRpeCell: { width: 36, alignItems: 'center' },
+  setRpeCell: { width: 44, alignItems: 'center', justifyContent: 'center' },
   setDoneCell: { width: 36, alignItems: 'center' },
   setNumBadge: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   setNumText: { fontFamily: 'Inter-Bold', fontSize: 12, lineHeight: 16 },
   setPrevText: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16 },
-  setInput: { width: '100%', height: 38, borderRadius: 8, textAlign: 'center', fontFamily: 'Inter-SemiBold', fontSize: 15, borderWidth: 1 },
+  setInput: { width: '100%', height: 44, borderRadius: 8, textAlign: 'center', fontFamily: 'Inter-SemiBold', fontSize: 15, borderWidth: 1 },
   rpeText: { fontFamily: 'Inter-SemiBold', fontSize: 13, lineHeight: 17 },
   doneBtn: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   progressHint: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, marginBottom: 8 },
@@ -1882,6 +1893,7 @@ const styles = StyleSheet.create({
   quickClose: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, alignItems: 'center' },
   rpePicker: { marginTop: 4, borderRadius: 10, borderWidth: 1, padding: 10, gap: 8 },
   rpeTitle: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14 },
+  rpeHint: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 15 },
   rpeRow: { flexDirection: 'row', gap: 6, alignItems: 'center' },
   rpeChip: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   rpeChipText: { fontFamily: 'Inter-Bold', fontSize: 14 },
