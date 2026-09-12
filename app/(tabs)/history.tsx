@@ -195,7 +195,31 @@ export default function HistoryScreen() {
   return (
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Histórico</Text>
+        <View style={styles.headerTitleRow}>
+          {/* BUGFIX (reported: "não deixa voltar a trás"): this screen is a
+              hidden tab (reached via router.push from Progresso/summary, not
+              a visible bottom-tab icon), so there's no bottom-bar icon to tap
+              back to Progresso with. router.canGoBack()/router.back() looked
+              like the fix but isn't: canGoBack() is true even right after a
+              plain tab switch, and back() in that case doesn't return to
+              Progresso — it unwinds to the tabs navigator's first declared
+              child (Descobrir) instead, regardless of which tab was actually
+              open before. router.replace('/(tabs)') has the same problem
+              once the tabs navigator is already mounted. router.navigate,
+              unlike back()/replace(), lets an already-mounted nested
+              navigator resolve to the right screen instead of resetting —
+              confirmed on-device across every entry point (Progresso tab
+              switch, and back-out-of-Equilíbrio-Muscular stack pop). */}
+          <TouchableOpacity
+            onPress={() => router.navigate('/(tabs)')}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Voltar"
+          >
+            <ChevronLeft size={26} color={colors.text} />
+          </TouchableOpacity>
+          <Text style={[styles.headerTitle, { color: colors.text }]}>Histórico</Text>
+        </View>
         <TouchableOpacity onPress={handleImport} style={[styles.importBtn, { backgroundColor: colors.surfaceVariant }]} accessibilityRole="button" accessibilityLabel="Importar treino ou plano XML">
           <Upload size={18} color={colors.textSecondary} />
           <Text style={[styles.importText, { color: colors.textSecondary }]}>Importar</Text>
@@ -540,6 +564,7 @@ const styles = StyleSheet.create({
   dayEmptyText: { fontFamily: 'Inter-Regular', fontSize: 14, textAlign: 'center' },
   screen: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   headerTitle: { fontFamily: 'Inter-Bold', fontSize: 28 },
   importBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 },
   importText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },

@@ -332,6 +332,7 @@ export default function ActiveWorkoutScreen() {
           progression: progression?.shouldProgress
             ? { suggestedWeight: progression.suggestedWeight, reason: progression.reason }
             : null,
+          imageUrl: t.image_url || '',
         };
       }));
       setExercises(repeated);
@@ -402,6 +403,7 @@ export default function ActiveWorkoutScreen() {
       equipment: alt.equipment,
       userNotes: (alt as any).user_notes || '',
       progression: null,
+      imageUrl: alt.image_url || '',
       // Keep the same number of sets, but reset loads to this exercise's own
       // history rather than carrying over the previous exercise's weight.
       sets: e.sets.map(s => ({
@@ -453,6 +455,7 @@ export default function ActiveWorkoutScreen() {
       progression: progression?.shouldProgress
         ? { suggestedWeight: progression.suggestedWeight, reason: progression.reason }
         : null,
+      imageUrl: ex.image_url || '',
     };
     setExercises(prev => [...prev, newEx]);
     setShowAddExercise(false);
@@ -907,9 +910,9 @@ export default function ActiveWorkoutScreen() {
       </View>
 
       {/* Rest timer — circular ring clock (redesigned from a slim text bar
-          per request: "o relógio gosto mais como o da jetfit"). Same
-          countdown state/notification logic as before; this only changes
-          how it's drawn. */}
+          per a request for a circular countdown instead). Same countdown
+          state/notification logic as before; this only changes how it's
+          drawn. */}
       {restActive && !restFinished && (
         <View style={[styles.restCard, { backgroundColor: colors.surface, borderColor: restRemaining <= 10 ? colors.error : colors.border }]}>
           <TouchableOpacity

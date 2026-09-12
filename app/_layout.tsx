@@ -15,6 +15,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useColorScheme } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { UpdateBanner } from '@/components/UpdateBanner';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -65,6 +66,7 @@ export default function RootLayout() {
             <Stack.Screen name="+not-found" />
           </Stack>
           <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
+          <UpdateBanner />
         </DatabaseProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

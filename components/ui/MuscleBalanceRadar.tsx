@@ -4,6 +4,7 @@
 
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import Svg, { Path, Line, Circle, Text as SvgText } from 'react-native-svg';
 import { useTheme } from '@/hooks/useTheme';
 
 export interface MuscleVolumeData {
@@ -39,7 +40,7 @@ const MUSCLE_COLORS: Record<string, string> = {
 
 export function MuscleBalanceRadar({ data, size = 250, strokeWidth = 2 }: RadarChartProps) {
   const { colors } = useTheme();
-  
+
   if (data.length === 0) {
     return (
       <View style={styles.empty}>
@@ -109,10 +110,10 @@ export function MuscleBalanceRadar({ data, size = 250, strokeWidth = 2 }: RadarC
 
   return (
     <View style={styles.container}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
         {/* Grid levels */}
         {gridPaths.map((path, idx) => (
-          <path
+          <Path
             key={`grid-${idx}`}
             d={path}
             fill="none"
@@ -124,7 +125,7 @@ export function MuscleBalanceRadar({ data, size = 250, strokeWidth = 2 }: RadarC
 
         {/* Radial lines */}
         {radialLines.map((line, idx) => (
-          <line
+          <Line
             key={`radial-${idx}`}
             x1={line.x1}
             y1={line.y1}
@@ -137,7 +138,7 @@ export function MuscleBalanceRadar({ data, size = 250, strokeWidth = 2 }: RadarC
         ))}
 
         {/* Data polygon */}
-        <path
+        <Path
           d={dataPath}
           fill="#8B7FFF"
           fillOpacity={0.2}
@@ -150,7 +151,7 @@ export function MuscleBalanceRadar({ data, size = 250, strokeWidth = 2 }: RadarC
           const point = getPoint(i, d.percentage);
           const color = MUSCLE_COLORS[d.muscle.toLowerCase()] || '#8B7FFF';
           return (
-            <circle
+            <Circle
               key={`point-${i}`}
               cx={point.x}
               cy={point.y}
@@ -167,7 +168,7 @@ export function MuscleBalanceRadar({ data, size = 250, strokeWidth = 2 }: RadarC
           const levelPercent = ((idx + 1) / numLevels) * 100;
           const point = getPoint(0, levelPercent);
           return (
-            <text
+            <SvgText
               key={`level-${idx}`}
               x={point.x - 8}
               y={point.y - 8}
@@ -176,10 +177,10 @@ export function MuscleBalanceRadar({ data, size = 250, strokeWidth = 2 }: RadarC
               opacity={0.6}
             >
               {levelPercent.toFixed(0)}%
-            </text>
+            </SvgText>
           );
         })}
-      </svg>
+      </Svg>
 
       {/* Legend */}
       <View style={styles.legend}>
