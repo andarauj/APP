@@ -141,6 +141,22 @@ export function isCompoundMovement(name: string): boolean {
   return !has(norm(name), ...ISOLATION_KEYWORDS);
 }
 
+// The seed DB (free-exercise-db) tags a lot of competitive Olympic
+// weightlifting / kettlebell-ballistic work under ordinary muscle groups
+// (Snatch → quads, Clean → hamstrings, Split Jerk → quads...). They're
+// technical, coach-taught skills, not a reasonable default pick for an
+// auto-generated hypertrophy/strength day — and because their names are
+// short ("Snatch", "Clean", one or two words), planGenerator's own
+// prefer-the-shorter-name tie-break (see sortCandidates) was routinely
+// picking them over legitimate anchor lifts like Barbell Squat or Romanian
+// Deadlift. Excluded only from auto-generation's candidate pool — still
+// fully searchable and addable by hand via the exercise browser.
+const OLYMPIC_LIFT_KEYWORDS = ['snatch', 'clean', 'jerk'];
+
+export function isOlympicLiftSpecialty(name: string): boolean {
+  return has(norm(name), ...OLYMPIC_LIFT_KEYWORDS);
+}
+
 /** Tally a list of trained sets into the six-bucket shape computeNspi wants. */
 export function tallyMovementBuckets(
   sets: { name: string; primaryMuscle?: string; equipment?: string }[],

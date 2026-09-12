@@ -59,6 +59,13 @@ export default function AdaptiveStartScreen() {
   const [goalKey, setGoalKey] = useState<string | null>(null);
   const [level, setLevel] = useState<string | null>(null);
   const [planId, setPlanId] = useState<number | null>(null);
+  // planId alone can't tell "haven't chosen yet" apart from "chose Criar
+  // plano novo" — both leave planId null. Without this, tapping "Criar
+  // plano novo" while existing plans are present never shows as selected
+  // and Continuar stays permanently disabled (see the plan step's value
+  // computation below) — a dead end the wizard's own "new" option could
+  // never actually complete.
+  const [planStepTouched, setPlanStepTouched] = useState(false);
   const [days, setDays] = useState<string | null>(null);
   const [location, setLocation] = useState<string | null>(null);
   const [minutes, setMinutes] = useState<string | null>(null);
@@ -113,6 +120,7 @@ export default function AdaptiveStartScreen() {
         finalPlanId = await generatePlan(Number(days), Number(minutes), goalDef.planType, {
           equipmentPref: locDef?.equip ?? 'any',
           customName: 'Plano Adaptativo',
+          ignoreUsageHistory: true,
         });
       }
       const planDays = await getPlanDays(finalPlanId);
@@ -207,8 +215,8 @@ export default function AdaptiveStartScreen() {
       <Question
         title="A que plano aplicamos a periodização?"
         options={planOpts}
-        value={planId !== null ? String(planId) : (planOpts.length === 1 ? 'new' : null)}
-        onSelect={(k) => setPlanId(k === 'new' ? null : Number(k))}
+        value={planId !== null ? String(planId) : (planStepTouched || planOpts.length === 1 ? 'new' : null)}
+        onSelect={(k) => { setPlanStepTouched(true); setPlanId(k === 'new' ? null : Number(k)); }}
         onContinue={afterPlanChoice}
       />
     );

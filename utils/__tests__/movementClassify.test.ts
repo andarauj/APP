@@ -1,4 +1,4 @@
-import { mainPattern, movementBucket, tallyMovementBuckets, isCompoundMovement } from '../movementClassify';
+import { mainPattern, movementBucket, tallyMovementBuckets, isCompoundMovement, isOlympicLiftSpecialty } from '../movementClassify';
 
 describe('mainPattern — the five compounds', () => {
   it('recognises the barbell lifts by name', () => {
@@ -120,6 +120,25 @@ describe('isCompoundMovement', () => {
     expect(isCompoundMovement('Standing Calf Raise')).toBe(false);
     expect(isCompoundMovement('Dumbbell Shrug')).toBe(false);
     expect(isCompoundMovement('Preacher Curl')).toBe(false);
+  });
+});
+
+describe('isOlympicLiftSpecialty', () => {
+  it('flags snatch/clean/jerk family movements regardless of variant or equipment', () => {
+    expect(isOlympicLiftSpecialty('Snatch')).toBe(true);
+    expect(isOlympicLiftSpecialty('Clean')).toBe(true);
+    expect(isOlympicLiftSpecialty('Power Clean')).toBe(true);
+    expect(isOlympicLiftSpecialty('Hang Clean')).toBe(true);
+    expect(isOlympicLiftSpecialty('Split Jerk')).toBe(true);
+    expect(isOlympicLiftSpecialty('Clean and Jerk')).toBe(true);
+    expect(isOlympicLiftSpecialty('Kneeling Jump Squat')).toBe(false);
+  });
+
+  it('leaves ordinary gym staples alone', () => {
+    expect(isOlympicLiftSpecialty('Barbell Squat')).toBe(false);
+    expect(isOlympicLiftSpecialty('Romanian Deadlift')).toBe(false);
+    expect(isOlympicLiftSpecialty('Barbell Hip Thrust')).toBe(false);
+    expect(isOlympicLiftSpecialty('Kneeling Squat')).toBe(false);
   });
 });
 

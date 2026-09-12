@@ -140,6 +140,39 @@ describe('pickExercisesForDay diversifies by movement family', () => {
   });
 });
 
+// BUGFIX (found by generating a fresh leg day): the seed DB tags a lot of
+// competitive Olympic weightlifting under ordinary muscle groups (Snatch →
+// quads, Clean → hamstrings), and their one/two-word names made them win
+// sortCandidates' prefer-the-shorter-name tie-break over legitimate anchor
+// lifts like Barbell Squat — a generated "Pernas" day came back as
+// Snatch/Clean/Kneeling Squat, none of them a sane 3x12-15 hypertrophy pick.
+describe('pickExercisesForDay excludes Olympic-lift specialty movements', () => {
+  it('never picks Snatch/Clean over an ordinary compound lift, even with no usage history to break the tie', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Snatch', 'quads', 'barbell'),
+      ex(2, 'Barbell Squat', 'quads', 'barbell'),
+      ex(3, 'Clean', 'hamstrings', 'barbell'),
+      ex(4, 'Romanian Deadlift', 'hamstrings', 'barbell'),
+    ];
+    const picked = pickExercisesForDay(pool, ['quads', 'hamstrings'], 45, 'any', []);
+    const names = picked.map(e => e.name);
+    expect(names).not.toContain('Snatch');
+    expect(names).not.toContain('Clean');
+    expect(names).toContain('Barbell Squat');
+    expect(names).toContain('Romanian Deadlift');
+  });
+
+  it('still excludes them even if they have real usage history behind them', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Snatch', 'quads', 'barbell'),
+      ex(2, 'Barbell Squat', 'quads', 'barbell'),
+    ];
+    const usageHistory = new Map([[1, 10]]);
+    const picked = pickExercisesForDay(pool, ['quads'], 45, 'any', [], usageHistory);
+    expect(picked.map(e => e.name)).toEqual(['Barbell Squat']);
+  });
+});
+
 describe('orderByMuscleGroup', () => {
   it('groups exercises by the focus muscle order given', () => {
     const mixed: Exercise[] = [

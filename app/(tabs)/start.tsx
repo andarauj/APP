@@ -6,13 +6,13 @@ import { useDatabase } from '@/hooks/useDatabase';
 import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
 import { usePlansManager } from '@/hooks/usePlansManager';
 import { getAllPlans, getPlanDays, getPlanExercisesWithDetails } from '@/db/planDao';
-import { getLatestAdaptivePlanAny, type AdaptivePlanRow } from '@/db/adaptiveDao';
+import { getLatestAdaptivePlanAny, deleteAdaptivePlanData, type AdaptivePlanRow } from '@/db/adaptiveDao';
 import { getWeeklyPlanner, setPlannerDay, type WeeklyPlanner, type PlannerEntry } from '@/db/plannerDao';
 import { getUnfinishedSession, discardSession, getAllSessions } from '@/db/workoutDao';
 import type { WorkoutPlan } from '@/types';
 import { PLAN_TYPE_PT } from '@/types';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { Play, Zap, Plus, AlertCircle, RotateCcw, Calendar, Check as CheckIcon, X as XIcon, Sparkles, ListChecks, ChevronRight, Clock, ChevronDown, Home as HomeIcon } from 'lucide-react-native';
+import { Play, Zap, Plus, AlertCircle, RotateCcw, RefreshCw, Calendar, Check as CheckIcon, X as XIcon, Sparkles, ListChecks, ChevronRight, Clock, ChevronDown, Home as HomeIcon } from 'lucide-react-native';
 import { WEEKDAY_LABELS } from '@/utils/reminders';
 import { PHASE_LABEL_PT, PHASE_COLOR } from '@/utils/adaptivePlan';
 import { estimateDayMinutes, formatMinutes } from '@/utils/workoutTime';
@@ -73,6 +73,7 @@ export default function StartScreen() {
   const [adaptivePlanRow, setAdaptivePlanRow] = useState<AdaptivePlanRow | null>(null);
   const [adaptivePreview, setAdaptivePreview] = useState<AdaptiveDayPreview[]>([]);
   const [expandedPreviewDay, setExpandedPreviewDay] = useState<number | null>(null);
+  const [creatingNewPlan, setCreatingNewPlan] = useState(false);
 
   const loadStart = useCallback(async () => {
     getUnfinishedSession().then(s => setUnfinished(s as any)).catch(() => setUnfinished(null));
@@ -211,6 +212,41 @@ export default function StartScreen() {
         onPress: async () => { await discardSession(unfinished.id); setUnfinished(null); },
       },
     ]);
+  };
+
+  /**
+   * The rich hero card's own action, not just its "Ver o meu plano" button
+   * — this is what "the Plano Adaptativo card" means when someone wants a
+   * fresh cycle without first opening the plan detail screen. Clears this
+   * plan's own progression state (deleteAdaptivePlanData — cycles/weeks/
+   * exercise state, not the underlying workout exercises) then drops
+   * straight into the generation wizard, same as app/adaptive/plan.tsx's
+   * equivalent action.
+   */
+  const createNewAdaptivePlan = () => {
+    if (!adaptiveStatus) return;
+    Alert.alert(
+      'Criar plano novo?',
+      'Isto apaga o progresso do plano adaptativo atual (ciclos e semanas registadas). Os treinos já registados no histórico não são afetados.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Criar novo',
+          style: 'destructive',
+          onPress: async () => {
+            setCreatingNewPlan(true);
+            try {
+              await deleteAdaptivePlanData(adaptiveStatus.adaptivePlanId);
+              router.push('/adaptive/start');
+            } catch (err) {
+              console.error('[adaptive] deleteAdaptivePlanData failed:', err);
+            } finally {
+              setCreatingNewPlan(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -468,38 +504,52 @@ export default function StartScreen() {
                 "get started" card, since there's no goal/duration/
                 equipment yet to show. */}
             {adaptiveStatus ? (
-              <TouchableOpacity
-                style={[styles.adaptiveHero, { backgroundColor: colors.accent }]}
-                onPress={() => router.push('/adaptive/plan')}
-                activeOpacity={0.9}
-              >
-                <View style={[styles.adaptivePhasePill, { backgroundColor: PHASE_COLOR[adaptiveStatus.phase] }]}>
-                  <Text style={styles.adaptivePhasePillText}>
-                    Ciclo {adaptiveStatus.cycleIndex} · {PHASE_LABEL_PT[adaptiveStatus.phase]}
-                  </Text>
-                </View>
-                <Text style={styles.adaptiveHeroTitle}>Plano Adaptativo</Text>
-                <Text style={styles.adaptiveHeroSub}>O teu programa atualiza-se todas as semanas</Text>
-                <View style={styles.adaptiveHeroRow}>
-                  <View style={styles.adaptiveHeroCol}>
-                    <Text style={styles.adaptiveHeroValue} numberOfLines={1}>{GOAL_LABEL_PT[adaptiveStatus.goal] ?? adaptiveStatus.goal}</Text>
-                    <Text style={styles.adaptiveHeroLabel}>Objetivo</Text>
+              <View style={[styles.adaptiveHero, { backgroundColor: colors.accent }]}>
+                <TouchableOpacity onPress={() => router.push('/adaptive/plan')} activeOpacity={0.9}>
+                  <View style={[styles.adaptivePhasePill, { backgroundColor: PHASE_COLOR[adaptiveStatus.phase] }]}>
+                    <Text style={styles.adaptivePhasePillText}>
+                      Ciclo {adaptiveStatus.cycleIndex} · {PHASE_LABEL_PT[adaptiveStatus.phase]}
+                    </Text>
                   </View>
-                  <View style={styles.adaptiveHeroDivider} />
-                  <View style={styles.adaptiveHeroCol}>
-                    <Text style={styles.adaptiveHeroValue}>{adaptivePlanRow ? `${adaptivePlanRow.session_minutes} min` : '—'}</Text>
-                    <Text style={styles.adaptiveHeroLabel}>Duração</Text>
+                  <Text style={styles.adaptiveHeroTitle}>Plano Adaptativo</Text>
+                  <Text style={styles.adaptiveHeroSub}>O teu programa atualiza-se todas as semanas</Text>
+                  <View style={styles.adaptiveHeroRow}>
+                    <View style={styles.adaptiveHeroCol}>
+                      <Text style={styles.adaptiveHeroValue} numberOfLines={1}>{GOAL_LABEL_PT[adaptiveStatus.goal] ?? adaptiveStatus.goal}</Text>
+                      <Text style={styles.adaptiveHeroLabel}>Objetivo</Text>
+                    </View>
+                    <View style={styles.adaptiveHeroDivider} />
+                    <View style={styles.adaptiveHeroCol}>
+                      <Text style={styles.adaptiveHeroValue}>{adaptivePlanRow ? `${adaptivePlanRow.session_minutes} min` : '—'}</Text>
+                      <Text style={styles.adaptiveHeroLabel}>Duração</Text>
+                    </View>
+                    <View style={styles.adaptiveHeroDivider} />
+                    <View style={styles.adaptiveHeroCol}>
+                      <Text style={styles.adaptiveHeroValue} numberOfLines={1}>{adaptivePlanRow ? (EQUIP_PREF_LABEL_PT[adaptivePlanRow.equipment_pref] ?? adaptivePlanRow.equipment_pref) : '—'}</Text>
+                      <Text style={styles.adaptiveHeroLabel}>Equipamento</Text>
+                    </View>
                   </View>
-                  <View style={styles.adaptiveHeroDivider} />
-                  <View style={styles.adaptiveHeroCol}>
-                    <Text style={styles.adaptiveHeroValue} numberOfLines={1}>{adaptivePlanRow ? (EQUIP_PREF_LABEL_PT[adaptivePlanRow.equipment_pref] ?? adaptivePlanRow.equipment_pref) : '—'}</Text>
-                    <Text style={styles.adaptiveHeroLabel}>Equipamento</Text>
-                  </View>
+                </TouchableOpacity>
+                <View style={styles.adaptiveHeroActionRow}>
+                  <TouchableOpacity
+                    style={[styles.adaptiveHeroBtn, { flex: 1 }]}
+                    onPress={() => router.push('/adaptive/plan')}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[styles.adaptiveHeroBtnText, { color: colors.accent }]}>Ver o meu plano</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.adaptiveHeroNewPlanBtn}
+                    onPress={createNewAdaptivePlan}
+                    disabled={creatingNewPlan}
+                    activeOpacity={0.85}
+                    accessibilityRole="button"
+                    accessibilityLabel="Criar plano novo"
+                  >
+                    <RefreshCw size={20} color="#fff" />
+                  </TouchableOpacity>
                 </View>
-                <View style={styles.adaptiveHeroBtn}>
-                  <Text style={[styles.adaptiveHeroBtnText, { color: colors.accent }]}>Ver o meu plano</Text>
-                </View>
-              </TouchableOpacity>
+              </View>
             ) : (
               <TouchableOpacity
                 style={[styles.adaptiveCard, { backgroundColor: colors.accent }]}
@@ -751,8 +801,10 @@ const styles = StyleSheet.create({
   adaptiveHeroDivider: { width: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.3)' },
   adaptiveHeroValue: { color: '#fff', fontFamily: 'Inter-Bold', fontSize: 14 },
   adaptiveHeroLabel: { color: 'rgba(255,255,255,0.7)', fontFamily: 'Inter-Regular', fontSize: 11 },
+  adaptiveHeroActionRow: { flexDirection: 'row', gap: 10 },
   adaptiveHeroBtn: { backgroundColor: '#fff', borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   adaptiveHeroBtnText: { fontFamily: 'Inter-Bold', fontSize: 15 },
+  adaptiveHeroNewPlanBtn: { width: 52, height: 52, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
   phaseBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1 },
   phaseDot: { width: 8, height: 8, borderRadius: 4 },
   phaseBadgeText: { flex: 1, fontFamily: 'Inter-SemiBold', fontSize: 13 },

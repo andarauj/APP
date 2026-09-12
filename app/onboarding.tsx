@@ -207,6 +207,7 @@ export default function OnboardingScreen() {
           focusAreas: [...zones].filter((z): z is MuscleGroup => z !== 'cardio'),
           excludedMuscles,
           customName: 'O meu plano',
+          ignoreUsageHistory: true,
         });
         // Every answer above only decides WHICH exercises go in; this is
         // what makes them also decide HOW the plan progresses week to week

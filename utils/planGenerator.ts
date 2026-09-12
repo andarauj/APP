@@ -7,7 +7,7 @@ import { MUSCLE_GROUPS_PT } from '@/types';
 import type { BodyAnalysis } from './bodyAnalysis';
 import { selectTodaysMuscles, muscleGroupCountForMinutes, pickMuscleNeedingMoreVolume } from './dailyWorkoutGenerator';
 import { detectPerformanceRegression, detectRpeCreep } from './fatigueSignals';
-import { isCompoundMovement } from './movementClassify';
+import { isCompoundMovement, isOlympicLiftSpecialty } from './movementClassify';
 
 interface DaySplit {
   label: string;
@@ -248,7 +248,7 @@ export function pickExercisesForDay(
   const byMuscle = new Map<MuscleGroup, Exercise[]>();
   for (const muscle of focusMuscles) {
     let matches = allExercises
-      .filter(e => e.primary_muscle === muscle && e.type === 'strength');
+      .filter(e => e.primary_muscle === muscle && e.type === 'strength' && !isOlympicLiftSpecialty(e.name));
 
     // Fine-grained equipment (an exact checklist, e.g. from onboarding) is
     // otherwise stricter than the coarse EquipmentPreference buckets — no
@@ -494,11 +494,20 @@ export async function generatePlan(
     /** Muscles to leave out of every day's focus entirely (e.g. an
      *  onboarding-reported injury) — not just deprioritized, skipped. */
     excludedMuscles?: MuscleGroup[];
+    /** Skip sortCandidates' usage-history bias (see its comment) for this
+     *  generation. Right for the NSPI adaptive plan specifically: that cycle
+     *  is supposed to build a fresh program strictly from the onboarding
+     *  answers (goal/days/equipment/level), not keep re-anchoring on
+     *  whatever a person already happened to log a lot of sessions with
+     *  before turning it on — the opposite of what "adaptive from a clean
+     *  slate" promises. Manual/plain generation paths keep the bias, where
+     *  favoring an already-proven exercise is still the right default. */
+    ignoreUsageHistory?: boolean;
   },
 ): Promise<number> {
   const template = SPLIT_TEMPLATES[daysPerWeek] || SPLIT_TEMPLATES[3];
   const allExercises = await getAllExercises();
-  const usageHistory = await getExerciseUsageCounts();
+  const usageHistory = options?.ignoreUsageHistory ? undefined : await getExerciseUsageCounts();
   const equipmentPref = options?.equipmentPref ?? 'any';
   const allowedEquipment = options?.allowedEquipment;
   const excludedMuscles = options?.excludedMuscles ?? [];
