@@ -29,11 +29,12 @@ import { findSupersetPartner } from '@/utils/supersets';
 import { isSetLocked } from '@/utils/setLocking';
 import { restSecondsFor } from '@/utils/planGenerator';
 import { suggestSetAdjustment, type AutoRegulationSuggestion } from '@/utils/autoRegulation';
+import { moveExerciseInSession } from '@/utils/workoutSessionUtils';
 import { TempoMetronomeBox } from '@/components/workout/TempoMetronomeBox';
 import { RestRing } from '@/components/ui/RestRing';
 import { generateLiveCoachingTips, type CoachingTip } from '@/utils/livCoachingTips';
 import { LiveCoachingStack } from '@/components/ui/LiveCoachingTip';
-import { X, Plus, Check, Timer, RotateCcw, ChevronDown, ChevronUp, Trophy, StickyNote, Repeat, TrendingUp, Pause, Play, Gauge, Star, Lock } from 'lucide-react-native';
+import { X, Plus, Check, Timer, RotateCcw, ChevronDown, ChevronUp, Trophy, StickyNote, Repeat, TrendingUp, Pause, Play, Gauge, Star, Lock, ArrowUp, ArrowDown } from 'lucide-react-native';
 import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
 
 interface ActiveExercise {
@@ -672,6 +673,15 @@ export default function ActiveWorkoutScreen() {
     ]);
   };
 
+  // Purely a display-order change for whatever's left in this session —
+  // nothing is written to plan_exercises, and moveExerciseInSession (see
+  // utils/workoutSessionUtils.ts) never touches a set's own fields, so
+  // every already-logged set (dbId, done, reps/weight) survives untouched.
+  const moveExercise = (exIdx: number, direction: -1 | 1) => {
+    hapticSelect();
+    setExercises(prev => moveExerciseInSession(prev, exIdx, direction));
+  };
+
   // Overloaded (not a single `field: string, value: any`) so a typo'd field
   // name is a compile error instead of silently adding a dead property to
   // the set and updating nothing on screen — and so 'rpe' can take its real
@@ -1248,6 +1258,34 @@ export default function ActiveWorkoutScreen() {
 
             {ex.expanded && (
               <View style={styles.exBody}>
+                {/* Reorder within this session only — see moveExercise above
+                   for why this can't disturb logged sets or the timers. */}
+                {exercises.length > 1 && (
+                  <View style={styles.exReorderRow}>
+                    <TouchableOpacity
+                      onPress={() => moveExercise(exIdx, -1)}
+                      disabled={exIdx === 0}
+                      hitSlop={8}
+                      style={styles.exReorderBtn}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Mover ${ex.name} para cima`}
+                    >
+                      <ArrowUp size={16} color={exIdx === 0 ? colors.textTertiary : colors.textSecondary} />
+                      <Text style={[styles.exReorderText, { color: exIdx === 0 ? colors.textTertiary : colors.textSecondary }]}>Mover para cima</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => moveExercise(exIdx, 1)}
+                      disabled={exIdx === exercises.length - 1}
+                      hitSlop={8}
+                      style={styles.exReorderBtn}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Mover ${ex.name} para baixo`}
+                    >
+                      <ArrowDown size={16} color={exIdx === exercises.length - 1 ? colors.textTertiary : colors.textSecondary} />
+                      <Text style={[styles.exReorderText, { color: exIdx === exercises.length - 1 ? colors.textTertiary : colors.textSecondary }]}>Mover para baixo</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
                 {/* Full-size illustration for the exercise actually open right
                    now — the small header thumbnail is enough to recognise an
                    exercise at a glance, but the one you're about to do
@@ -2145,6 +2183,9 @@ const styles = StyleSheet.create({
   exName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   exMeta: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
   exBody: { paddingHorizontal: 12, paddingBottom: 12, gap: 4 },
+  exReorderRow: { flexDirection: 'row', gap: 16, marginBottom: 10 },
+  exReorderBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  exReorderText: { fontFamily: 'Inter-SemiBold', fontSize: 12 },
   coachingTipsContainer: { marginBottom: 12, paddingHorizontal: 0 },
   setHeaderRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   setHeaderCell: { fontFamily: 'Inter-SemiBold', fontSize: 10, lineHeight: 13, letterSpacing: 0.5 },
