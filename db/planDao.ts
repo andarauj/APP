@@ -174,6 +174,20 @@ export async function deletePlanExercise(id: number): Promise<void> {
   await db.runAsync('DELETE FROM plan_exercises WHERE id = ?', [id]);
 }
 
+/**
+ * Swaps which exercise a plan_exercise row points to — used by the
+ * pre-workout "substituir exercício" picker to replace one exercise with an
+ * equivalent (same muscle group) without disturbing its sets/reps/weight
+ * targets, order_index, or day assignment. Distinct from
+ * deletePlanExercise + addExerciseToPlan: that pair would append the
+ * replacement at the end of the day instead of keeping its position, and
+ * would reset its targets to the add-flow's defaults.
+ */
+export async function substitutePlanExercise(planExerciseId: number, newExerciseId: number): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync('UPDATE plan_exercises SET exercise_id = ? WHERE id = ?', [newExerciseId, planExerciseId]);
+}
+
 export async function reorderPlanExercises(planId: number, orderedIds: number[]): Promise<void> {
   const db = await getDatabase();
   // Wrapped in a transaction so an interruption partway through can't leave

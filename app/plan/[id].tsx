@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/Button';
 import { SearchBar } from '@/components/ui/SearchBar';
 import { ExerciseTile } from '@/components/ui/ExerciseTile';
 import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
-import { getPlanById, getPlanExercisesWithDetails, addExerciseToPlan, deletePlanExercise, updatePlanExercise, reorderPlanExercises } from '@/db/planDao';
+import { getPlanById, getPlanExercisesWithDetails, addExerciseToPlan, deletePlanExercise, updatePlanExercise, reorderPlanExercises, substitutePlanExercise } from '@/db/planDao';
 import { searchExercises } from '@/db/exerciseDao';
 import { getLastSetForExercise } from '@/db/workoutDao';
 import { exportPlanAsXml, shareXmlFile } from '@/utils/xmlExport';
@@ -19,7 +19,7 @@ import { parseTempo } from '@/utils/calculators';
 import { estimateDayMinutes, formatMinutes } from '@/utils/workoutTime';
 import type { WorkoutPlan, SetType, MuscleGroup , Exercise, WorkoutSet } from '@/types';
 import { PLAN_TYPE_PT, SPLIT_TYPE_PT, MUSCLE_GROUPS_PT, EQUIPMENT_PT, SET_TYPE_PT } from '@/types';
-import { Play, Plus, Trash2, Download, X, CalendarDays, ChevronUp, ChevronDown } from 'lucide-react-native';
+import { Play, Plus, Trash2, Download, X, CalendarDays, ChevronUp, ChevronDown, Repeat } from 'lucide-react-native';
 
 const REST_OPTIONS = [30, 60, 90, 120, 180, 240, 300];
 const SET_TYPES: SetType[] = ['normal', 'warmup', 'dropset', 'failure', 'amrap'];
@@ -37,6 +37,11 @@ export default function PlanDetailScreen() {
   const [exporting, setExporting] = useState(false);
   const [selectedDay, setSelectedDay] = useState(0);
   const [lastSets, setLastSets] = useState<Record<number, WorkoutSet | null>>({});
+  // Non-null while the picker is open in "substituir exercício" mode
+  // instead of "adicionar exercício" mode — holds the plan_exercise row
+  // being replaced, so its primary_muscle can filter the search and its id
+  // can be passed to substitutePlanExercise on selection.
+  const [substitutingPe, setSubstitutingPe] = useState<any | null>(null);
 
   // load() re-reads the plan from the database every time this screen gains
   // focus, which is what makes edits made in the exercise picker show up on
@@ -67,13 +72,19 @@ export default function PlanDetailScreen() {
     // handling meant a slower, stale result could silently overwrite the
     // correct current one.
     const seq = ++pickerSeq.current;
-    searchExercises(pickerQuery)
+    // Substitute mode narrows the search to an equivalent exercise — same
+    // primary muscle as the one being replaced — instead of the whole
+    // library, matching the "mesmo grupo muscular" requirement.
+    const filters = substitutingPe ? { muscle: substitutingPe.primary_muscle as MuscleGroup } : undefined;
+    searchExercises(pickerQuery, filters)
       .then(results => { if (seq === pickerSeq.current) setPickerResults(results); })
       .catch(err => {
         console.error('Failed to search exercises:', err);
         if (seq === pickerSeq.current) setPickerResults([]);
       });
-  }, [pickerQuery, showPicker]);
+  }, [pickerQuery, showPicker, substitutingPe]);
+
+  const closePicker = () => { setShowPicker(false); setSubstitutingPe(null); };
 
   const handleAddExercise = async (ex: Exercise) => {
     // Add into the day the user is currently viewing, not blindly at the end.
@@ -85,6 +96,22 @@ export default function PlanDetailScreen() {
     );
     setShowPicker(false);
     load();
+  };
+
+  // Keeps sets/reps/weight/rest/order_index/day untouched — only the
+  // exercise_id changes — unlike delete+add, which would reset those
+  // targets and move the replacement to the end of the day.
+  const handleSubstituteExercise = async (ex: Exercise) => {
+    if (!substitutingPe) return;
+    await substitutePlanExercise(substitutingPe.id, ex.id);
+    closePicker();
+    load();
+  };
+
+  const openSubstitutePicker = (pe: any) => {
+    setSubstitutingPe(pe);
+    setPickerQuery('');
+    setShowPicker(true);
   };
 
   const handleDeleteExercise = (peId: number) => {
@@ -291,6 +318,14 @@ export default function PlanDetailScreen() {
                   <ChevronDown size={18} color={i === dayExercises.length - 1 ? colors.textTertiary : colors.textSecondary} />
                 </TouchableOpacity>
               </View>
+              <TouchableOpacity
+                onPress={() => openSubstitutePicker(ex)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Substituir ${ex.exercise_name}`}
+              >
+                <Repeat size={18} color={colors.textSecondary} />
+              </TouchableOpacity>
               <TouchableOpacity onPress={() => handleDeleteExercise(ex.id)} hitSlop={8}>
                 <Trash2 size={18} color={colors.error} />
               </TouchableOpacity>
@@ -304,18 +339,27 @@ export default function PlanDetailScreen() {
 
         <TouchableOpacity
           style={[styles.addExBtn, { borderColor: colors.border, backgroundColor: colors.surfaceVariant }]}
-          onPress={() => { setPickerQuery(''); setShowPicker(true); }}
+          onPress={() => { setSubstitutingPe(null); setPickerQuery(''); setShowPicker(true); }}
         >
           <Plus size={20} color={colors.primary} />
           <Text style={[styles.addExText, { color: colors.primary }]}>Adicionar Exercício</Text>
         </TouchableOpacity>
       </ScrollView>
 
-      <Modal visible={showPicker} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowPicker(false)}>
+      <Modal visible={showPicker} animationType="slide" presentationStyle="pageSheet" onRequestClose={closePicker}>
         <View style={[styles.picker, { backgroundColor: colors.background }]}>
           <View style={[styles.pickerHeader, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.pickerTitle, { color: colors.text }]}>Escolher Exercício</Text>
-            <TouchableOpacity onPress={() => setShowPicker(false)}><X size={24} color={colors.text} /></TouchableOpacity>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.pickerTitle, { color: colors.text }]}>
+                {substitutingPe ? 'Substituir Exercício' : 'Escolher Exercício'}
+              </Text>
+              {substitutingPe && (
+                <Text style={[styles.pickerSub, { color: colors.textSecondary }]}>
+                  Mesmo grupo muscular: {MUSCLE_GROUPS_PT[substitutingPe.primary_muscle as MuscleGroup]}
+                </Text>
+              )}
+            </View>
+            <TouchableOpacity onPress={closePicker}><X size={24} color={colors.text} /></TouchableOpacity>
           </View>
           <View style={{ padding: 12 }}>
             <SearchBar value={pickerQuery} onChangeText={setPickerQuery} placeholder="Pesquisar..." />
@@ -324,7 +368,10 @@ export default function PlanDetailScreen() {
             data={pickerResults}
             keyExtractor={item => String(item.id)}
             renderItem={({ item }) => (
-              <TouchableOpacity style={[styles.pickerItem, { borderBottomColor: colors.border }]} onPress={() => handleAddExercise(item)}>
+              <TouchableOpacity
+                style={[styles.pickerItem, { borderBottomColor: colors.border }]}
+                onPress={() => (substitutingPe ? handleSubstituteExercise(item) : handleAddExercise(item))}
+              >
                 {item.image_url ? (
                   <View style={styles.exThumbWrap}>
                     <ExerciseMedia uri={item.image_url} height={40} />
@@ -336,9 +383,16 @@ export default function PlanDetailScreen() {
                   <Text style={[styles.pickerName, { color: colors.text }]}>{item.name}</Text>
                   <Text style={[styles.pickerSub, { color: colors.textSecondary }]}>{MUSCLE_GROUPS_PT[item.primary_muscle]} · {EQUIPMENT_PT[item.equipment]}</Text>
                 </View>
-                <Plus size={20} color={colors.primary} />
+                {substitutingPe ? <Repeat size={20} color={colors.primary} /> : <Plus size={20} color={colors.primary} />}
               </TouchableOpacity>
             )}
+            ListEmptyComponent={
+              substitutingPe ? (
+                <Text style={[styles.pickerEmpty, { color: colors.textSecondary }]}>
+                  Sem outros exercícios para este grupo muscular.
+                </Text>
+              ) : null
+            }
             contentContainerStyle={{ paddingBottom: 24 }}
           />
         </View>
@@ -462,6 +516,7 @@ const styles = StyleSheet.create({
   pickerItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1 },
   pickerName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   pickerSub: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
+  pickerEmpty: { fontFamily: 'Inter-Regular', fontSize: 14, lineHeight: 20, textAlign: 'center', padding: 24 },
   editor: { gap: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#ffffff15' },
   editRow: { flexDirection: 'row', gap: 12 },
   editField: { flex: 1 },
