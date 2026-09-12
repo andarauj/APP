@@ -168,6 +168,31 @@ export async function getLastSetForExercise(exerciseId: number): Promise<Workout
   return row as WorkoutSet | null;
 }
 
+/**
+ * The previous session's own reps/weight for this exercise, keyed by
+ * set_index. Distinct from getLastSetForExercise (which only ever returns
+ * the single most recent SET, not one per position) — reading ANTERIOR
+ * from that would show the same one number for every row of a multi-set
+ * exercise, or worse, whatever the CURRENT set's own editable field holds
+ * once someone types into it, since active.tsx used to fall back to the
+ * live field for that column.
+ */
+export async function getLastSessionSetsByIndex(exerciseId: number): Promise<Record<number, { reps: number; weight: number }>> {
+  const db = await getDatabase();
+  const lastSession = await db.getFirstAsync<{ session_id: number }>(
+    'SELECT session_id FROM workout_sets WHERE exercise_id = ? ORDER BY completed_at DESC LIMIT 1',
+    [exerciseId]
+  );
+  if (!lastSession) return {};
+  const sets = await db.getAllAsync<{ set_index: number; reps: number; weight: number }>(
+    'SELECT set_index, reps, weight FROM workout_sets WHERE session_id = ? AND exercise_id = ? ORDER BY set_index',
+    [lastSession.session_id, exerciseId]
+  );
+  const byIndex: Record<number, { reps: number; weight: number }> = {};
+  for (const s of sets) byIndex[s.set_index] = { reps: s.reps, weight: s.weight };
+  return byIndex;
+}
+
 export async function getSetsForExerciseHistory(exerciseId: number, limit = 50): Promise<WorkoutSet[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync(

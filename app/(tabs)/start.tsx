@@ -15,9 +15,10 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Play, Zap, Plus, AlertCircle, RotateCcw, RefreshCw, Calendar, Check as CheckIcon, X as XIcon, Sparkles, ListChecks, ChevronRight, Home as HomeIcon } from 'lucide-react-native';
 import { WEEKDAY_LABELS } from '@/utils/reminders';
 import { PHASE_LABEL_PT, PHASE_COLOR, PHASE_RPE_PT } from '@/utils/adaptivePlan';
-import { getRollingScheduleForPlan, pastWeekdaysWithoutTracking, type RollingScheduleEntry } from '@/utils/adaptiveService';
+import { getRollingScheduleForPlan, pastWeekdaysWithoutTracking, isWeekdayPast, type RollingScheduleEntry } from '@/utils/adaptiveService';
 import { PlanGroupCard } from '@/components/ui/PlanGroupCard';
 import { PlanVersionModal } from '@/components/ui/PlanVersionModal';
+import { EmptyState } from '@/components/ui/EmptyState';
 
 const WEEKDAY_FULL = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 // Planner state stays keyed 0=Sun..6=Sat everywhere (matches every other
@@ -121,7 +122,7 @@ export default function StartScreen() {
     if (!isReady) return;
     loadStart();
     plansManager.load();
-  }, [isReady, loadStart, plansManager.load]));
+  }, [isReady, loadStart, plansManager]));
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -193,17 +194,23 @@ export default function StartScreen() {
   // should show which of the adaptive plan's days once a backlog exists.
   // Only applies to the plan the NSPI engine is actively running; a
   // manually-assigned non-adaptive day is left exactly as scheduled.
+  // Shared by every rolling-schedule computation below — computed once so
+  // they can't drift apart from using slightly different Date math.
+  const weekStartDow = useMemo(
+    () => adaptiveStatus ? new Date(adaptiveStatus.weekStart * 1000).getDay() : 1,
+    [adaptiveStatus]
+  );
+
   const [rollingSchedule, setRollingSchedule] = useState<RollingScheduleEntry[] | null>(null);
   useEffect(() => {
     let cancelled = false;
     if (!adaptiveStatus) { setRollingSchedule(null); return; }
-    const weekStartDow = new Date(adaptiveStatus.weekStart * 1000).getDay();
     getRollingScheduleForPlan(adaptiveStatus.planId, weekStartDow)
       .then(s => { if (!cancelled) setRollingSchedule(s); })
       .catch(() => { if (!cancelled) setRollingSchedule(null); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [adaptiveStatus?.planId, adaptiveStatus?.weekStart, planner]);
+  }, [adaptiveStatus?.planId, adaptiveStatus?.weekStart, weekStartDow, planner]);
 
   const rollingByWeekday = useMemo(() => {
     const map: Record<number, RollingScheduleEntry> = {};
@@ -219,12 +226,11 @@ export default function StartScreen() {
   // pastWeekdaysWithoutTracking's own comment for the full reasoning.
   const untrackedPastWeekdays = useMemo(() => {
     if (!adaptiveStatus) return [];
-    const weekStartDow = new Date(adaptiveStatus.weekStart * 1000).getDay();
     const scheduledWeekdays = Object.entries(planner)
       .filter(([, entry]) => entry?.planId === adaptiveStatus.planId)
       .map(([wd]) => Number(wd));
-    return pastWeekdaysWithoutTracking(scheduledWeekdays, new Date().getDay(), weekStartDow);
-  }, [planner, adaptiveStatus]);
+    return pastWeekdaysWithoutTracking(scheduledWeekdays, today, weekStartDow);
+  }, [planner, adaptiveStatus, today, weekStartDow]);
 
   // Same shape as `planner`, but with the active adaptive plan's days
   // swapped for whatever the rolling schedule says they should be this
@@ -377,41 +383,86 @@ export default function StartScreen() {
             <ActivityIndicator color={colors.primary} />
           </View>
         )}
-        {activeTab === 'plano' && plannerLoaded && adaptiveLoaded && (
+        {/* Cold start: no adaptive plan ever run AND no plan built manually
+            either — the hero card and weekly grid below have nothing real
+            to show (an all-empty grid reads as broken, not "start here").
+            Two ways forward, matching the app's two real entry points. */}
+        {activeTab === 'plano' && plannerLoaded && adaptiveLoaded && !adaptiveStatus && plans.length === 0 && (
+          <EmptyState
+            icon={<Sparkles size={40} color={colors.accent} />}
+            title="Ainda sem plano de treino"
+            description="Cria um plano adaptativo que se ajusta sozinho todas as semanas, ou começa já um treino livre sem plano fixo."
+            action={
+              <View style={{ gap: 10, width: '100%' }}>
+                <TouchableOpacity
+                  style={[styles.emptyStatePrimaryBtn, { backgroundColor: colors.accent }]}
+                  onPress={() => router.push('/adaptive/start')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Criar plano adaptativo"
+                >
+                  <Text style={[styles.emptyStatePrimaryBtnText, { color: colors.onAccent }]}>Criar Plano Adaptativo</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.emptyStateSecondaryBtn, { borderColor: colors.border }]}
+                  onPress={() => router.push({ pathname: '/workout/active', params: { planId: 0, planName: 'Treino Livre' } })}
+                  accessibilityRole="button"
+                  accessibilityLabel="Começar treino livre sem plano"
+                >
+                  <Text style={[styles.emptyStateSecondaryBtnText, { color: colors.text }]}>Começar Treino Livre</Text>
+                </TouchableOpacity>
+              </View>
+            }
+          />
+        )}
+        {activeTab === 'plano' && plannerLoaded && adaptiveLoaded && !(!adaptiveStatus && plans.length === 0) && (
           <>
             {/* Ação Principal — sempre uma e só uma: o treino de hoje (se
                 estiver agendado) ou o aviso de descanso com o próximo
                 treino. Vem primeiro porque é a única coisa que a pessoa
                 precisa de decidir agora. */}
-            {todayEntry ? (
+            {todayEntry ? (() => {
+              const todayDayName = planDayLabels[`${todayEntry.planId}:${todayEntry.dayIndex}`] || planNames[todayEntry.planId] || 'Treino';
+              return (
               <TouchableOpacity
                 style={[styles.todayCard, { backgroundColor: todayIsBacklog ? colors.error : colors.secondary }]}
                 onPress={() => startPlannerDay(todayEntry)}
                 activeOpacity={0.85}
                 accessibilityRole="button"
-                accessibilityLabel={`${todayIsBacklog ? 'Treino em atraso' : 'Iniciar treino de hoje'}: ${planNames[todayEntry.planId] || 'Treino'}`}
+                accessibilityLabel={`${todayIsBacklog ? `Recuperar ${todayDayName}, treino em atraso` : `Iniciar treino de hoje: ${todayDayName}`}`}
               >
+                {/* WCAG AA: this card's background flips between error and
+                    secondary — the icon/text tokens must flip with it.
+                    onError happens to be white in both themes, onSecondary
+                    is the dark tone fixed for exactly this pairing. */}
                 <View style={styles.quickIcon}>
-                  {todayIsBacklog ? <AlertCircle size={28} color="#fff" /> : <Play size={28} color="#fff" />}
+                  {todayIsBacklog
+                    ? <AlertCircle size={28} color={colors.onError} />
+                    : <Play size={28} color={colors.onSecondary} />}
                 </View>
                 <View style={styles.quickInfo}>
-                  <Text style={styles.quickTitle}>{todayIsBacklog ? 'Treino em Atraso' : 'Iniciar Treino de Hoje'}</Text>
-                  <Text style={styles.quickDesc} numberOfLines={1}>
-                    {planDayLabels[`${todayEntry.planId}:${todayEntry.dayIndex}`] || planNames[todayEntry.planId] || 'Treino'}
+                  {/* CTA is actionable, not just descriptive, when there's a
+                      backlog — "Recuperar X" tells you what tapping does,
+                      not just that something's wrong. */}
+                  <Text style={[styles.quickTitle, { color: todayIsBacklog ? colors.onError : colors.onSecondary }]}>
+                    {todayIsBacklog ? `Recuperar ${todayDayName}` : 'Iniciar Treino de Hoje'}
+                  </Text>
+                  <Text style={[styles.quickDesc, { color: todayIsBacklog ? colors.onError : colors.onSecondary }]} numberOfLines={1}>
+                    {todayIsBacklog ? 'Treino em atraso' : todayDayName}
                   </Text>
                   {/* Real NSPI output for this specific day — exercise count
                       the equipment/injury filter actually left in the plan,
                       plus the active phase's RPE window (see PHASE_RPE_PT) —
                       not shown for a day pointing at a non-adaptive plan. */}
                   {adaptiveStatus && todayEntry.planId === adaptiveStatus.planId && (
-                    <Text style={styles.quickDesc} numberOfLines={1}>
+                    <Text style={[styles.quickDesc, { color: todayIsBacklog ? colors.onError : colors.onSecondary }]} numberOfLines={1}>
                       {planDayExerciseCounts[`${todayEntry.planId}:${todayEntry.dayIndex}`] ?? '—'} exercícios
                       {PHASE_RPE_PT[adaptiveStatus.phase] ? ` · RPE ${PHASE_RPE_PT[adaptiveStatus.phase]}` : ''}
                     </Text>
                   )}
                 </View>
               </TouchableOpacity>
-            ) : adaptiveStatus && (
+              );
+            })() : adaptiveStatus && (
               <View style={[styles.todayCard, { backgroundColor: colors.surfaceVariant }]}>
                 <View style={[styles.quickIcon, { backgroundColor: colors.surface }]}>
                   <Calendar size={28} color={colors.textSecondary} />
@@ -448,29 +499,49 @@ export default function StartScreen() {
                   // neutral "Saltado" label instead of the plan name, so a
                   // skipped day can never be mistaken for a done one.
                   const isSkipped = rollingByWeekday[weekday]?.isSkipped ?? false;
+                  // 4th grid state ("Concluído"): a past day this plan's own
+                  // rolling sequence tracked and that is neither the forced
+                  // catch-up nor skipped — i.e. one of the completedCount
+                  // sessions already logged this week. Distinct from an
+                  // upcoming native day (same isBacklog/isSkipped:false
+                  // shape, but not yet reached) purely by being in the past.
+                  const isDone = !!rollingByWeekday[weekday] && !isBacklog && !isSkipped
+                    && !!adaptiveStatus && isWeekdayPast(weekday, today, weekStartDow);
                   return (
                     <TouchableOpacity
                       key={weekday}
+                      hitSlop={4}
                       style={[
                         styles.plannerDay,
-                        { backgroundColor: isBacklog ? colors.errorContainer : isSkipped ? colors.surfaceVariant : entry ? colors.primaryContainer : colors.surfaceVariant },
+                        {
+                          backgroundColor: isBacklog ? colors.errorContainer
+                            : isDone ? colors.secondaryContainer
+                            : isSkipped ? colors.surfaceVariant
+                            : entry ? colors.primaryContainer
+                            : colors.surfaceVariant,
+                        },
                         isSkipped && [styles.plannerDaySkipped, { borderColor: colors.border }],
-                        isToday && { borderWidth: 2, borderColor: isBacklog ? colors.error : colors.primary },
+                        !entry && !isSkipped && [styles.plannerDayEmpty, { borderColor: colors.border }],
+                        isToday && [styles.plannerDayTodayRing, { borderColor: isBacklog ? colors.error : colors.primary }],
                       ]}
                       onPress={() => entry ? startPlannerDay(entry) : openDayPicker(weekday)}
                       onLongPress={() => openDayPicker(weekday)}
                       delayLongPress={400}
                       accessibilityRole="button"
                       accessibilityLabel={
-                        isSkipped
-                          ? `${WEEKDAY_FULL[weekday]}: treino saltado, não foi realizado, toca para registar na mesma`
-                          : entry
-                            ? `${WEEKDAY_FULL[weekday]}: ${planNames[entry.planId] || 'Treino'}, toca para iniciar, mantém para editar`
-                            : `${WEEKDAY_FULL[weekday]}: sem treino atribuído, toca para atribuir`
+                        isDone
+                          ? `${WEEKDAY_FULL[weekday]}: treino concluído`
+                          : isSkipped
+                            ? `${WEEKDAY_FULL[weekday]}: treino saltado, não foi realizado, toca para registar na mesma`
+                            : entry
+                              ? `${WEEKDAY_FULL[weekday]}: ${planNames[entry.planId] || 'Treino'}, toca para iniciar, mantém para editar`
+                              : `${WEEKDAY_FULL[weekday]}: sem treino atribuído, toca para atribuir`
                       }
                     >
                       <Text style={[styles.plannerDayLabel, { color: isToday ? colors.primary : colors.textSecondary }]}>{label}</Text>
-                      {isSkipped ? (
+                      {isDone ? (
+                        <CheckIcon size={16} color={colors.secondary} />
+                      ) : isSkipped ? (
                         <Text style={[styles.plannerDaySkippedLabel, { color: colors.textTertiary }]} numberOfLines={1}>
                           Saltado
                         </Text>
@@ -513,7 +584,7 @@ export default function StartScreen() {
                     accessibilityRole="button"
                     accessibilityLabel="Ver resumo do treino por terminar"
                   >
-                    <Text style={styles.resumeBtnText}>Ver resumo</Text>
+                    <Text style={[styles.resumeBtnText, { color: colors.onAccent }]}>Ver resumo</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.resumeBtnOutline, { borderColor: colors.accent }]}
@@ -534,12 +605,12 @@ export default function StartScreen() {
               onPress={() => router.push({ pathname: '/workout/active', params: { planId: 0, planName: 'Treino Livre' } })}
               activeOpacity={0.85}
             >
-              <View style={styles.quickIcon}><Zap size={32} color="#fff" /></View>
+              <View style={styles.quickIcon}><Zap size={32} color={colors.onPrimary} /></View>
               <View style={styles.quickInfo}>
-                <Text style={styles.quickTitle}>Treino Livre</Text>
-                <Text style={styles.quickDesc}>Começa sem plano e adiciona exercícios à medida que treinas</Text>
+                <Text style={[styles.quickTitle, { color: colors.onPrimary }]}>Treino Livre</Text>
+                <Text style={[styles.quickDesc, { color: colors.onPrimary }]}>Começa sem plano e adiciona exercícios à medida que treinas</Text>
               </View>
-              <Play size={28} color="#fff" />
+              <Play size={28} color={colors.onPrimary} />
             </TouchableOpacity>
 
             {lastSession && (
@@ -588,22 +659,22 @@ export default function StartScreen() {
                       Ciclo {adaptiveStatus.cycleIndex} · {PHASE_LABEL_PT[adaptiveStatus.phase]}
                     </Text>
                   </View>
-                  <Text style={styles.adaptiveHeroTitle}>Plano Adaptativo</Text>
-                  <Text style={styles.adaptiveHeroSub}>O teu programa atualiza-se todas as semanas</Text>
+                  <Text style={[styles.adaptiveHeroTitle, { color: colors.onAccent }]}>Plano Adaptativo</Text>
+                  <Text style={[styles.adaptiveHeroSub, { color: colors.onAccent + 'CC' }]}>O teu programa atualiza-se todas as semanas</Text>
                   <View style={styles.adaptiveHeroRow}>
                     <View style={styles.adaptiveHeroCol}>
-                      <Text style={styles.adaptiveHeroValue} numberOfLines={1}>{GOAL_LABEL_PT[adaptiveStatus.goal] ?? adaptiveStatus.goal}</Text>
-                      <Text style={styles.adaptiveHeroLabel}>Objetivo</Text>
+                      <Text style={[styles.adaptiveHeroValue, { color: colors.onAccent }]} numberOfLines={1}>{GOAL_LABEL_PT[adaptiveStatus.goal] ?? adaptiveStatus.goal}</Text>
+                      <Text style={[styles.adaptiveHeroLabel, { color: colors.onAccent + 'B3' }]}>Objetivo</Text>
                     </View>
                     <View style={styles.adaptiveHeroDivider} />
                     <View style={styles.adaptiveHeroCol}>
-                      <Text style={styles.adaptiveHeroValue}>{adaptivePlanRow ? `${adaptivePlanRow.session_minutes} min` : '—'}</Text>
-                      <Text style={styles.adaptiveHeroLabel}>Duração</Text>
+                      <Text style={[styles.adaptiveHeroValue, { color: colors.onAccent }]}>{adaptivePlanRow ? `${adaptivePlanRow.session_minutes} min` : '—'}</Text>
+                      <Text style={[styles.adaptiveHeroLabel, { color: colors.onAccent + 'B3' }]}>Duração</Text>
                     </View>
                     <View style={styles.adaptiveHeroDivider} />
                     <View style={styles.adaptiveHeroCol}>
-                      <Text style={styles.adaptiveHeroValue} numberOfLines={1}>{adaptivePlanRow ? (EQUIP_PREF_LABEL_PT[adaptivePlanRow.equipment_pref] ?? adaptivePlanRow.equipment_pref) : '—'}</Text>
-                      <Text style={styles.adaptiveHeroLabel}>Equipamento</Text>
+                      <Text style={[styles.adaptiveHeroValue, { color: colors.onAccent }]} numberOfLines={1}>{adaptivePlanRow ? (EQUIP_PREF_LABEL_PT[adaptivePlanRow.equipment_pref] ?? adaptivePlanRow.equipment_pref) : '—'}</Text>
+                      <Text style={[styles.adaptiveHeroLabel, { color: colors.onAccent + 'B3' }]}>Equipamento</Text>
                     </View>
                   </View>
                 </TouchableOpacity>
@@ -623,7 +694,7 @@ export default function StartScreen() {
                     accessibilityRole="button"
                     accessibilityLabel="Criar plano novo"
                   >
-                    <RefreshCw size={20} color="#fff" />
+                    <RefreshCw size={20} color={colors.onAccent} />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -633,16 +704,16 @@ export default function StartScreen() {
                 onPress={() => router.push(hasAdaptivePlanEver ? '/adaptive/plan' : '/adaptive/start')}
                 activeOpacity={0.88}
               >
-                <View style={styles.quickIcon}><Sparkles size={28} color="#fff" /></View>
+                <View style={styles.quickIcon}><Sparkles size={28} color={colors.onAccent} /></View>
                 <View style={styles.quickInfo}>
-                  <Text style={styles.quickTitle}>Plano Adaptativo</Text>
-                  <Text style={styles.quickDesc} numberOfLines={2}>
+                  <Text style={[styles.quickTitle, { color: colors.onAccent }]}>Plano Adaptativo</Text>
+                  <Text style={[styles.quickDesc, { color: colors.onAccent }]} numberOfLines={2}>
                     {hasAdaptivePlanEver
                       ? 'Plano em pausa — toca para reativar'
                       : 'Periodização automática: NSPI ajusta a tua semana sozinho'}
                   </Text>
                 </View>
-                <ChevronRight size={24} color="#fff" />
+                <ChevronRight size={24} color={colors.onAccent} />
               </TouchableOpacity>
             )}
 
@@ -859,7 +930,7 @@ const styles = StyleSheet.create({
   resumeName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   resumeActions: { flexDirection: 'row', gap: 8, marginTop: 4 },
   resumeBtn: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
-  resumeBtnText: { color: '#fff', fontFamily: 'Inter-SemiBold', fontSize: 14 },
+  resumeBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   resumeBtnOutline: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center', borderWidth: 1 },
   resumeBtnOutlineText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   repeatCard: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, padding: 14 },
@@ -870,14 +941,19 @@ const styles = StyleSheet.create({
   adaptiveCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 20, padding: 18, gap: 14 },
   adaptiveHero: { borderRadius: 20, padding: 20 },
   adaptivePhasePill: { alignSelf: 'flex-start', borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4, marginBottom: 10 },
+  // Not part of the WCAG pass below — this pill sits on PHASE_COLOR, a
+  // separate per-phase palette (not one of the onX-backed tokens), matching
+  // how the same phase badge is styled elsewhere in the app.
   adaptivePhasePillText: { color: '#fff', fontFamily: 'Inter-Bold', fontSize: 11 },
-  adaptiveHeroTitle: { color: '#fff', fontFamily: 'Inter-ExtraBold', fontSize: 21, marginBottom: 2 },
-  adaptiveHeroSub: { color: 'rgba(255,255,255,0.8)', fontFamily: 'Inter-Regular', fontSize: 13 },
+  // WCAG AA: colors supplied per call site (colors.onAccent) — this card's
+  // background is colors.accent, which differs between light/dark themes.
+  adaptiveHeroTitle: { fontFamily: 'Inter-ExtraBold', fontSize: 21, marginBottom: 2 },
+  adaptiveHeroSub: { fontFamily: 'Inter-Regular', fontSize: 13 },
   adaptiveHeroRow: { flexDirection: 'row', marginTop: 16, marginBottom: 16 },
   adaptiveHeroCol: { flex: 1, alignItems: 'center', gap: 2 },
   adaptiveHeroDivider: { width: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.3)' },
-  adaptiveHeroValue: { color: '#fff', fontFamily: 'Inter-Bold', fontSize: 14 },
-  adaptiveHeroLabel: { color: 'rgba(255,255,255,0.7)', fontFamily: 'Inter-Regular', fontSize: 11 },
+  adaptiveHeroValue: { fontFamily: 'Inter-Bold', fontSize: 14 },
+  adaptiveHeroLabel: { fontFamily: 'Inter-Regular', fontSize: 11 },
   adaptiveHeroActionRow: { flexDirection: 'row', gap: 10 },
   adaptiveHeroBtn: { backgroundColor: '#fff', borderRadius: 14, paddingVertical: 14, alignItems: 'center' },
   adaptiveHeroBtnText: { fontFamily: 'Inter-Bold', fontSize: 15 },
@@ -896,15 +972,30 @@ const styles = StyleSheet.create({
   compactIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   compactTitle: { fontFamily: 'Inter-SemiBold', fontSize: 13, textAlign: 'center' },
   compactDesc: { fontFamily: 'Inter-Regular', fontSize: 10.5, lineHeight: 13, textAlign: 'center', marginTop: -2 },
-  quickTitle: { fontFamily: 'Inter-Bold', fontSize: 20, color: '#fff' },
-  quickDesc: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17, color: 'rgba(255,255,255,0.8)', marginTop: 3 },
+  emptyStatePrimaryBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', minHeight: 44 },
+  emptyStatePrimaryBtnText: { fontFamily: 'Inter-Bold', fontSize: 15 },
+  emptyStateSecondaryBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', borderWidth: 1.5, minHeight: 44 },
+  emptyStateSecondaryBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
+  // WCAG AA: no color baked in here — this style backs cards on several
+  // different colored backgrounds (secondary/error/primary/accent), so
+  // every call site supplies its own onX token color explicitly.
+  quickTitle: { fontFamily: 'Inter-Bold', fontSize: 20 },
+  quickDesc: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17, marginTop: 3 },
   sectionTitle: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, letterSpacing: 1, marginTop: 8 },
   plannerCard: { borderRadius: 16, borderWidth: 1, padding: 14, gap: 10 },
   plannerHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   plannerTitle: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14, letterSpacing: 1 },
   plannerRow: { flexDirection: 'row', gap: 6 },
-  plannerDay: { flex: 1, aspectRatio: 0.72, borderRadius: 10, alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 2 },
-  plannerDaySkipped: { opacity: 0.5, borderWidth: 1, borderStyle: 'dashed' },
+  // minWidth/minHeight guarantee the 44x44dp touch-target minimum even on
+  // the narrowest phones, where flex:1 across 7 cells could otherwise
+  // shrink a cell below it; aspectRatio still drives the normal size.
+  plannerDay: { flex: 1, minWidth: 44, minHeight: 44, aspectRatio: 0.72, borderRadius: 10, alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 2 },
+  plannerDaySkipped: { opacity: 0.45, borderWidth: 1, borderStyle: 'dashed' },
+  // "Vazio" state: an explicit dashed outline (not just a plain fill)
+  // makes an unassigned day read as "tap to add" rather than looking like
+  // a disabled/broken cell.
+  plannerDayEmpty: { borderWidth: 1, borderStyle: 'dashed' },
+  plannerDayTodayRing: { borderWidth: 2 },
   plannerDayLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14 },
   plannerDayPlan: { fontFamily: 'Inter-Bold', fontSize: 10, lineHeight: 13 },
   plannerDaySkippedLabel: { fontFamily: 'Inter-Regular', fontSize: 9, lineHeight: 12, textDecorationLine: 'line-through' },

@@ -427,6 +427,19 @@ export function computeRollingSchedule(
 }
 
 /**
+ * Whether `weekday` falls strictly before `today` within the current
+ * rolling week (same offset math computeRollingSchedule itself uses).
+ * Exposed so a caller's UI can tell "an upcoming native day, not reached
+ * yet" apart from "a past native day that's neither backlog nor skipped —
+ * i.e. one this plan's own sequence already counted as done" without
+ * duplicating the offset arithmetic in the UI layer.
+ */
+export function isWeekdayPast(weekday: number, today: number, weekStartDow: number): boolean {
+  const offset = (wd: number) => (wd - weekStartDow + 7) % 7;
+  return offset(weekday) < offset(today);
+}
+
+/**
  * Weekdays, within the current rolling week, that fall strictly before
  * today but aren't part of this plan's own scheduledWeekdays.
  *

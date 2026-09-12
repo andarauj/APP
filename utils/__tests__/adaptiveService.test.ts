@@ -36,11 +36,15 @@ jest.mock('@/db/adaptiveDao', () => ({
   createCycle: jest.fn().mockResolvedValue(2),
 }));
 
-import { closeWeekIfDue, goalFromOnboarding, distributeDaysAcrossWeek, computeRollingSchedule, getRollingScheduleForPlan, pastWeekdaysWithoutTracking } from '../adaptiveService';
+/* eslint-disable import/first -- these must follow the jest.mock() calls
+   above so each mock factory is registered before adaptiveService (and the
+   modules it pulls in) is first required. */
+import { closeWeekIfDue, goalFromOnboarding, distributeDaysAcrossWeek, computeRollingSchedule, getRollingScheduleForPlan, pastWeekdaysWithoutTracking, isWeekdayPast } from '../adaptiveService';
 import * as dao from '@/db/adaptiveDao';
 import { getWeeklyPlanner } from '@/db/plannerDao';
 import { getCompletedSessionCountForPlan } from '@/db/workoutDao';
 import { getPlanDays } from '@/db/planDao';
+/* eslint-enable import/first */
 
 const asMock = (fn: unknown) => fn as jest.Mock;
 
@@ -312,6 +316,25 @@ describe('computeRollingSchedule', () => {
 
   it('returns nothing for a plan with no distinct days', () => {
     expect(computeRollingSchedule([1, 3, 5], [], 0, 1, 1)).toEqual([]);
+  });
+});
+
+describe('isWeekdayPast', () => {
+  it('is true for a weekday strictly before today', () => {
+    expect(isWeekdayPast(1, 4, 1)).toBe(true); // Monday, checking Thursday
+  });
+
+  it('is false for today itself', () => {
+    expect(isWeekdayPast(4, 4, 1)).toBe(false);
+  });
+
+  it('is false for a weekday still ahead this week', () => {
+    expect(isWeekdayPast(5, 4, 1)).toBe(false); // Friday, checking Thursday
+  });
+
+  it('handles week wraparound (weekStartDow after today in raw weekday numbers)', () => {
+    expect(isWeekdayPast(5, 2, 5)).toBe(true); // Friday is past when the week starts Friday and today is Tuesday
+    expect(isWeekdayPast(3, 2, 5)).toBe(false); // Wednesday is still ahead
   });
 });
 

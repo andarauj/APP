@@ -12,6 +12,9 @@ jest.mock('../database', () => ({
   getDatabase: async () => ({ runAsync: mockRunAsync }),
 }));
 
+// Must follow jest.mock('../database') above so the mock factory's
+// reference to mockRunAsync is set up first.
+// eslint-disable-next-line import/first
 import { updateWorkoutSet } from '../workoutDao';
 
 function lastQuery(): { sql: string; params: unknown[] } {

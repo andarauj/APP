@@ -8,6 +8,9 @@
  * never got added would then fail with "no such column" and nothing
  * pointing at the cause.
  */
+/* eslint-disable @typescript-eslint/no-require-imports -- each test needs a
+   fresh '../database' module after jest.resetModules() (beforeEach below);
+   a top-level import would be cached once and never reflect that reset. */
 
 const mockExecAsync = jest.fn();
 const mockRunAsync = jest.fn();

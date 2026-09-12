@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, FlatList, Modal, Platform, Vibration, ActivityIndicator, BackHandler, KeyboardAvoidingView, Keyboard } from 'react-native';
+import { useState, useEffect, useCallback, useRef, memo } from 'react';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, FlatList, Modal, Platform, Vibration, BackHandler, KeyboardAvoidingView, Keyboard } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, useAnimatedReaction, withSequence, withTiming, withSpring, ZoomIn, FadeOut } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
@@ -11,7 +11,7 @@ import { getAdaptiveStatus } from '@/utils/adaptiveService';
 import { getExerciseStates, type AdaptiveExerciseStateRow } from '@/db/adaptiveDao';
 import { PHASE_LABEL_PT, PHASE_COLOR, phaseSpec } from '@/utils/adaptivePlan';
 import type { AdaptiveGoal, AdaptivePhase } from '@/utils/nspi';
-import { createSession, updateSession, discardSession, addSet, updateWorkoutSet, getLastSetForExercise, getHistoricalRpeAtWeight , getProgressionSuggestion, getSessionTemplate } from '@/db/workoutDao';
+import { createSession, updateSession, discardSession, addSet, updateWorkoutSet, getLastSetForExercise, getLastSessionSetsByIndex, getHistoricalRpeAtWeight , getProgressionSuggestion, getSessionTemplate } from '@/db/workoutDao';
 import { searchExercises, getAlternativeExercises, setExerciseUserNotes } from '@/db/exerciseDao';
 import { getSettingWithDefault, DEFAULT_SETTINGS } from '@/db/settingsDao';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -32,7 +32,7 @@ import { TempoMetronomeBox } from '@/components/workout/TempoMetronomeBox';
 import { RestRing } from '@/components/ui/RestRing';
 import { generateLiveCoachingTips, type CoachingTip } from '@/utils/livCoachingTips';
 import { LiveCoachingStack } from '@/components/ui/LiveCoachingTip';
-import { X, Plus, Check, Timer, RotateCcw, ChevronDown, ChevronUp, Trophy, StickyNote, Repeat, TrendingUp, Pause, Play, Gauge, Star, Image as ImageIcon, Lock } from 'lucide-react-native';
+import { X, Plus, Check, Timer, RotateCcw, ChevronDown, ChevronUp, Trophy, StickyNote, Repeat, TrendingUp, Pause, Play, Gauge, Star, Lock } from 'lucide-react-native';
 import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
 
 interface ActiveExercise {
@@ -46,6 +46,15 @@ interface ActiveExercise {
     /** workout_sets.id once logged — needed to persist a correction made
      *  after the fact (see updateWorkoutSet in db/workoutDao.ts). */
     dbId?: number | null;
+    /** What THIS set position (same set_index) actually was last session —
+     *  see getLastSessionSetsByIndex. The ANTERIOR column reads these, not
+     *  reps/weight above, which are the live editable fields for the set
+     *  being logged right now and would otherwise echo back whatever the
+     *  person just typed instead of showing real history. Undefined for a
+     *  set with no prior-session counterpart (e.g. manually added beyond
+     *  what was logged last time) — rendered as "–". */
+    previousReps?: string;
+    previousWeight?: string;
   }[];
   defaultSets: number;
   defaultRepsTarget: string;
@@ -134,6 +143,11 @@ export default function ActiveWorkoutScreen() {
   const scrollViewRef = useRef<ScrollView>(null);
   const scrollOffsetRef = useRef(0);
   const focusedInputRef = useRef<TextInput | null>(null);
+  // Stable identity (a ref write closes over nothing) — passed to every
+  // SetRow as onFocusInput; an inline arrow at the call site would get a
+  // fresh identity every render of the parent, silently defeating SetRow's
+  // memo() below for every row, every time.
+  const handleFocusInput = useCallback((ref: TextInput | null) => { focusedInputRef.current = ref; }, []);
   useEffect(() => {
     const sub = Keyboard.addListener('keyboardDidShow', (e) => {
       const input = focusedInputRef.current;
@@ -189,8 +203,24 @@ export default function ActiveWorkoutScreen() {
   const [workoutPaused, setWorkoutPaused] = useState(false);
   const { elapsed: totalElapsed } = useStopwatch(!workoutPaused);
 
-  // Rest timer
-  const { remaining: restRemaining, isFinished: restFinished, addTime: addRestTime, reset: resetRest } = useCountdown(restDuration, restActive, () => {
+  // Rest timer — PERF: the countdown itself (useCountdown, ticking every
+  // 250ms) used to be called directly here, in ActiveWorkoutScreen's own
+  // body. Every tick re-rendered this entire screen — the full exercise
+  // list, every SetRow's memo() included, since a state update in a parent
+  // re-renders its whole subtree regardless of whether children's props
+  // actually changed. It now lives inside FloatingRestBar (below), a
+  // sibling component that renders only the floating bar itself, so a tick
+  // only re-renders that small subtree. This screen only keeps the coarse,
+  // infrequently-changing bits: whether a rest is active at all, and its
+  // target duration — both flip once per rest, not four times a second.
+  // restResetToken exists for the same reason useCountdown's own reset()
+  // does (see FloatingRestBar's effect that calls it): completing a set
+  // while the PREVIOUS rest is still actively counting down (very common —
+  // nobody waits out the full timer every time) means `restActive` never
+  // has a false→true transition to key a restart off of, so an explicit
+  // bump is the only reliable "start a fresh rest now" signal.
+  const [restResetToken, setRestResetToken] = useState(0);
+  const onRestComplete = useCallback(() => {
     if (vibrateEnabled) Vibration.vibrate([0, 300, 100, 300]);
     if (soundEnabled) playRestEndSound();
     // The app is open and already alerting — the scheduled notification for
@@ -198,38 +228,8 @@ export default function ActiveWorkoutScreen() {
     // pop up a few seconds later (harmless if it already fired, but avoids
     // a lingering duplicate alert while the app is in the foreground).
     cancelRestEndNotification().catch(() => {});
-    // BUGFIX (reported: "the rest timer only works on the first rest —
-    // every rest after that stays stuck at the default"): completeSet()
-    // calls setRestActive(true) to start each new rest period, but if it
-    // was ALREADY true from the previous rest (never reset when that one
-    // naturally finished), that call is a no-op — React only re-runs an
-    // effect when its dependency's VALUE actually changes. useCountdown's
-    // interval-creating effect depends on `running`, so with no real
-    // false→true transition, no new interval was ever created; resetRest()
-    // still correctly set the starting number, it just never ticked down
-    // again. Explicitly resetting here guarantees the next start is a real
-    // transition.
     setRestActive(false);
-  });
-
-  // Five-second warning, distinct from the end-of-rest alert.
-  //
-  // In a noisy gym the phone is often face-down in a bag; a single buzz at
-  // zero is easy to miss and gives no time to get back to the bar. A short
-  // double pulse at five seconds is the heads-up. Guarded by a ref so it
-  // fires once per rest period rather than on every tick that happens to
-  // land on 5, and it reuses the same vibrate setting as the final alert.
-  const fiveSecondWarningRef = useRef(false);
-  useEffect(() => {
-    if (!restActive) {
-      fiveSecondWarningRef.current = false;
-      return;
-    }
-    if (restRemaining <= 5 && restRemaining > 0 && !fiveSecondWarningRef.current) {
-      fiveSecondWarningRef.current = true;
-      if (vibrateEnabled) Vibration.vibrate([0, 120, 80, 120]);
-    }
-  }, [restActive, restRemaining, vibrateEnabled]);
+  }, [vibrateEnabled, soundEnabled]);
 
   // Set timer
   const { elapsed: setElapsed, reset: resetSetTimer } = useStopwatch(setTimerActive);
@@ -298,6 +298,7 @@ export default function ActiveWorkoutScreen() {
       const template = await getSessionTemplate(Number(repeatSessionId));
       const repeated: ActiveExercise[] = await Promise.all(template.map(async (t, i) => {
         const progression = await getProgressionSuggestion(t.exercise_id, String(t.reps));
+        const previousByIndex = await getLastSessionSetsByIndex(t.exercise_id);
         // BUGFIX (found in a self-audit after a real gap was reported): the
         // suggested weight was already computed here, but only ever shown
         // as the informational "Sobe para Xkg" text — the actual weight
@@ -312,12 +313,14 @@ export default function ActiveWorkoutScreen() {
           name: t.name,
           primaryMuscle: t.primary_muscle,
           equipment: t.equipment,
-          sets: Array.from({ length: t.sets }, () => ({
+          sets: Array.from({ length: t.sets }, (_, si) => ({
             reps: String(t.reps),
             weight,
             rpe: null,
             setType: 'normal' as SetType,
             done: false,
+            previousReps: previousByIndex[si] ? String(previousByIndex[si].reps) : undefined,
+            previousWeight: previousByIndex[si] ? String(previousByIndex[si].weight) : undefined,
           })),
           defaultSets: t.sets,
           defaultRepsTarget: String(t.reps),
@@ -349,6 +352,7 @@ export default function ActiveWorkoutScreen() {
       const activeExs: ActiveExercise[] = await Promise.all(
         planExs.map(async (pe, i) => {
           const lastSet = await getLastSetForExercise(pe.exercise_id);
+          const previousByIndex = await getLastSessionSetsByIndex(pe.exercise_id);
           const reps = pe.reps_target || '8';
           const progression = await getProgressionSuggestion(pe.exercise_id, pe.reps_target || '');
           // Pre-fill with the suggested load when the user cleared the rep
@@ -362,7 +366,11 @@ export default function ActiveWorkoutScreen() {
             name: pe.exercise_name,
             primaryMuscle: pe.primary_muscle,
             equipment: pe.equipment,
-            sets: Array.from({ length: pe.sets }, () => ({ reps, weight, rpe: null, setType: pe.set_type as SetType, done: false })),
+            sets: Array.from({ length: pe.sets }, (_, si) => ({
+              reps, weight, rpe: null, setType: pe.set_type as SetType, done: false,
+              previousReps: previousByIndex[si] ? String(previousByIndex[si].reps) : undefined,
+              previousWeight: previousByIndex[si] ? String(previousByIndex[si].weight) : undefined,
+            })),
             defaultSets: pe.sets,
             defaultRepsTarget: pe.reps_target,
             defaultWeight: pe.weight_target,
@@ -395,6 +403,7 @@ export default function ActiveWorkoutScreen() {
     if (substituteFor === null) return;
     const idx = substituteFor;
     const lastSet = await getLastSetForExercise(alt.id);
+    const previousByIndex = await getLastSessionSetsByIndex(alt.id);
     setExercises(prev => prev.map((e, i) => i === idx ? {
       ...e,
       exerciseId: alt.id,
@@ -404,11 +413,14 @@ export default function ActiveWorkoutScreen() {
       userNotes: (alt as any).user_notes || '',
       progression: null,
       imageUrl: alt.image_url || '',
-      // Keep the same number of sets, but reset loads to this exercise's own
-      // history rather than carrying over the previous exercise's weight.
-      sets: e.sets.map(s => ({
+      // Keep the same number of sets, but reset loads — and ANTERIOR's
+      // history — to this (substituted) exercise's own, rather than
+      // carrying over the exercise it replaced.
+      sets: e.sets.map((s, si) => ({
         ...s,
         weight: s.done ? s.weight : (lastSet ? String(lastSet.weight) : '0'),
+        previousReps: previousByIndex[si] ? String(previousByIndex[si].reps) : undefined,
+        previousWeight: previousByIndex[si] ? String(previousByIndex[si].weight) : undefined,
       })),
     } : e));
     setSubstituteFor(null);
@@ -424,6 +436,7 @@ export default function ActiveWorkoutScreen() {
 
   const addExerciseToWorkout = async (ex: Exercise) => {
     const lastSet = await getLastSetForExercise(ex.id);
+    const previousByIndex = await getLastSessionSetsByIndex(ex.id);
     const defaultReps = '8-12';
     // BUGFIX: this used to only ever repeat the last weight used, never the
     // double-progression suggestion — an exercise loaded as part of a plan
@@ -441,7 +454,11 @@ export default function ActiveWorkoutScreen() {
       name: ex.name,
       primaryMuscle: ex.primary_muscle,
       equipment: ex.equipment,
-      sets: [{ reps, weight, rpe: null, setType: 'normal', done: false }],
+      sets: [{
+        reps, weight, rpe: null, setType: 'normal', done: false,
+        previousReps: previousByIndex[0] ? String(previousByIndex[0].reps) : undefined,
+        previousWeight: previousByIndex[0] ? String(previousByIndex[0].weight) : undefined,
+      }],
       defaultSets: 3,
       defaultRepsTarget: defaultReps,
       defaultWeight: lastSet?.weight || 0,
@@ -477,7 +494,11 @@ export default function ActiveWorkoutScreen() {
         rpe: null,
         setType: 'normal' as SetType,
       };
-      return { ...ex, sets: [...ex.sets, { ...base, done: false }] };
+      // previousReps/previousWeight belong to the set position being
+      // copied from (`last`'s own history), not this new, extra set — an
+      // added 4th set has no set-4 history to show, so ANTERIOR must read
+      // "–" for it rather than echoing set 3's numbers.
+      return { ...ex, sets: [...ex.sets, { ...base, previousReps: undefined, previousWeight: undefined, done: false }] };
     }));
   };
 
@@ -527,15 +548,23 @@ export default function ActiveWorkoutScreen() {
   // name is a compile error instead of silently adding a dead property to
   // the set and updating nothing on screen — and so 'rpe' can take its real
   // number | null value while 'reps'/'weight' stay the strings the text
-  // inputs actually hold.
-  function updateSet(exIdx: number, setIdx: number, field: 'reps' | 'weight', value: string): void;
-  function updateSet(exIdx: number, setIdx: number, field: 'rpe', value: number | null): void;
-  function updateSet(exIdx: number, setIdx: number, field: 'reps' | 'weight' | 'rpe', value: string | number | null) {
+  // inputs actually hold. The overload signatures live on the `as` cast
+  // below rather than on a `function` declaration because this is wrapped
+  // in useCallback (stable identity, empty deps — the updater closes over
+  // nothing but its own arguments) so SetRow's memo() further down actually
+  // holds: this is the highest-frequency prop of all (fires on every
+  // keystroke in a weight/reps field), so leaving it unstable would
+  // re-render every OTHER set row on the screen on every keystroke,
+  // defeating the point of memoizing SetRow at all.
+  const updateSet = useCallback((exIdx: number, setIdx: number, field: 'reps' | 'weight' | 'rpe', value: string | number | null) => {
     setExercises(prev => prev.map((ex, i) => {
       if (i !== exIdx) return ex;
       return { ...ex, sets: ex.sets.map((s, si) => si === setIdx ? { ...s, [field]: value } : s) };
     }));
-  }
+  }, []) as {
+    (exIdx: number, setIdx: number, field: 'reps' | 'weight', value: string): void;
+    (exIdx: number, setIdx: number, field: 'rpe', value: number | null): void;
+  };
 
   /**
    * Persists a correction to an already-completed set. Only ever called for
@@ -721,7 +750,7 @@ export default function ActiveWorkoutScreen() {
     // setting, not a number baked in here.
     const restForExercise = ex.restSeconds || Number(DEFAULT_SETTINGS.defaultRestSeconds);
     setRestDuration(restForExercise);
-    resetRest(restForExercise);
+    setRestResetToken(t => t + 1);
     setRestActive(true);
 
     // Schedule a notification for when rest ends, so leaving the phone
@@ -882,7 +911,7 @@ export default function ActiveWorkoutScreen() {
           </TouchableOpacity>
         </View>
         <TouchableOpacity onPress={handleFinish} style={[styles.finishBtn, { backgroundColor: colors.secondary }]} accessibilityRole="button" accessibilityLabel="Terminar treino">
-          <Text style={styles.finishText}>Terminar</Text>
+          <Text style={[styles.finishText, { color: colors.onSecondary }]}>Terminar</Text>
         </TouchableOpacity>
       </View>
 
@@ -997,7 +1026,7 @@ export default function ActiveWorkoutScreen() {
           >
             {ex.supersetGroup != null && (
               <View style={[styles.supersetBadge, { backgroundColor: supersetFocusIdx === exIdx ? colors.accent : colors.surfaceVariant }]}>
-                <Text style={[styles.supersetBadgeText, { color: supersetFocusIdx === exIdx ? '#fff' : colors.textSecondary }]}>
+                <Text style={[styles.supersetBadgeText, { color: supersetFocusIdx === exIdx ? colors.onAccent : colors.textSecondary }]}>
                   {supersetFocusIdx === exIdx ? 'A SEGUIR — SUPERSET' : `SUPERSET ${ex.supersetGroup}`}
                 </Text>
               </View>
@@ -1104,7 +1133,7 @@ export default function ActiveWorkoutScreen() {
                       accessibilityRole="button"
                       accessibilityLabel="Guardar notas do exercicio"
                     >
-                      <Check size={16} color="#fff" />
+                      <Check size={16} color={colors.onPrimary} />
                     </TouchableOpacity>
                   </View>
                 ) : (
@@ -1178,7 +1207,7 @@ export default function ActiveWorkoutScreen() {
                     onComplete={completeSet}
                     onRemove={removeSet}
                     onCorrect={persistSetCorrection}
-                    onFocusInput={ref => { focusedInputRef.current = ref; }}
+                    onFocusInput={handleFocusInput}
                   />
                 ))}
 
@@ -1212,7 +1241,7 @@ export default function ActiveWorkoutScreen() {
           </View>
           <View style={styles.setTimerButtons}>
             <TouchableOpacity style={[styles.setTimerBtn, { backgroundColor: setTimerActive ? colors.error : colors.secondary }]} onPress={() => setSetTimerActive(!setTimerActive)} accessibilityRole="button" accessibilityLabel={setTimerActive ? 'Parar cronómetro de série' : 'Iniciar cronómetro de série'}>
-              <Text style={styles.setTimerBtnText}>{setTimerActive ? 'Parar' : 'Iniciar'}</Text>
+              <Text style={[styles.setTimerBtnText, { color: setTimerActive ? colors.onError : colors.onSecondary }]}>{setTimerActive ? 'Parar' : 'Iniciar'}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[styles.setTimerBtn, { backgroundColor: colors.surfaceVariant }]} onPress={() => { resetSetTimer(); setSetTimerActive(false); }} accessibilityRole="button" accessibilityLabel="Reiniciar cronómetro de série">
               <RotateCcw size={16} color={colors.textSecondary} />
@@ -1222,7 +1251,7 @@ export default function ActiveWorkoutScreen() {
 
         {/* Extra clearance so the last card can scroll clear of the floating
             rest bar (see below) instead of ending up hidden behind it. */}
-        <View style={{ height: restActive && !restFinished ? 84 : 32 }} />
+        <View style={{ height: restActive ? 84 : 32 }} />
       </ScrollView>
       </KeyboardAvoidingView>
 
@@ -1243,52 +1272,21 @@ export default function ActiveWorkoutScreen() {
           of the screen instead of an inline card that used to push the
           exercise list down while resting. It floats over the list (which
           keeps scrolling underneath it) so the next sets stay reachable
-          during rest instead of waiting for the timer to end. Same
-          countdown state/notification logic as before; only the chrome
-          around it changed. */}
-      {restActive && !restFinished && (
-        <View
-          style={[
-            styles.floatingRestBar,
-            { bottom: totalPlannedSets > 0 ? 66 : 14 },
-            { backgroundColor: colors.surface, borderColor: restRemaining <= 10 ? colors.error : colors.border },
-          ]}
-        >
-          <RestRing
-            remaining={restRemaining}
-            duration={restDuration}
-            size={40}
-            strokeWidth={4}
-            color={restRemaining <= 10 ? colors.error : colors.primary}
-            trackColor={colors.surfaceVariant}
-          />
-          <Text style={[styles.floatingRestLabel, { color: colors.textSecondary }]}>DESCANSO</Text>
-          <View style={{ flex: 1 }} />
-          <TouchableOpacity
-            onPress={() => {
-              addRestTime(30);
-              // Keep the scheduled notification's timing in sync with the
-              // manual +30s adjustment, using the post-adjustment remaining
-              // time rather than the stale pre-adjustment value.
-              if (restRemindersEnabled) scheduleRestEndNotification(restRemaining + 30, '').catch(() => {});
-            }}
-            style={[styles.floatingRestBtn, { backgroundColor: colors.surfaceVariant }]}
-            hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
-            accessibilityRole="button"
-            accessibilityLabel="Adicionar 30 segundos ao descanso"
-          >
-            <Text style={[styles.floatingRestBtnText, { color: colors.text }]}>+30s</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            onPress={() => { setRestActive(false); cancelRestEndNotification().catch(() => {}); }}
-            style={[styles.floatingRestBtn, { backgroundColor: colors.secondary }]}
-            hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
-            accessibilityRole="button"
-            accessibilityLabel="Saltar descanso"
-          >
-            <Text style={[styles.floatingRestBtnText, { color: '#fff' }]}>Saltar</Text>
-          </TouchableOpacity>
-        </View>
+          during rest instead of waiting for the timer to end. PERF: its own
+          component (below) — see the restResetToken comment above for why
+          this screen no longer owns the ticking countdown directly. */}
+      {restActive && (
+        <FloatingRestBar
+          restDuration={restDuration}
+          restResetToken={restResetToken}
+          totalPlannedSets={totalPlannedSets}
+          restRemindersEnabled={restRemindersEnabled}
+          vibrateEnabled={vibrateEnabled}
+          soundEnabled={soundEnabled}
+          colors={colors}
+          setRestActive={setRestActive}
+          onRestComplete={onRestComplete}
+        />
       )}
 
       {/* Exercise picker */}
@@ -1360,7 +1358,7 @@ export default function ActiveWorkoutScreen() {
             )}
 
             <TouchableOpacity style={[styles.confirmFinishBtn, { backgroundColor: colors.secondary }]} onPress={confirmFinish}>
-              <Text style={styles.confirmFinishText}>Guardar Treino</Text>
+              <Text style={[styles.confirmFinishText, { color: colors.onSecondary }]}>Guardar Treino</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[styles.continueBtn, { borderColor: colors.border }]} onPress={() => setShowFinish(false)}>
               <Text style={[styles.continueBtnText, { color: colors.textSecondary }]}>Continuar a treinar</Text>
@@ -1527,6 +1525,125 @@ export default function ActiveWorkoutScreen() {
 }
 
 /**
+ * PERF: isolates the rest countdown's 250ms ticking to this small subtree
+ * instead of ActiveWorkoutScreen's own body — see that screen's
+ * restResetToken comment for the full reasoning. Owns its own
+ * useCountdown (still the same tested hook, same behavior) plus the
+ * 5-second vibration warning that used to live in the parent, since both
+ * only ever needed the per-tick number, never anything else the parent's
+ * render depended on.
+ *
+ * `remaining` also drives a Reanimated shared value (remainingSV) that
+ * RestRing animates from, via withTiming, for a smoothly interpolating
+ * ring instead of one that visibly steps once per 250ms tick — a genuine
+ * use of shared values here, not just a rename of the same state.
+ *
+ * restResetToken changing is the "start a fresh rest now" signal (see
+ * useCountdown's own reset()/resetToken doc comment for why a plain
+ * restDuration prop change alone isn't sufficient — completing a set while
+ * the PREVIOUS rest is still actively counting down, the common case, is
+ * exactly when `restActive` never has a false→true transition to key a
+ * restart off of).
+ */
+function FloatingRestBar({
+  restDuration, restResetToken, totalPlannedSets, restRemindersEnabled, vibrateEnabled, soundEnabled, colors, setRestActive, onRestComplete,
+}: {
+  restDuration: number; restResetToken: number; totalPlannedSets: number;
+  restRemindersEnabled: boolean; vibrateEnabled: boolean; soundEnabled: boolean; colors: any;
+  setRestActive: (active: boolean) => void;
+  onRestComplete: () => void;
+}) {
+  const { remaining, isFinished, addTime, reset } = useCountdown(restDuration, true, onRestComplete);
+
+  useEffect(() => {
+    if (restResetToken > 0) reset(restDuration);
+    // Only restResetToken should retrigger this — see the component doc
+    // comment above. Including restDuration/reset here would also fire on
+    // every render where either identity happens to change, which is not
+    // the "start a fresh rest now" signal this exists to react to.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restResetToken]);
+
+  // Five-second warning, distinct from the end-of-rest alert. In a noisy
+  // gym the phone is often face-down in a bag; a single buzz at zero is
+  // easy to miss and gives no time to get back to the bar. A short double
+  // pulse at five seconds is the heads-up. Guarded by a ref so it fires
+  // once per rest period rather than on every tick that happens to land
+  // on 5.
+  const fiveSecondWarningRef = useRef(false);
+  useEffect(() => {
+    if (isFinished) { fiveSecondWarningRef.current = false; return; }
+    if (remaining <= 5 && remaining > 0 && !fiveSecondWarningRef.current) {
+      fiveSecondWarningRef.current = true;
+      if (vibrateEnabled) Vibration.vibrate([0, 120, 80, 120]);
+    }
+  }, [remaining, isFinished, vibrateEnabled]);
+
+  // Smoothed mirror of `remaining` for the ring's animation only — the
+  // countdown's actual state/logic (addTime, reset, isFinished, the
+  // notification scheduling below) all still runs on the plain number
+  // above, unchanged.
+  const remainingSV = useSharedValue(remaining);
+  useEffect(() => {
+    remainingSV.value = withTiming(remaining, { duration: 240 });
+  }, [remaining, remainingSV]);
+
+  if (isFinished) return null;
+
+  // Urgent (<10s left): errorContainer background + error text, not just
+  // an error-colored border/ring — a subtle border change is easy to miss
+  // mid-set when the phone is only half-glanced at, exactly when the "get
+  // back to the bar" signal matters most.
+  const isUrgent = remaining <= 10;
+
+  return (
+    <View
+      pointerEvents="box-none"
+      style={[
+        styles.floatingRestBar,
+        { bottom: totalPlannedSets > 0 ? 66 : 14 },
+        { backgroundColor: isUrgent ? colors.errorContainer : colors.surface, borderColor: isUrgent ? colors.error : colors.border },
+      ]}
+    >
+      <RestRing
+        remainingSV={remainingSV}
+        duration={restDuration}
+        size={40}
+        strokeWidth={4}
+        color={isUrgent ? colors.error : colors.primary}
+        trackColor={colors.surfaceVariant}
+      />
+      <Text style={[styles.floatingRestLabel, { color: isUrgent ? colors.error : colors.textSecondary }]}>DESCANSO</Text>
+      <View style={{ flex: 1 }} />
+      <TouchableOpacity
+        onPress={() => {
+          addTime(30);
+          // Keep the scheduled notification's timing in sync with the
+          // manual +30s adjustment, using the post-adjustment remaining
+          // time rather than the stale pre-adjustment value.
+          if (restRemindersEnabled) scheduleRestEndNotification(remaining + 30, '').catch(() => {});
+        }}
+        style={[styles.floatingRestBtn, { backgroundColor: colors.surfaceVariant }]}
+        hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+        accessibilityRole="button"
+        accessibilityLabel="Adicionar 30 segundos ao descanso"
+      >
+        <Text style={[styles.floatingRestBtnText, { color: colors.text }]}>+30s</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        onPress={() => { setRestActive(false); cancelRestEndNotification().catch(() => {}); }}
+        style={[styles.floatingRestBtn, { backgroundColor: colors.secondary }]}
+        hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+        accessibilityRole="button"
+        accessibilityLabel="Saltar descanso"
+      >
+        <Text style={[styles.floatingRestBtnText, { color: colors.onSecondary }]}>Saltar</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+/**
  * One row of a set: previous performance, weight, reps, RPE and the done
  * button, plus the plate-increment and RPE popovers.
  *
@@ -1537,8 +1654,20 @@ export default function ActiveWorkoutScreen() {
  * is a mechanical change with no way to verify it short of running a workout
  * on a device — and an untested refactor of this exact file has broken it
  * before. Worth doing once the on-device pass in ESTADO.md is done.
+ *
+ * Wrapped in memo() below — a workout can have 5+ exercises open with
+ * several sets each, and without it, typing into ANY one set's field (or
+ * any other state change in the parent screen, e.g. the rest timer's own
+ * re-renders) re-rendered every OTHER row too. The screen only passes this
+ * stable-identity props for that to actually take effect: `colors` (a
+ * module-level constant from useTheme), `onUpdate`/`onFocusInput`
+ * (useCallback, empty deps) — `onComplete`/`onRemove`/`onCorrect` are not
+ * yet stabilized (see completeSet/removeSet/persistSetCorrection's own
+ * closures over `exercises`), so memo() only skips a re-render when NONE
+ * of those fired this render; it still fully protects the common case of
+ * typing into a field or another row's own set completing.
  */
-function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComplete, onRemove, onCorrect, onFocusInput }: {
+const SetRow = memo(function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComplete, onRemove, onCorrect, onFocusInput }: {
   set: ActiveExercise['sets'][0]; setIdx: number; exIdx: number; colors: any; isSimple: boolean;
   /** True for an undone set that isn't next in line yet — see the
    *  firstUndoneIdx computation where SetRow is rendered. Blocks input and
@@ -1593,6 +1722,7 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
     const current = parseFloat(set.weight) || 0;
     const next = Math.max(0, Math.round((current + delta) * 100) / 100);
     onUpdate(exIdx, setIdx, 'weight', String(next));
+    hapticSelect();
   };
 
   const adjustReps = (delta: number) => {
@@ -1627,7 +1757,7 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
         </View>
         <View style={styles.setPrevCell}>
           <Text style={[styles.setPrevText, { color: colors.textTertiary }]}>
-            {set.reps && set.weight ? `${set.reps}×${set.weight}` : '–'}
+            {set.previousReps && set.previousWeight ? `${set.previousReps}×${set.previousWeight}` : '–'}
           </Text>
         </View>
         <View style={[styles.setWeightCell, styles.weightCellRow]}>
@@ -1635,7 +1765,7 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
             <TouchableOpacity
               style={styles.weightStepBtn}
               onPress={() => { adjustWeight(-2.5); if (set.done) onCorrect(exIdx, setIdx, { weight: String(Math.max(0, (parseFloat(set.weight) || 0) - 2.5)) }); }}
-              hitSlop={{ top: 12, bottom: 12, left: 8, right: 4 }}
+              hitSlop={{ top: 12, bottom: 12, left: 9, right: 9 }}
               accessibilityRole="button"
               accessibilityLabel="Reduzir peso em 2.5 quilos"
             >
@@ -1657,7 +1787,7 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
             <TouchableOpacity
               style={styles.weightStepBtn}
               onPress={() => { adjustWeight(2.5); if (set.done) onCorrect(exIdx, setIdx, { weight: String((parseFloat(set.weight) || 0) + 2.5) }); }}
-              hitSlop={{ top: 12, bottom: 12, left: 4, right: 8 }}
+              hitSlop={{ top: 12, bottom: 12, left: 9, right: 9 }}
               accessibilityRole="button"
               accessibilityLabel="Aumentar peso em 2.5 quilos"
             >
@@ -1698,7 +1828,7 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
           // hitSlop brings the effective target to ~48pt, the Android
           // minimum, without changing the layout.
           hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-          onPress={() => !set.done && !locked && onComplete(exIdx, setIdx)}
+          onPress={() => { if (!set.done && !locked) { setShowQuickAdjust(false); onComplete(exIdx, setIdx); } }}
           disabled={locked}
           accessibilityRole="button"
           accessibilityLabel={
@@ -1710,7 +1840,7 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
         >
           {locked
             ? <Lock size={15} color={colors.textTertiary} />
-            : <Check size={18} color={set.done ? '#fff' : colors.textTertiary} />
+            : <Check size={18} color={set.done ? colors.onSecondary : colors.textTertiary} />
           }
         </AnimatedTouchable>
       </TouchableOpacity>
@@ -1794,7 +1924,7 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
               {RPE_VALUES.map(r => (
                 <TouchableOpacity key={r} style={[styles.rpeChip, { backgroundColor: set.rpe === r ? colors.primary : colors.surfaceHighlight }]}
                   onPress={() => { onUpdate(exIdx, setIdx, 'rpe', r); if (set.done) onCorrect(exIdx, setIdx, { rpe: r }); setShowRpe(false); }}>
-                  <Text style={[styles.rpeChipText, { color: set.rpe === r ? '#fff' : colors.text }]}>{r}</Text>
+                  <Text style={[styles.rpeChipText, { color: set.rpe === r ? colors.onPrimary : colors.text }]}>{r}</Text>
                 </TouchableOpacity>
               ))}
               <TouchableOpacity style={[styles.rpeChip, { backgroundColor: colors.surfaceHighlight }]} onPress={() => { onUpdate(exIdx, setIdx, 'rpe', null); if (set.done) onCorrect(exIdx, setIdx, { rpe: null }); setShowRpe(false); }}>
@@ -1806,7 +1936,7 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
       )}
     </>
   );
-}
+});
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
@@ -1821,7 +1951,7 @@ const styles = StyleSheet.create({
   progressFooterText: { fontFamily: 'Inter-SemiBold', fontSize: 12, textAlign: 'center' },
   progressFooterTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
   progressFooterFill: { height: '100%', borderRadius: 3 },
-  finishText: { color: '#fff', fontFamily: 'Inter-SemiBold', fontSize: 14 },
+  finishText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   statsBar: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1 },
   pausedBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8 },
   pausedBannerText: { flex: 1, fontFamily: 'Inter-SemiBold', fontSize: 13, lineHeight: 17 },
@@ -1907,7 +2037,7 @@ const styles = StyleSheet.create({
   setTimerValue: { fontFamily: 'Inter-Bold', fontSize: 20 },
   setTimerButtons: { flexDirection: 'row', gap: 8 },
   setTimerBtn: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 6 },
-  setTimerBtnText: { color: '#fff', fontFamily: 'Inter-SemiBold', fontSize: 14 },
+  setTimerBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   picker: { flex: 1 },
   pickerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1 },
   pickerTitle: { fontFamily: 'Inter-Bold', fontSize: 20 },
@@ -1926,7 +2056,7 @@ const styles = StyleSheet.create({
   finishStatVal: { fontFamily: 'Inter-Bold', fontSize: 24 },
   finishStatLabel: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17 },
   confirmFinishBtn: { borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
-  confirmFinishText: { color: '#fff', fontFamily: 'Inter-Bold', fontSize: 17 },
+  confirmFinishText: { fontFamily: 'Inter-Bold', fontSize: 17 },
   continueBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', borderWidth: 1 },
   continueBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   whyOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 28 },

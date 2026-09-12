@@ -20,6 +20,9 @@
  * seeded with representative rows, then upgraded by running today's
  * initDatabase() against it.
  */
+/* eslint-disable @typescript-eslint/no-require-imports -- each test needs a
+   fresh '../database' module after jest.resetModules() (below); a top-level
+   import would be cached once and never reflect that reset. */
 
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 

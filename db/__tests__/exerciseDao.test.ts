@@ -14,6 +14,9 @@ jest.mock('../database', () => ({
   getDatabase: async () => ({ getAllAsync: mockGetAllAsync }),
 }));
 
+// Must follow jest.mock('../database') above so the mock factory's
+// reference to mockGetAllAsync is set up first.
+// eslint-disable-next-line import/first
 import { searchExercises } from '../exerciseDao';
 
 /** The SQL and params from the most recent query. */

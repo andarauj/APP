@@ -56,7 +56,10 @@ export const Colors = {
     onPrimaryContainer: '#1B44B8',
     secondary: '#34C759',
     secondaryContainer: '#DFF5E3',
-    onSecondary: '#FFFFFF',
+    // BUGFIX (WCAG AA audit): white text/icons on this green measure only
+    // ~2.2:1 contrast — well under the 4.5:1 minimum for normal text. A
+    // dark, near-black tone against #34C759 clears ~7.7:1.
+    onSecondary: '#08201C',
     accent: '#7C4DFF',
     accentContainer: '#ECE4FF',
     onAccent: '#FFFFFF',
