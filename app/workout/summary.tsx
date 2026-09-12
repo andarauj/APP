@@ -62,7 +62,10 @@ export default function WorkoutSummaryScreen() {
       // the session's summary fields fixes this for unfinished sessions and
       // is equally correct for finished ones.
       const realSets = sets.length;
-      const realVolume = sets.reduce((sum: number, st: any) => sum + st.reps * st.weight, 0);
+      // Volume excludes warmup sets, matching every other volume query in
+      // db/workoutDao.ts (set_type != 'warmup') — a warmup set's light load
+      // isn't meant to count toward the session's working volume.
+      const realVolume = sets.reduce((sum: number, st: any) => sum + (st.set_type === 'warmup' ? 0 : st.reps * st.weight), 0);
       let realDuration = s?.total_duration || 0;
       if (s && !s.ended_at) {
         const lastSetTime = sets.reduce((max: number, st: any) => Math.max(max, st.completed_at || 0), 0);
@@ -131,7 +134,7 @@ export default function WorkoutSummaryScreen() {
 
   const volumePerMuscle: Record<string, number> = {};
   setsByExercise.forEach(ex => {
-    const vol = ex.sets.reduce((s: number, set: any) => s + set.weight * set.reps, 0);
+    const vol = ex.sets.reduce((s: number, set: any) => s + (set.set_type === 'warmup' ? 0 : set.weight * set.reps), 0);
     volumePerMuscle[ex.muscle] = (volumePerMuscle[ex.muscle] || 0) + vol;
   });
 
