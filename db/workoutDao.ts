@@ -120,6 +120,31 @@ export async function deleteSet(id: number): Promise<void> {
   await db.runAsync('DELETE FROM workout_sets WHERE id = ?', [id]);
 }
 
+/**
+ * Corrects an already-logged set (reps/weight/RPE) — for the workout screen
+ * letting a completed set stay editable to fix a typo, instead of only
+ * updating on-screen state with no way to persist it (the same trap RPE
+ * editing used to fall into before it was locked post-completion; see the
+ * comment on SetRow's RPE cell in app/workout/active.tsx). Does not
+ * recompute is_pr — a correction retroactively changing what the true max
+ * was would require re-checking every set logged after this one too, which
+ * is a bigger, separate concern than fixing a mistyped number.
+ */
+export async function updateWorkoutSet(
+  id: number,
+  patch: { reps?: number; weight?: number; rpe?: number | null },
+): Promise<void> {
+  const db = await getDatabase();
+  const fields: string[] = [];
+  const params: any[] = [];
+  if (patch.reps !== undefined) { fields.push('reps = ?'); params.push(patch.reps); }
+  if (patch.weight !== undefined) { fields.push('weight = ?'); params.push(patch.weight); }
+  if (patch.rpe !== undefined) { fields.push('rpe = ?'); params.push(patch.rpe); }
+  if (fields.length === 0) return;
+  params.push(id);
+  await db.runAsync(`UPDATE workout_sets SET ${fields.join(', ')} WHERE id = ?`, params);
+}
+
 export async function getLastSetForExercise(exerciseId: number): Promise<WorkoutSet | null> {
   const db = await getDatabase();
   const row = await db.getFirstAsync(
@@ -357,11 +382,11 @@ export async function getProgressionSuggestion(
 /** Copies a previous session's exercises/sets as the starting point for a new one. */
 export async function getSessionTemplate(sessionId: number): Promise<{
   exercise_id: number; name: string; primary_muscle: string; equipment: string;
-  sets: number; reps: number; weight: number; rest_seconds: number;
+  sets: number; reps: number; weight: number; rest_seconds: number; image_url: string;
 }[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<any>(
-    `SELECT ws.exercise_id, e.name, e.primary_muscle, e.equipment,
+    `SELECT ws.exercise_id, e.name, e.primary_muscle, e.equipment, e.image_url,
             COUNT(*) AS sets,
             CAST(AVG(ws.reps) AS INTEGER) AS reps,
             MAX(ws.weight) AS weight,
@@ -373,7 +398,7 @@ export async function getSessionTemplate(sessionId: number): Promise<{
      ORDER BY MIN(ws.id)`,
     [sessionId]
   );
-  return rows.map(r => ({ ...r, rest_seconds: r.rest_seconds || 90 }));
+  return rows.map(r => ({ ...r, rest_seconds: r.rest_seconds || 90, image_url: r.image_url || '' }));
 }
 
 export interface MostTrainedExercise {

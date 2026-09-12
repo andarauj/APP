@@ -11,7 +11,7 @@ import { getAdaptiveStatus } from '@/utils/adaptiveService';
 import { getExerciseStates, type AdaptiveExerciseStateRow } from '@/db/adaptiveDao';
 import { PHASE_LABEL_PT, PHASE_COLOR, phaseSpec } from '@/utils/adaptivePlan';
 import type { AdaptiveGoal, AdaptivePhase } from '@/utils/nspi';
-import { createSession, updateSession, discardSession, addSet, getLastSetForExercise, getHistoricalRpeAtWeight , getProgressionSuggestion, getSessionTemplate } from '@/db/workoutDao';
+import { createSession, updateSession, discardSession, addSet, updateWorkoutSet, getLastSetForExercise, getHistoricalRpeAtWeight , getProgressionSuggestion, getSessionTemplate } from '@/db/workoutDao';
 import { searchExercises, getAlternativeExercises, setExerciseUserNotes } from '@/db/exerciseDao';
 import { getSettingWithDefault, DEFAULT_SETTINGS } from '@/db/settingsDao';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -25,13 +25,14 @@ import { parseTempo, calculatePlates } from '@/utils/calculators';
 import { hapticTap, hapticSuccess, hapticWarning, hapticSelect } from '@/utils/haptics';
 import { playRestEndSound } from '@/utils/sound';
 import { findSupersetPartner } from '@/utils/supersets';
+import { isSetLocked } from '@/utils/setLocking';
 import { restSecondsFor } from '@/utils/planGenerator';
 import { suggestSetAdjustment, type AutoRegulationSuggestion } from '@/utils/autoRegulation';
 import { TempoMetronomeBox } from '@/components/workout/TempoMetronomeBox';
 import { RestRing } from '@/components/ui/RestRing';
 import { generateLiveCoachingTips, type CoachingTip } from '@/utils/livCoachingTips';
 import { LiveCoachingStack } from '@/components/ui/LiveCoachingTip';
-import { X, Plus, Check, Timer, RotateCcw, ChevronDown, ChevronUp, Trophy, StickyNote, Repeat, TrendingUp, Pause, Play, Gauge, Star, Image as ImageIcon } from 'lucide-react-native';
+import { X, Plus, Check, Timer, RotateCcw, ChevronDown, ChevronUp, Trophy, StickyNote, Repeat, TrendingUp, Pause, Play, Gauge, Star, Image as ImageIcon, Lock } from 'lucide-react-native';
 import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
 
 interface ActiveExercise {
@@ -40,7 +41,12 @@ interface ActiveExercise {
   name: string;
   primaryMuscle: string;
   equipment: string;
-  sets: { reps: string; weight: string; rpe: number | null; setType: SetType; done: boolean; isPr?: boolean }[];
+  sets: {
+    reps: string; weight: string; rpe: number | null; setType: SetType; done: boolean; isPr?: boolean;
+    /** workout_sets.id once logged — needed to persist a correction made
+     *  after the fact (see updateWorkoutSet in db/workoutDao.ts). */
+    dbId?: number | null;
+  }[];
   defaultSets: number;
   defaultRepsTarget: string;
   defaultWeight: number;
@@ -521,6 +527,36 @@ export default function ActiveWorkoutScreen() {
     }));
   };
 
+  /**
+   * Persists a correction to an already-completed set. Only ever called for
+   * a done set with a dbId — updateSet above already covers the undone/
+   * in-progress case, which has nothing in the database yet to update
+   * (completeSet's addSet() call is what creates that row). Without this,
+   * editing reps/weight after the fact would repeat the exact bug the RPE
+   * cell used to have: the on-screen value changes, but addSet() already
+   * wrote the original number, so the correction silently never saves.
+   *
+   * `overrides` exists for the RPE picker, which calls onUpdate() and wants
+   * to persist right away in the same tap — reading straight from
+   * `exercises` there would race the state update and save the value from
+   * BEFORE the tap. The reps/weight text inputs persist on blur instead,
+   * by which point onChangeText's update has long since landed, so they
+   * don't need it.
+   */
+  const persistSetCorrection = (
+    exIdx: number,
+    setIdx: number,
+    overrides?: { reps?: string; weight?: string; rpe?: number | null },
+  ) => {
+    const set = exercises[exIdx]?.sets[setIdx];
+    if (!set?.done || !set.dbId) return;
+    updateWorkoutSet(set.dbId, {
+      reps: parseInt(overrides?.reps ?? set.reps) || 0,
+      weight: parseFloat(overrides?.weight ?? set.weight) || 0,
+      rpe: overrides && 'rpe' in overrides ? overrides.rpe! : set.rpe,
+    }).catch(() => {});
+  };
+
   /** Applies an auto-regulation suggestion to the exercise's next undone
    *  set — rounded to a loadable 2.5kg increment, same convention used
    *  throughout the app (plate calculator, 5/3/1). Silently does nothing
@@ -547,7 +583,7 @@ export default function ActiveWorkoutScreen() {
     const reps = parseInt(set.reps) || 0;
     const weight = parseFloat(set.weight) || 0;
 
-    const { isPr } = await addSet(
+    const { id: dbId, isPr } = await addSet(
       sessionId, ex.exerciseId, setIdx, reps, weight, set.rpe,
       0, setElapsed, set.setType
     );
@@ -602,7 +638,7 @@ export default function ActiveWorkoutScreen() {
 
     setExercises(prev => prev.map((e, i) => {
       if (i !== exIdx) return e;
-      return { ...e, sets: e.sets.map((s, si) => si === setIdx ? { ...s, done: true, isPr } : s) };
+      return { ...e, sets: e.sets.map((s, si) => si === setIdx ? { ...s, done: true, isPr, dbId } : s) };
     }));
 
     // Bulk-completing every remaining set (via "Concluir tudo") would otherwise
@@ -1175,6 +1211,8 @@ export default function ActiveWorkoutScreen() {
                   <View style={styles.setDoneCell} />
                 </View>
 
+                {/* Only the current (next-to-log) set accepts input; sets
+                    further down wait their turn — see isSetLocked. */}
                 {ex.sets.map((set, setIdx) => (
                   <SetRow
                     key={setIdx}
@@ -1183,9 +1221,11 @@ export default function ActiveWorkoutScreen() {
                     exIdx={exIdx}
                     colors={colors}
                     isSimple={isSimple}
+                    locked={isSetLocked(ex.sets, setIdx)}
                     onUpdate={updateSet}
                     onComplete={completeSet}
                     onRemove={removeSet}
+                    onCorrect={persistSetCorrection}
                     onFocusInput={ref => { focusedInputRef.current = ref; }}
                   />
                 ))}
@@ -1492,15 +1532,25 @@ export default function ActiveWorkoutScreen() {
  * on a device — and an untested refactor of this exact file has broken it
  * before. Worth doing once the on-device pass in ESTADO.md is done.
  */
-function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, onRemove, onFocusInput }: {
+function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComplete, onRemove, onCorrect, onFocusInput }: {
   set: ActiveExercise['sets'][0]; setIdx: number; exIdx: number; colors: any; isSimple: boolean;
+  /** True for an undone set that isn't next in line yet — see the
+   *  firstUndoneIdx computation where SetRow is rendered. Blocks input and
+   *  completing out of order; a done set is never locked, so it can always
+   *  be corrected. */
+  locked: boolean;
   onUpdate: (exIdx: number, setIdx: number, field: string, value: any) => void;
   onComplete: (exIdx: number, setIdx: number) => void;
   onRemove: (exIdx: number, setIdx: number) => void;
+  /** Persists an edit made to an already-done set — see persistSetCorrection. */
+  onCorrect: (exIdx: number, setIdx: number, overrides?: { reps?: string; weight?: string; rpe?: number | null }) => void;
   /** Registers whichever input the person just tapped into, so the screen
    *  can scroll it clear of the keyboard once it's done animating in. */
   onFocusInput: (ref: any) => void;
 }) {
+  // Editable either because it's done (correcting a mistake) or because
+  // it's the current set; a future, not-yet-reached set is neither.
+  const editable = set.done || !locked;
   const repsInputRef = useRef<TextInput>(null);
   const weightInputRef = useRef<TextInput>(null);
   const [showRpe, setShowRpe] = useState(false);
@@ -1547,7 +1597,11 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, on
 
   return (
     <>
-      <TouchableOpacity style={[styles.setRow, set.done && { opacity: 0.5 }]} onLongPress={() => onRemove(exIdx, setIdx)} delayLongPress={600}>
+      <TouchableOpacity
+        style={[styles.setRow, set.done && { opacity: 0.5 }, locked && { opacity: 0.4 }]}
+        onLongPress={() => onRemove(exIdx, setIdx)}
+        delayLongPress={600}
+      >
         <View style={styles.setNumCell}>
           <View style={[styles.setNumBadge, { backgroundColor: setTypeColors[set.setType] + '33' }]}>
             <Text style={[styles.setNumText, { color: setTypeColors[set.setType] }]}>{setIdx + 1}</Text>
@@ -1561,20 +1615,21 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, on
         <View style={styles.setRepsCell}>
           <TextInput
             ref={repsInputRef}
-            style={[styles.setInput, { color: colors.text, backgroundColor: set.done ? 'transparent' : colors.surfaceVariant, borderColor: colors.border }]}
+            style={[styles.setInput, { color: colors.text, backgroundColor: editable ? colors.surfaceVariant : 'transparent', borderColor: colors.border }]}
             value={set.reps}
             onChangeText={v => onUpdate(exIdx, setIdx, 'reps', v)}
             onFocus={() => onFocusInput(repsInputRef.current)}
+            onBlur={() => onCorrect(exIdx, setIdx)}
             keyboardType="numeric"
             selectTextOnFocus
-            editable={!set.done}
+            editable={editable}
           />
         </View>
         <View style={[styles.setWeightCell, styles.weightCellRow]}>
-          {!set.done && (
+          {editable && (
             <TouchableOpacity
               style={styles.weightStepBtn}
-              onPress={() => adjustWeight(-2.5)}
+              onPress={() => { adjustWeight(-2.5); if (set.done) onCorrect(exIdx, setIdx, { weight: String(Math.max(0, (parseFloat(set.weight) || 0) - 2.5)) }); }}
               hitSlop={6}
               accessibilityRole="button"
               accessibilityLabel="Reduzir peso em 2.5 quilos"
@@ -1584,18 +1639,19 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, on
           )}
           <TextInput
             ref={weightInputRef}
-            style={[styles.setInput, styles.setInputInRow, { color: colors.text, backgroundColor: set.done ? 'transparent' : colors.surfaceVariant, borderColor: colors.border }]}
+            style={[styles.setInput, styles.setInputInRow, { color: colors.text, backgroundColor: editable ? colors.surfaceVariant : 'transparent', borderColor: colors.border }]}
             value={set.weight}
             onChangeText={v => onUpdate(exIdx, setIdx, 'weight', v)}
             onFocus={() => { setShowQuickAdjust(true); onFocusInput(weightInputRef.current); }}
+            onBlur={() => onCorrect(exIdx, setIdx)}
             keyboardType="decimal-pad"
             selectTextOnFocus
-            editable={!set.done}
+            editable={editable}
           />
-          {!set.done && (
+          {editable && (
             <TouchableOpacity
               style={styles.weightStepBtn}
-              onPress={() => adjustWeight(2.5)}
+              onPress={() => { adjustWeight(2.5); if (set.done) onCorrect(exIdx, setIdx, { weight: String((parseFloat(set.weight) || 0) + 2.5) }); }}
               hitSlop={6}
               accessibilityRole="button"
               accessibilityLabel="Aumentar peso em 2.5 quilos"
@@ -1604,13 +1660,14 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, on
             </TouchableOpacity>
           )}
         </View>
-        {/* BUGFIX: RPE wasn't locked after the set was marked done, unlike
-            reps/weight. Once a set is saved, addSet() has already written its
-            RPE to the database — tapping this afterward silently changed only
-            the on-screen value with no way to persist it, giving the false
-            impression the edit had been saved. */}
+        {/* A done set stays editable (to fix a mistake), unlike a future,
+            not-yet-reached one — see the `editable`/`locked` comments above.
+            Correcting RPE persists immediately via onCorrect's override,
+            since it fires in the same tap as onUpdate — see
+            persistSetCorrection's comment on why reading fresh state there
+            would race the update. */}
         {!isSimple && (
-          <TouchableOpacity style={styles.setRpeCell} onPress={() => !set.done && setShowRpe(true)} disabled={set.done}>
+          <TouchableOpacity style={styles.setRpeCell} onPress={() => editable && setShowRpe(true)} disabled={!editable}>
             <Text style={[styles.rpeText, { color: set.rpe ? colors.text : colors.textTertiary }]}>
               {set.rpe || '–'}
             </Text>
@@ -1623,20 +1680,25 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, on
           // hitSlop brings the effective target to ~48pt, the Android
           // minimum, without changing the layout.
           hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-          onPress={() => !set.done && onComplete(exIdx, setIdx)}
+          onPress={() => !set.done && !locked && onComplete(exIdx, setIdx)}
+          disabled={locked}
           accessibilityRole="button"
-          accessibilityLabel={set.done ? `Série ${setIdx + 1} concluída` : `Marcar série ${setIdx + 1} como concluída`}
-          accessibilityState={{ checked: set.done }}
+          accessibilityLabel={
+            set.done ? `Série ${setIdx + 1} concluída`
+              : locked ? `Série ${setIdx + 1} bloqueada até chegar a vez`
+                : `Marcar série ${setIdx + 1} como concluída`
+          }
+          accessibilityState={{ checked: set.done, disabled: locked }}
         >
-          {set.done
-            ? <Check size={18} color="#fff" />
-            : <Check size={18} color={colors.textTertiary} />
+          {locked
+            ? <Lock size={15} color={colors.textTertiary} />
+            : <Check size={18} color={set.done ? '#fff' : colors.textTertiary} />
           }
         </AnimatedTouchable>
       </TouchableOpacity>
 
       {/* Quick weight/rep adjust — plate-sized steps, no keyboard needed */}
-      {showQuickAdjust && !set.done && (
+      {showQuickAdjust && editable && (
         <View style={[styles.quickAdjust, { backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}>
           <View style={styles.quickRow}>
             <Text style={[styles.quickLabel, { color: colors.textSecondary }]}>Peso</Text>
@@ -1710,11 +1772,11 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, onUpdate, onComplete, on
             <View style={styles.rpeRow}>
               {RPE_VALUES.map(r => (
                 <TouchableOpacity key={r} style={[styles.rpeChip, { backgroundColor: set.rpe === r ? colors.primary : colors.surfaceHighlight }]}
-                  onPress={() => { onUpdate(exIdx, setIdx, 'rpe', r); setShowRpe(false); }}>
+                  onPress={() => { onUpdate(exIdx, setIdx, 'rpe', r); if (set.done) onCorrect(exIdx, setIdx, { rpe: r }); setShowRpe(false); }}>
                   <Text style={[styles.rpeChipText, { color: set.rpe === r ? '#fff' : colors.text }]}>{r}</Text>
                 </TouchableOpacity>
               ))}
-              <TouchableOpacity style={[styles.rpeChip, { backgroundColor: colors.surfaceHighlight }]} onPress={() => { onUpdate(exIdx, setIdx, 'rpe', null); setShowRpe(false); }}>
+              <TouchableOpacity style={[styles.rpeChip, { backgroundColor: colors.surfaceHighlight }]} onPress={() => { onUpdate(exIdx, setIdx, 'rpe', null); if (set.done) onCorrect(exIdx, setIdx, { rpe: null }); setShowRpe(false); }}>
                 <X size={14} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
