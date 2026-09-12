@@ -133,7 +133,7 @@ export default function ActiveWorkoutScreen() {
   // it finishes animating in.
   const scrollViewRef = useRef<ScrollView>(null);
   const scrollOffsetRef = useRef(0);
-  const focusedInputRef = useRef<any>(null);
+  const focusedInputRef = useRef<TextInput | null>(null);
   useEffect(() => {
     const sub = Keyboard.addListener('keyboardDidShow', (e) => {
       const input = focusedInputRef.current;
@@ -523,12 +523,19 @@ export default function ActiveWorkoutScreen() {
     ]);
   };
 
-  const updateSet = (exIdx: number, setIdx: number, field: string, value: any) => {
+  // Overloaded (not a single `field: string, value: any`) so a typo'd field
+  // name is a compile error instead of silently adding a dead property to
+  // the set and updating nothing on screen — and so 'rpe' can take its real
+  // number | null value while 'reps'/'weight' stay the strings the text
+  // inputs actually hold.
+  function updateSet(exIdx: number, setIdx: number, field: 'reps' | 'weight', value: string): void;
+  function updateSet(exIdx: number, setIdx: number, field: 'rpe', value: number | null): void;
+  function updateSet(exIdx: number, setIdx: number, field: 'reps' | 'weight' | 'rpe', value: string | number | null) {
     setExercises(prev => prev.map((ex, i) => {
       if (i !== exIdx) return ex;
       return { ...ex, sets: ex.sets.map((s, si) => si === setIdx ? { ...s, [field]: value } : s) };
     }));
-  };
+  }
 
   /**
    * Persists a correction to an already-completed set. Only ever called for
@@ -1542,14 +1549,17 @@ function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComp
    *  completing out of order; a done set is never locked, so it can always
    *  be corrected. */
   locked: boolean;
-  onUpdate: (exIdx: number, setIdx: number, field: string, value: any) => void;
+  onUpdate: {
+    (exIdx: number, setIdx: number, field: 'reps' | 'weight', value: string): void;
+    (exIdx: number, setIdx: number, field: 'rpe', value: number | null): void;
+  };
   onComplete: (exIdx: number, setIdx: number) => void;
   onRemove: (exIdx: number, setIdx: number) => void;
   /** Persists an edit made to an already-done set — see persistSetCorrection. */
   onCorrect: (exIdx: number, setIdx: number, overrides?: { reps?: string; weight?: string; rpe?: number | null }) => void;
   /** Registers whichever input the person just tapped into, so the screen
    *  can scroll it clear of the keyboard once it's done animating in. */
-  onFocusInput: (ref: any) => void;
+  onFocusInput: (ref: TextInput | null) => void;
 }) {
   // Editable either because it's done (correcting a mistake) or because
   // it's the current set; a future, not-yet-reached set is neither.

@@ -87,19 +87,25 @@ export default function StartScreen() {
 
       // Resolve each assigned plan's name and that specific day's label, so
       // the strip can show "Push" under Monday without a join query.
+      //
+      // PERF: these getPlanDays() calls used to run one at a time in a
+      // sequential for-await loop — each planId waited on the full previous
+      // SQLite round-trip before starting its own, even though none of them
+      // depend on each other. Firing them together and awaiting once turns
+      // N sequential round-trips into 1.
       const planIds = Array.from(new Set(Object.values(p).map(e => e!.planId)));
       const names: Record<number, string> = {};
       const dayLabels: Record<string, string> = {};
       const dayExerciseCounts: Record<string, number> = {};
-      for (const planId of planIds) {
+      const daysByPlan = await Promise.all(planIds.map(planId => getPlanDays(planId)));
+      planIds.forEach((planId, i) => {
         const found = allPlans.find(pl => pl.id === planId);
         if (found) names[planId] = found.name;
-        const days = await getPlanDays(planId);
-        for (const d of days) {
+        for (const d of daysByPlan[i]) {
           dayLabels[`${planId}:${d.day_index}`] = d.day_label;
           dayExerciseCounts[`${planId}:${d.day_index}`] = d.exercise_count;
         }
-      }
+      });
       setPlanNames(names);
       setPlanDayLabels(dayLabels);
       setPlanDayExerciseCounts(dayExerciseCounts);
