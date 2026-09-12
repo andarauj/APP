@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, Modal, FlatList, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
@@ -202,6 +202,18 @@ export default function StartScreen() {
   };
 
   const todayEntry = planner[today];
+
+  // The next scheduled day after today, wrapping the week — feeds the rest-day
+  // card below so "sem treino hoje" still tells the person when to come back,
+  // instead of just going quiet.
+  const nextPlannedEntry = useMemo(() => {
+    for (let offset = 1; offset <= 7; offset++) {
+      const weekday = (today + offset) % 7;
+      const entry = planner[weekday];
+      if (entry) return { weekday, entry };
+    }
+    return null;
+  }, [planner, today]);
 
   const handleDiscardUnfinished = () => {
     if (!unfinished) return;
@@ -411,6 +423,25 @@ export default function StartScreen() {
             </View>
             <Play size={28} color="#fff" />
           </TouchableOpacity>
+        )}
+
+        {/* Rest-day counterpart to the CTA above — only once the adaptive
+            plan has actually populated the weekly planner, so this never
+            shows to someone who simply never assigned any day by hand. */}
+        {adaptiveStatus && !todayEntry && (
+          <View style={[styles.todayCard, { backgroundColor: colors.surfaceVariant }]}>
+            <View style={[styles.quickIcon, { backgroundColor: colors.surface }]}>
+              <Calendar size={28} color={colors.textSecondary} />
+            </View>
+            <View style={styles.quickInfo}>
+              <Text style={[styles.quickTitle, { color: colors.text }]}>Dia de Descanso</Text>
+              <Text style={[styles.quickDesc, { color: colors.textSecondary }]} numberOfLines={1}>
+                {nextPlannedEntry
+                  ? `Próximo treino: ${WEEKDAY_FULL[nextPlannedEntry.weekday]} · ${planNames[nextPlannedEntry.entry.planId] || 'Treino'}`
+                  : 'Sem treinos agendados esta semana'}
+              </Text>
+            </View>
+          </View>
         )}
 
         {/* Unfinished workout recovery. A session row is created the moment a

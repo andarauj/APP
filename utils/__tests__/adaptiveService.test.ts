@@ -12,6 +12,10 @@ jest.mock('@/db/database', () => ({ getDatabase: jest.fn() }));
 jest.mock('@/db/planDao', () => ({
   getPlanExercisesWithDetails: jest.fn().mockResolvedValue([]),
   updatePlanExercise: jest.fn().mockResolvedValue(undefined),
+  getPlanDays: jest.fn().mockResolvedValue([]),
+}));
+jest.mock('@/db/plannerDao', () => ({
+  setPlannerDay: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('@/db/adaptiveDao', () => ({
   getActiveAdaptivePlan: jest.fn(),
@@ -27,7 +31,7 @@ jest.mock('@/db/adaptiveDao', () => ({
   createCycle: jest.fn().mockResolvedValue(2),
 }));
 
-import { closeWeekIfDue, goalFromOnboarding } from '../adaptiveService';
+import { closeWeekIfDue, goalFromOnboarding, distributeDaysAcrossWeek } from '../adaptiveService';
 import * as dao from '@/db/adaptiveDao';
 
 const asMock = (fn: unknown) => fn as jest.Mock;
@@ -100,5 +104,33 @@ describe('goalFromOnboarding', () => {
     expect(goalFromOnboarding('fatloss')).toBe('cutting');
     expect(goalFromOnboarding('maintain')).toBe('general');
     expect(goalFromOnboarding('whatever')).toBe('general');
+  });
+});
+
+describe('distributeDaysAcrossWeek', () => {
+  it('spreads a 3-day plan onto Mon/Wed/Fri from a Monday start', () => {
+    expect(distributeDaysAcrossWeek(3, 1)).toEqual([1, 3, 5]);
+  });
+
+  it('spreads a 2-day plan onto Mon/Thu', () => {
+    expect(distributeDaysAcrossWeek(2, 1)).toEqual([1, 4]);
+  });
+
+  it('fills 6 days consecutively, leaving one rest day', () => {
+    expect(distributeDaysAcrossWeek(6, 1)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('a single day lands exactly on weekStartDow', () => {
+    expect(distributeDaysAcrossWeek(1, 3)).toEqual([3]);
+  });
+
+  it('wraps weekday indices past Saturday back to Sunday', () => {
+    // Starting on Friday (5), a 3-day spread would naively go 5, 7, 9 —
+    // must wrap to the 0=Sun..6=Sat range the rest of the app uses.
+    expect(distributeDaysAcrossWeek(3, 5)).toEqual([5, 0, 2]);
+  });
+
+  it('returns nothing for a plan with no days', () => {
+    expect(distributeDaysAcrossWeek(0, 1)).toEqual([]);
   });
 });

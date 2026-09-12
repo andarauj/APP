@@ -21,7 +21,9 @@ import { getDatabase } from '@/db/database';
 import {
   getPlanExercisesWithDetails,
   updatePlanExercise,
+  getPlanDays,
 } from '@/db/planDao';
+import { setPlannerDay } from '@/db/plannerDao';
 import * as dao from '@/db/adaptiveDao';
 import type { PlanExercise } from '@/types';
 import {
@@ -277,6 +279,20 @@ export interface StartAdaptiveResult {
   recap: WeeklyRecap;
 }
 
+/**
+ * Spreads a plan's training days evenly across the week starting at
+ * weekStartDow, e.g. 3 days from a Monday start lands on Mon/Wed/Fri, 2
+ * days on Mon/Thu, 6 on Mon-Sat with Sunday as the lone rest day —
+ * floor(i*7/daysCount) is the standard even-spacing formula. Weekday
+ * indices follow the app's existing 0=Sun..6=Sat convention (see
+ * WEEKDAY_LABELS in utils/reminders.ts and db/plannerDao.ts).
+ */
+export function distributeDaysAcrossWeek(daysCount: number, weekStartDow: number): number[] {
+  if (daysCount <= 0) return [];
+  const n = Math.min(daysCount, 7);
+  return Array.from({ length: n }, (_, i) => (weekStartDow + Math.floor((i * 7) / n)) % 7);
+}
+
 /** Map the onboarding goal keys to the four adaptive goals. */
 export function goalFromOnboarding(key: string): AdaptiveGoal {
   switch (key) {
@@ -332,6 +348,18 @@ export async function startAdaptivePlan(opts: StartAdaptiveOptions): Promise<Sta
       recap,
     });
   });
+
+  // Without this, "Plano Adaptativo" generated a real plan but left the
+  // weekly planner (PLANEADOR SEMANAL) untouched — the person had to know to
+  // go assign each day by hand before the app would ever show them "Treino
+  // de hoje". Claiming the plan's own days here is what makes turning on
+  // periodization actually produce a schedule, not just a plan sitting
+  // unassigned.
+  const planDays = await getPlanDays(opts.planId);
+  const weekdays = distributeDaysAcrossWeek(planDays.length, opts.weekStartDow);
+  for (let i = 0; i < planDays.length; i++) {
+    await setPlannerDay(weekdays[i], { planId: opts.planId, dayIndex: planDays[i].day_index });
+  }
 
   return { adaptivePlanId, cycleId, weekId, recap };
 }
