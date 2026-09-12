@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ViewStyle } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { useTheme } from '@/hooks/useTheme';
+import { BUTTON_HEIGHT, PRESS_SCALE, PRESS_SPRING_IN, PRESS_SPRING_OUT } from '@/constants/tokens';
 
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 
@@ -53,7 +54,9 @@ export function Button({ title, onPress, variant = 'primary', size = 'medium', d
     switch (size) {
       case 'small': return 38;
       case 'large': return 56;
-      default: return 50;
+      // BUGFIX (design token audit): medium was 50dp, 2dp off the "Volt &
+      // Ink" primary-button standard of exactly 48dp.
+      default: return BUTTON_HEIGHT;
     }
   };
 
@@ -89,8 +92,8 @@ function AnimatedButtonInner({
   return (
     <AnimatedTouchable
       onPress={onPress}
-      onPressIn={() => { scale.value = withSpring(0.96, { damping: 15, stiffness: 400 }); }}
-      onPressOut={() => { scale.value = withSpring(1, { damping: 12, stiffness: 300 }); }}
+      onPressIn={() => { scale.value = withSpring(PRESS_SCALE, PRESS_SPRING_IN); }}
+      onPressOut={() => { scale.value = withSpring(1, PRESS_SPRING_OUT); }}
       disabled={disabled || loading}
       accessibilityRole="button"
       accessibilityLabel={title}

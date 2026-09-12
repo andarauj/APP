@@ -1,8 +1,6 @@
 import { memo } from 'react';
 import { View, StyleSheet } from 'react-native';
-import {
-  Dumbbell, CircleDot, Waves, PersonStanding, Weight, Cog, Zap,
-} from 'lucide-react-native';
+import { EQUIPMENT_ICON } from '@/utils/equipmentIcons';
 import type { Equipment, MuscleGroup } from '@/types';
 
 /**
@@ -34,24 +32,6 @@ const MUSCLE_COLORS: Record<MuscleGroup, string> = {
   mobility: '#22C55E',
 };
 
-const EQUIPMENT_ICONS: Record<Equipment, any> = {
-  barbell: Dumbbell,
-  dumbbell: Dumbbell,
-  machine: Cog,
-  cable: Waves,
-  bodyweight: PersonStanding,
-  kettlebell: Weight,
-  band: Zap,
-  plate: CircleDot,
-  ez_bar: Dumbbell,
-  smith: Cog,
-  trap_bar: Dumbbell,
-  medicine_ball: CircleDot,
-  foam_roller: CircleDot,
-  gymleco: Cog,
-  other: Dumbbell,
-};
-
 export function muscleColor(muscle: MuscleGroup): string {
   return MUSCLE_COLORS[muscle] || '#64748B';
 }
@@ -68,7 +48,7 @@ interface ExerciseTileProps {
 // whenever the parent list re-renders for an unrelated reason.
 export const ExerciseTile = memo(function ExerciseTile({ muscle, equipment, size = 44 }: ExerciseTileProps) {
   const color = muscleColor(muscle);
-  const Icon = EQUIPMENT_ICONS[equipment] || Dumbbell;
+  const Icon = EQUIPMENT_ICON[equipment];
   return (
     <View style={[styles.tile, { width: size, height: size, borderRadius: size * 0.28, backgroundColor: color + '26' }]}>
       <Icon size={size * 0.5} color={color} strokeWidth={2.2} />

@@ -1,5 +1,6 @@
 import { Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useTheme } from '@/hooks/useTheme';
+import { RADIUS, TYPE } from '@/constants/tokens';
 
 interface ChipProps {
   label: string;
@@ -21,8 +22,16 @@ export function Chip({ label, selected, onPress }: ChipProps) {
       ]}
       onPress={onPress}
       activeOpacity={0.7}
+      accessibilityRole="button"
+      accessibilityState={{ selected: !!selected }}
     >
-      <Text style={[styles.label, { color: selected ? colors.onPrimaryContainer : colors.textSecondary }]}>
+      {/* BUGFIX (WCAG AA audit): textSecondary measures ~2.98:1 against
+          the unselected chip's light-mode fill (colors.chip) — under the
+          4.5:1 minimum. Selected vs unselected is already unmistakable
+          from fill + border color alone, so the unselected label uses
+          full-strength text instead of leaning on a second, under-contrast
+          cue. */}
+      <Text style={[styles.label, { color: selected ? colors.onPrimaryContainer : colors.text }]}>
         {label}
       </Text>
     </TouchableOpacity>
@@ -33,12 +42,11 @@ const styles = StyleSheet.create({
   chip: {
     paddingHorizontal: 14,
     paddingVertical: 7,
-    borderRadius: 999,
+    borderRadius: RADIUS.pill,
     borderWidth: 1,
   },
   label: {
-    fontFamily: 'Inter-SemiBold',
-    fontSize: 13,
+    ...TYPE.caption,
     // BUGFIX: with no explicit lineHeight, Android computes one from the
     // font's own metrics — and for this custom font, on some devices that
     // came out shorter than the glyphs actually need, clipping the text

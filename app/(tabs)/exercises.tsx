@@ -13,6 +13,7 @@ import { searchExercises, createCustomExercise, deleteCustomExercise, getExercis
 import { hapticWarning } from '@/utils/haptics';
 import type { Exercise, MuscleGroup, Equipment, ExerciseType } from '@/types';
 import { MUSCLE_GROUPS_PT, EQUIPMENT_PT } from '@/types';
+import { RADIUS, TYPE, BUTTON_HEIGHT } from '@/constants/tokens';
 import { Dumbbell, Plus, SlidersHorizontal, X } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 
@@ -183,6 +184,7 @@ export default function ExercisesScreen() {
         textColor={colors.text}
         textSecondaryColor={colors.textSecondary}
         textTertiaryColor={colors.textTertiary}
+        borderColor={colors.border}
       />
     );
   }, [colors, router, handleDelete]);
@@ -210,23 +212,25 @@ export default function ExercisesScreen() {
           <TouchableOpacity
             style={[styles.iconBtn, { backgroundColor: activeFilters > 0 ? colors.primaryContainer : colors.surfaceVariant }]}
             onPress={() => setShowFilters(true)}
+            hitSlop={2}
             accessibilityRole="button"
             accessibilityLabel="Filtros de exercícios"
           >
             <SlidersHorizontal size={20} color={activeFilters > 0 ? colors.primary : colors.textSecondary} />
             {activeFilters > 0 && (
               <View style={[styles.badge, { backgroundColor: colors.primary }]}>
-                <Text style={styles.badgeText}>{activeFilters}</Text>
+                <Text style={[styles.badgeText, { color: colors.onPrimary }]}>{activeFilters}</Text>
               </View>
             )}
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.iconBtn, { backgroundColor: colors.primary }]}
             onPress={() => setShowCreate(true)}
+            hitSlop={2}
             accessibilityRole="button"
             accessibilityLabel="Criar exercício personalizado"
           >
-            <Plus size={20} color="#fff" />
+            <Plus size={20} color={colors.onPrimary} />
           </TouchableOpacity>
         </View>
       </View>
@@ -266,7 +270,7 @@ export default function ExercisesScreen() {
             accessibilityRole="button"
             accessibilityLabel="Ver todos os exercícios"
           >
-            <Text style={styles.seeAllBtnText}>Ver todos os {exercises.length || ''} exercícios</Text>
+            <Text style={[styles.seeAllBtnText, { color: colors.onPrimary }]}>Ver todos os {exercises.length || ''} exercícios</Text>
           </TouchableOpacity>
         </ScrollView>
       )}
@@ -290,8 +294,8 @@ export default function ExercisesScreen() {
           onPress={() => setShowFilters(true)}
           style={[styles.pill, { backgroundColor: activeFilters > 0 ? colors.primary : colors.surfaceVariant }]}
         >
-          <SlidersHorizontal size={14} color={activeFilters > 0 ? '#fff' : colors.textSecondary} />
-          <Text style={[styles.pillText, { color: activeFilters > 0 ? '#fff' : colors.textSecondary }]}>
+          <SlidersHorizontal size={14} color={activeFilters > 0 ? colors.onPrimary : colors.textSecondary} />
+          <Text style={[styles.pillText, { color: activeFilters > 0 ? colors.onPrimary : colors.textSecondary }]}>
             Filtros{activeFilters > 0 ? ` · ${activeFilters}` : ''}
           </Text>
         </TouchableOpacity>
@@ -462,31 +466,31 @@ const styles = StyleSheet.create({
   muscleGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between' },
   muscleTile: { width: '30%', alignItems: 'center', gap: 8, paddingVertical: 8 },
   muscleCircle: { width: 72, height: 72, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
-  muscleLabel: { fontFamily: 'Inter-SemiBold', fontSize: 13, textAlign: 'center' },
-  seeAllBtn: { height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  seeAllBtnText: { fontFamily: 'Inter-Bold', fontSize: 15, color: '#fff' },
+  muscleLabel: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, textAlign: 'center' },
+  seeAllBtn: { height: BUTTON_HEIGHT, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  seeAllBtnText: { fontFamily: 'Inter-Bold', fontSize: 15 },
   filterPillsWrap: { flexGrow: 0, flexShrink: 0 },
   filterPills: { paddingHorizontal: 16, paddingVertical: 4, gap: 8, flexDirection: 'row', alignItems: 'center' },
-  pill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999 },
-  pillText: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
+  pill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: RADIUS.pill },
+  pillText: { ...TYPE.caption },
   headerRight: { flexDirection: 'row', gap: 8 },
   iconBtn: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
   badge: { position: 'absolute', top: -4, right: -4, width: 16, height: 16, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  badgeText: { color: '#fff', fontSize: 10, lineHeight: 13, fontFamily: 'Inter-Bold' },
+  badgeText: { fontSize: 10, lineHeight: 13, fontFamily: 'Inter-Bold' },
   searchRow: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
-  count: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, paddingHorizontal: 16, paddingBottom: 4, marginTop: 4 },
+  count: { ...TYPE.caption, paddingHorizontal: 16, paddingBottom: 4, marginTop: 4 },
   list: { paddingHorizontal: 16, paddingBottom: 24 },
   sectionHeader: { paddingVertical: 6 },
-  sectionHeaderText: { fontFamily: 'Inter-Bold', fontSize: 13, lineHeight: 17, letterSpacing: 0.5 },
+  sectionHeaderText: { fontFamily: 'Inter-Bold', fontSize: 12, lineHeight: 16, letterSpacing: 0.5 },
   modal: { flex: 1 },
   modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1 },
   modalTitle: { fontFamily: 'Inter-Bold', fontSize: 20 },
   modalBody: { flex: 1, padding: 20 },
-  filterLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14, letterSpacing: 1, marginBottom: 10, marginTop: 16 },
+  filterLabel: { ...TYPE.caption, letterSpacing: 1, marginBottom: 10, marginTop: 16 },
   filterChips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  fieldLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14, letterSpacing: 1, marginBottom: 8, marginTop: 20 },
-  input: { borderRadius: 12, padding: 14, fontFamily: 'Inter-Regular', fontSize: 15, borderWidth: 1 },
-  inputMulti: { borderRadius: 12, padding: 14, fontFamily: 'Inter-Regular', fontSize: 15, borderWidth: 1, minHeight: 100, textAlignVertical: 'top' },
+  fieldLabel: { ...TYPE.caption, letterSpacing: 1, marginBottom: 8, marginTop: 20 },
+  input: { borderRadius: RADIUS.input, padding: 14, fontFamily: 'Inter-Regular', fontSize: 15, borderWidth: 1 },
+  inputMulti: { borderRadius: RADIUS.input, padding: 14, fontFamily: 'Inter-Regular', fontSize: 15, borderWidth: 1, minHeight: 100, textAlignVertical: 'top' },
   inlineChips: { flexGrow: 0, height: 44, marginBottom: 4 },
   inlineChipsContent: { gap: 8, alignItems: 'center', paddingRight: 4 },
   typeRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
