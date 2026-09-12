@@ -346,14 +346,24 @@ export interface RollingScheduleEntry {
  *
  * From today onward, slot k (0 = today, 1 = the next scheduled day after
  * today, ...) shows day-sequence position `completedCount + k`, cycling
- * through the plan's days with `% planDayIndices.length`. When there's a
- * genuine backlog (completedCount is behind how many native slots have
- * already elapsed before today), today is forced to show the first
- * not-yet-done day — even on a weekday the plan never natively scheduled —
- * and every later native slot shifts to absorb the delay, so the sequence
- * (Push→Pull→Pernas) keeps its order instead of jumping ahead over what was
- * missed. Caught up (or ahead), the formula collapses to exactly the native
- * assignment — this is the only code path start.tsx needs for the week.
+ * through the plan's days with `% planDayIndices.length`.
+ *
+ * BUGFIX (reported with an exact worked example: Peito→Costas→Pernas→
+ * Ombros, Peito still pending, yet a later calendar day showed "Costas" as
+ * if it had already happened): the cascade used to only ever force ONE
+ * catch-up day — today — then resume on the plan's next NATIVE day,
+ * silently treating any non-native day in between as a normal rest day even
+ * while still behind. That let a person who missed an entire week "skip
+ * over" the backlog on their rest days instead of catching up on them,
+ * breaking strict sequence order ($S_m$ with $m \ge k$ could appear before
+ * $S_k$ was ever done). The debt — how many native slots have already
+ * elapsed before today with nothing completed for them — is now paid down
+ * one session per calendar day, native or not, starting from today, until
+ * it reaches zero; only once caught up does a non-native day return to
+ * being a genuine rest day and the cascade resume its native-only pace. So
+ * with 0 sessions done on a Mon–Fri plan and today Saturday: Saturday = the
+ * oldest missed session, Sunday = the next one in sequence (even though
+ * Sunday was never native), then Monday resumes normally.
  */
 export function computeRollingSchedule(
   scheduledWeekdays: number[],
@@ -366,13 +376,11 @@ export function computeRollingSchedule(
   if (D === 0) return [];
   const offset = (wd: number) => (wd - weekStartDow + 7) % 7;
   const todayOffset = offset(today);
-  const sorted = [...new Set(scheduledWeekdays)].sort((a, b) => offset(a) - offset(b));
+  const nativeSet = new Set(scheduledWeekdays);
+  const sorted = [...nativeSet].sort((a, b) => offset(a) - offset(b));
 
   const past = sorted.filter(wd => offset(wd) < todayOffset);
-  const upcoming = sorted.filter(wd => offset(wd) >= todayOffset);
   const elapsedBeforeToday = past.length;
-  const hasBacklog = completedCount < elapsedBeforeToday;
-  const isTodayNative = sorted.includes(today);
 
   const result: RollingScheduleEntry[] = past.map((wd, i) => ({
     weekday: wd,
@@ -381,24 +389,75 @@ export function computeRollingSchedule(
     isSkipped: i >= completedCount,
   }));
 
-  let k = 0;
-  if (hasBacklog) {
-    // Forced catch-up slot — today, whether or not it was ever natively
-    // scheduled. If it WAS native, this replaces (not duplicates) its own
-    // entry below, since `upcoming` still contains it.
-    result.push({ weekday: today, dayIndex: planDayIndices[completedCount % D], isBacklog: true, isSkipped: false });
-    k = 1;
-  } else if (isTodayNative) {
-    result.push({ weekday: today, dayIndex: planDayIndices[completedCount % D], isBacklog: false, isSkipped: false });
-    k = 1;
+  // How many sessions behind as of today. Each calendar day from today
+  // onward — whether native or not — pays down one unit of this debt; a
+  // day only reverts to being a genuine rest day once it's fully paid off.
+  let debt = Math.max(0, elapsedBeforeToday - completedCount);
+  let k = completedCount;
+
+  for (let off = todayOffset; off <= 6; off++) {
+    const wd = (weekStartDow + off) % 7;
+    const isNative = nativeSet.has(wd);
+    if (wd === today) {
+      // "isBacklog" stays scoped to today only (see the interface's own
+      // doc comment) — it marks "this is standing in for a missed day",
+      // which is only meaningful for the one day the person can act on
+      // right now. A later catch-up day hasn't arrived yet, so it isn't
+      // "late" — it's just next in an accelerated sequence.
+      if (debt > 0 || isNative) {
+        result.push({ weekday: wd, dayIndex: planDayIndices[k % D], isBacklog: debt > 0, isSkipped: false });
+        k += 1;
+        if (debt > 0) debt -= 1;
+      }
+      continue;
+    }
+    if (debt > 0) {
+      result.push({ weekday: wd, dayIndex: planDayIndices[k % D], isBacklog: false, isSkipped: false });
+      k += 1;
+      debt -= 1;
+    } else if (isNative) {
+      result.push({ weekday: wd, dayIndex: planDayIndices[k % D], isBacklog: false, isSkipped: false });
+      k += 1;
+    }
+    // else: debt is paid off and this day was never native — a genuine
+    // rest day, no entry.
   }
 
-  for (const wd of upcoming) {
-    if (wd === today) continue; // already emitted above, either forced or native
-    result.push({ weekday: wd, dayIndex: planDayIndices[(completedCount + k) % D], isBacklog: false, isSkipped: false });
-    k += 1;
-  }
+  return result;
+}
 
+/**
+ * Weekdays, within the current rolling week, that fall strictly before
+ * today but aren't part of this plan's own scheduledWeekdays.
+ *
+ * BUGFIX: computeRollingSchedule only ever returns entries for days IT
+ * knows about — this plan's own native days, plus whatever today's forced
+ * catch-up covers. A weekday outside that set simply isn't in its result,
+ * which is correct for computeRollingSchedule itself. But the weekly grid
+ * (app/(tabs)/start.tsx's effectivePlanner) used to fill that gap by
+ * falling back to whatever the RAW weekly planner separately had on that
+ * day — which can be a stale or manually-assigned different plan's entry
+ * left over from before this one became active. For a day still in the
+ * future that's harmless (mixing plans across days is a supported, manual
+ * feature). For a day in the PAST, once this plan is actively tracking a
+ * rolling schedule, showing that stale entry reads as "a workout happened
+ * here" when this plan's own sequence has nothing to say about that day at
+ * all — exactly the confusion "isSkipped" exists to prevent, just for a
+ * day the plan was never even scheduled on. Callers should treat every
+ * weekday this returns as unassigned, not fall back to raw planner data.
+ */
+export function pastWeekdaysWithoutTracking(
+  scheduledWeekdays: number[],
+  today: number,
+  weekStartDow: number,
+): number[] {
+  const offset = (wd: number) => (wd - weekStartDow + 7) % 7;
+  const todayOffset = offset(today);
+  const scheduled = new Set(scheduledWeekdays);
+  const result: number[] = [];
+  for (let wd = 0; wd < 7; wd++) {
+    if (offset(wd) < todayOffset && !scheduled.has(wd)) result.push(wd);
+  }
   return result;
 }
 

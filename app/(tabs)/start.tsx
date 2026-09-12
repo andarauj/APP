@@ -15,7 +15,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Play, Zap, Plus, AlertCircle, RotateCcw, RefreshCw, Calendar, Check as CheckIcon, X as XIcon, Sparkles, ListChecks, ChevronRight, Home as HomeIcon } from 'lucide-react-native';
 import { WEEKDAY_LABELS } from '@/utils/reminders';
 import { PHASE_LABEL_PT, PHASE_COLOR, PHASE_RPE_PT } from '@/utils/adaptivePlan';
-import { getRollingScheduleForPlan, type RollingScheduleEntry } from '@/utils/adaptiveService';
+import { getRollingScheduleForPlan, pastWeekdaysWithoutTracking, type RollingScheduleEntry } from '@/utils/adaptiveService';
 import { PlanGroupCard } from '@/components/ui/PlanGroupCard';
 import { PlanVersionModal } from '@/components/ui/PlanVersionModal';
 
@@ -211,22 +211,42 @@ export default function StartScreen() {
     return map;
   }, [rollingSchedule]);
 
+  // BUGFIX (reported with a screenshot): a past weekday the active plan
+  // never natively scheduled fell back to whatever the raw weekly planner
+  // separately had there — a stale or manually-assigned different plan's
+  // entry — which read as "this workout happened" even though the active
+  // plan's own rolling sequence has nothing to say about that day. See
+  // pastWeekdaysWithoutTracking's own comment for the full reasoning.
+  const untrackedPastWeekdays = useMemo(() => {
+    if (!adaptiveStatus) return [];
+    const weekStartDow = new Date(adaptiveStatus.weekStart * 1000).getDay();
+    const scheduledWeekdays = Object.entries(planner)
+      .filter(([, entry]) => entry?.planId === adaptiveStatus.planId)
+      .map(([wd]) => Number(wd));
+    return pastWeekdaysWithoutTracking(scheduledWeekdays, new Date().getDay(), weekStartDow);
+  }, [planner, adaptiveStatus]);
+
   // Same shape as `planner`, but with the active adaptive plan's days
   // swapped for whatever the rolling schedule says they should be this
   // week — including days it forces onto a weekday that was never natively
-  // scheduled (a missed day pulled forward onto today). Everything that
-  // only needs to DISPLAY or START a day reads this instead of `planner`
-  // directly; the day-assignment picker still reads/writes the raw
-  // `planner`, since reassigning a day by hand should edit the actual
-  // template, not today's computed view of it.
+  // scheduled (a missed day pulled forward onto today) — and with any past
+  // day outside this plan's own tracking removed rather than falling back
+  // to a stale/different plan's entry. Everything that only needs to
+  // DISPLAY or START a day reads this instead of `planner` directly; the
+  // day-assignment picker still reads/writes the raw `planner`, since
+  // reassigning a day by hand should edit the actual template, not today's
+  // computed view of it.
   const effectivePlanner = useMemo(() => {
     if (!adaptiveStatus || Object.keys(rollingByWeekday).length === 0) return planner;
     const merged: WeeklyPlanner = { ...planner };
     for (const [wdStr, entry] of Object.entries(rollingByWeekday)) {
       merged[Number(wdStr)] = { planId: adaptiveStatus.planId, dayIndex: entry.dayIndex };
     }
+    for (const wd of untrackedPastWeekdays) {
+      delete merged[wd];
+    }
     return merged;
-  }, [planner, rollingByWeekday, adaptiveStatus]);
+  }, [planner, rollingByWeekday, adaptiveStatus, untrackedPastWeekdays]);
 
   const todayEntry = effectivePlanner[today];
   const todayIsBacklog = rollingByWeekday[today]?.isBacklog ?? false;

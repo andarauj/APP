@@ -36,7 +36,7 @@ jest.mock('@/db/adaptiveDao', () => ({
   createCycle: jest.fn().mockResolvedValue(2),
 }));
 
-import { closeWeekIfDue, goalFromOnboarding, distributeDaysAcrossWeek, computeRollingSchedule, getRollingScheduleForPlan } from '../adaptiveService';
+import { closeWeekIfDue, goalFromOnboarding, distributeDaysAcrossWeek, computeRollingSchedule, getRollingScheduleForPlan, pastWeekdaysWithoutTracking } from '../adaptiveService';
 import * as dao from '@/db/adaptiveDao';
 import { getWeeklyPlanner } from '@/db/plannerDao';
 import { getCompletedSessionCountForPlan } from '@/db/workoutDao';
@@ -242,6 +242,30 @@ describe('computeRollingSchedule', () => {
     expect(byWeekday.get(6)).toEqual({ weekday: 6, dayIndex: 2, isBacklog: true, isSkipped: false }); // 3rd day, forced onto Saturday
   });
 
+  it('BUGFIX: strict sequence order — Sábado é a Sessão 0 e Domingo é a Sessão 1, exactly as reported', () => {
+    // The exact reported scenario: Peito→Costas→Pernas→Ombros→... on a
+    // Mon-Fri plan, 0 sessions completed all week, checking on Saturday.
+    // Every past native day (Seg-Sex) must read as skipped — none may show
+    // a later session in the sequence (Costas, Pernas...) as if it had
+    // already happened while Peito (S0) is still pending. The forward
+    // cascade must then continue in STRICT order starting from today, one
+    // session per calendar day — including non-native days — until caught
+    // up: Sábado = S0 (Peito), Domingo = S1 (Costas), not a jump ahead and
+    // not a stall until next week's Monday.
+    const PCPO = [0, 1, 2, 3]; // Peito, Costas, Pernas, Ombros day_index
+    const result = computeRollingSchedule([1, 2, 3, 4, 5], PCPO, 0, 6, 1);
+
+    const pastDays = result.filter(e => e.weekday >= 1 && e.weekday <= 5);
+    expect(pastDays).toHaveLength(5);
+    expect(pastDays.every(e => e.isSkipped)).toBe(true); // 100% skipped — Seg..Sex
+
+    const saturday = result.find(e => e.weekday === 6);
+    expect(saturday).toEqual({ weekday: 6, dayIndex: 0, isBacklog: true, isSkipped: false }); // Sábado = Sessão 0 (Peito)
+
+    const sunday = result.find(e => e.weekday === 0);
+    expect(sunday).toEqual({ weekday: 0, dayIndex: 1, isBacklog: false, isSkipped: false }); // Domingo = Sessão 1 (Costas)
+  });
+
   it('a genuinely free rest day (no backlog) stays a rest day — no session is forced', () => {
     // Tuesday isn't native, and Monday's session is already done — no
     // reason to force anything onto Tuesday.
@@ -258,12 +282,17 @@ describe('computeRollingSchedule', () => {
     expect(wednesday).toEqual({ weekday: 3, dayIndex: 2, isBacklog: false, isSkipped: false }); // Pernas, not Pull
   });
 
-  it('multiple missed days still force just one catch-up session onto today, oldest first', () => {
+  it('multiple missed days: today gets the oldest undone session, and the debt keeps consuming subsequent days — native or not — until paid off', () => {
     // Monday and Wednesday both missed; checking Friday with nothing done
-    // at all this week.
+    // at all this week. Today (Friday) is 2 sessions behind: it gets the
+    // oldest undone one (Push), and since the debt isn't cleared by that
+    // alone, Saturday — never natively scheduled — must ALSO get the next
+    // session (Pull) rather than reverting to a rest day while still behind.
     const result = computeRollingSchedule([1, 3, 5], PPL, 0, 5, 1);
     const friday = result.find(e => e.weekday === 5);
     expect(friday).toEqual({ weekday: 5, dayIndex: 0, isBacklog: true, isSkipped: false }); // Push — the oldest undone
+    const saturday = result.find(e => e.weekday === 6);
+    expect(saturday).toEqual({ weekday: 6, dayIndex: 1, isBacklog: false, isSkipped: false }); // Pull — debt still open, not a rest day
   });
 
   it('wraps correctly through the plan\'s own day count once the backlog exceeds it', () => {
@@ -283,6 +312,35 @@ describe('computeRollingSchedule', () => {
 
   it('returns nothing for a plan with no distinct days', () => {
     expect(computeRollingSchedule([1, 3, 5], [], 0, 1, 1)).toEqual([]);
+  });
+});
+
+describe('pastWeekdaysWithoutTracking', () => {
+  it('BUGFIX: flags a past weekday that belongs to a different plan, not this one\'s own schedule', () => {
+    // The exact reported scenario: the active plan only natively covers
+    // Terça and Sábado (a stale/manually-assigned different plan occupies
+    // Segunda and Quarta in the raw weekly planner). Checking on Sábado —
+    // Segunda and Quarta must be flagged so the weekly grid stops falling
+    // back to that other plan's label on them.
+    const result = pastWeekdaysWithoutTracking([2, 6], 6, 1); // native: Ter, Sáb — checking Sáb
+    expect(result.sort()).toEqual([1, 3, 4, 5]); // Seg, Qua, Qui, Sex — everything past and untracked
+  });
+
+  it('returns nothing when every past weekday is part of this plan\'s own schedule', () => {
+    const result = pastWeekdaysWithoutTracking([1, 2, 3], 4, 1); // Mon/Tue/Wed all native, checking Thursday
+    expect(result).toEqual([]);
+  });
+
+  it('never flags today or a future weekday', () => {
+    const result = pastWeekdaysWithoutTracking([], 3, 1); // nothing native at all, checking Wednesday
+    expect(result.sort()).toEqual([1, 2]); // only Mon/Tue (strictly before Wed) — not Wed itself or anything after
+  });
+
+  it('handles week wraparound (weekStartDow after today in raw weekday numbers)', () => {
+    // Week starts Friday; only Sunday is native. Checking on Tuesday —
+    // Friday, Saturday and Monday are all "past" within this rolling week.
+    const result = pastWeekdaysWithoutTracking([0], 2, 5);
+    expect(result.sort()).toEqual([1, 5, 6]); // Mon, Fri, Sat
   });
 });
 
