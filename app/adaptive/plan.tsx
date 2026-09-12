@@ -9,14 +9,14 @@
  */
 
 import { useCallback, useMemo, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import Svg, { Path, Line, Circle } from 'react-native-svg';
-import { ArrowLeft, Sparkles, RefreshCw, Compass, Lock, ChevronRight } from 'lucide-react-native';
+import { ArrowLeft, Sparkles, RefreshCw, Compass, Lock, ChevronRight, Trash2 } from 'lucide-react-native';
 import { useTheme } from '@/hooks/useTheme';
 import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
-import { getAdaptivePlanById, getAllWeeksForPlan, type AdaptiveWeekWithCycle } from '@/db/adaptiveDao';
+import { getAdaptivePlanById, getAllWeeksForPlan, deleteAdaptivePlanData, type AdaptiveWeekWithCycle } from '@/db/adaptiveDao';
 import { PHASE_ORDER, PHASE_LABEL_PT, PHASE_COLOR, CYCLE_RATIONALE_PT, phaseSpec } from '@/utils/adaptivePlan';
 import type { AdaptivePhase, AdaptiveGoal, AdaptiveExperience } from '@/utils/nspi';
 import { Card } from '@/components/ui/Card';
@@ -40,6 +40,7 @@ export default function AdaptivePlanScreen() {
 
   const [daysPerWeek, setDaysPerWeek] = useState(3);
   const [weeks, setWeeks] = useState<AdaptiveWeekWithCycle[]>([]);
+  const [creatingNew, setCreatingNew] = useState(false);
 
   useFocusEffect(useCallback(() => {
     if (!status) return;
@@ -128,6 +129,42 @@ export default function AdaptivePlanScreen() {
   }
 
   const remainingPhases = PHASE_ORDER.filter(p => !currentCycleWeeks.some(w => w.phase === p));
+
+  /**
+   * There was no way back into app/adaptive/start.tsx once a plan had ever
+   * been created — the entry card on app/(tabs)/start.tsx always routes an
+   * existing/paused plan back to viewing it, never to the wizard again (see
+   * that screen's adaptiveStatus/hasAdaptivePlanEver branching). This clears
+   * this plan's own progression state (cycles/weeks/exercise state — not the
+   * underlying exercises themselves) via deleteAdaptivePlanData, previously
+   * written but never called anywhere, then drops straight into the
+   * generation wizard, matching startAdaptivePlan's own
+   * deactivateAllAdaptivePlans() behavior for what "starting over" means.
+   */
+  const createNewPlan = () => {
+    if (!status) return;
+    Alert.alert(
+      'Criar plano novo?',
+      'Isto apaga o progresso do plano adaptativo atual (ciclos e semanas registadas). Os treinos já registados no histórico não são afetados.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Criar novo',
+          style: 'destructive',
+          onPress: async () => {
+            setCreatingNew(true);
+            try {
+              await deleteAdaptivePlanData(status.adaptivePlanId);
+              router.replace('/adaptive/start');
+            } catch (err) {
+              console.error('[adaptive] deleteAdaptivePlanData failed:', err);
+              setCreatingNew(false);
+            }
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <SafeAreaView style={[styles.screen, { backgroundColor: colors.background }]} edges={['top']}>
@@ -255,6 +292,19 @@ export default function AdaptivePlanScreen() {
             <BenefitRow icon={Compass} colors={colors} text="As fases estão estruturadas para saberes quando forçar e quando recuperar — nunca as duas ao mesmo tempo." />
             <BenefitRow icon={Sparkles} colors={colors} text="Pesos, repetições e exercícios ajustam-se sozinhos ao que registares — não precisas de decidir nada à mão." />
           </View>
+
+          <TouchableOpacity
+            style={styles.newPlanLink}
+            onPress={createNewPlan}
+            disabled={creatingNew}
+            accessibilityRole="button"
+            accessibilityLabel="Criar plano novo"
+          >
+            {creatingNew
+              ? <ActivityIndicator size="small" color={colors.error} />
+              : <Trash2 size={16} color={colors.error} />}
+            <Text style={[styles.newPlanLinkText, { color: colors.error }]}>Criar plano novo</Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
 
@@ -408,6 +458,8 @@ const styles = StyleSheet.create({
   lockIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   benefitRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingHorizontal: 4 },
   benefitIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  newPlanLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16, paddingVertical: 10 },
+  newPlanLinkText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   footer: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 16, borderTopWidth: StyleSheet.hairlineWidth },
   primaryBtn: { height: 54, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   primaryBtnText: { color: '#fff', fontFamily: 'Inter-Bold', fontSize: 16 },

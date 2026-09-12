@@ -8,15 +8,18 @@ import { useTheme } from '@/hooks/useTheme';
 import { setSetting } from '@/db/settingsDao';
 import { hapticSelect, hapticSuccess } from '@/utils/haptics';
 import { generatePlan, suggestedDaysPerWeek, type EquipmentPreference } from '@/utils/planGenerator';
+import { startAdaptivePlan, goalFromOnboarding } from '@/utils/adaptiveService';
 import type { PlanType, MuscleGroup, Equipment } from '@/types';
 import { MUSCLE_GROUPS_PT, EQUIPMENT_PT } from '@/types';
 
 /**
  * Goal-based onboarding: a short welcome, then a run of questions whose
- * answers seed a starter plan (utils/planGenerator.ts). Every question here
- * has to change what gets generated — see generatePlan's focusAreas /
- * allowedEquipment / excludedMuscles params, added specifically to back
- * these questions with real effect instead of decorative ones.
+ * answers seed a starter plan (utils/planGenerator.ts) AND immediately turn
+ * on the NSPI adaptive engine (utils/adaptiveService.ts) on that same plan
+ * — every answer here has to change either which exercises get picked
+ * (focusAreas / allowedEquipment / excludedMuscles) or how the engine paces
+ * them (goal / experience / daysPerWeek / sessionMinutes), never just sit
+ * there decoratively.
  */
 type Opt = { key: string; label: string; sub?: string };
 
@@ -197,13 +200,27 @@ export default function OnboardingScreen() {
       await setSetting('onboardingTargetZones', JSON.stringify([...zones]));
       await setSetting('onboardingInjuredMuscles', JSON.stringify(excludedMuscles));
       await setSetting('onboardingEquipment', JSON.stringify([...equipmentTags]));
-      if (goalDef && days && minutes) {
-        await generatePlan(Number(days), Number(minutes), goalDef.planType, {
+      if (goalDef && level && days && minutes) {
+        const planId = await generatePlan(Number(days), Number(minutes), goalDef.planType, {
           equipmentPref: locDef?.equip ?? 'any',
           allowedEquipment: [...equipmentTags],
           focusAreas: [...zones].filter((z): z is MuscleGroup => z !== 'cardio'),
           excludedMuscles,
           customName: 'O meu plano',
+        });
+        // Every answer above only decides WHICH exercises go in; this is
+        // what makes them also decide HOW the plan progresses week to week
+        // — without it the NSPI engine never turns on and the plan generated
+        // here would stay static forever. No weekStartDow question exists
+        // in this flow, so default to Monday like the adaptive wizard does.
+        await startAdaptivePlan({
+          planId,
+          goal: goalFromOnboarding(goalDef.key),
+          experience: level,
+          daysPerWeek: Number(days),
+          sessionMinutes: Number(minutes),
+          equipmentPref: locDef?.equip ?? 'any',
+          weekStartDow: 1,
         });
       }
     } catch (err) {
