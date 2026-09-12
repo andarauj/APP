@@ -7,7 +7,7 @@ import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
 import { usePlansManager } from '@/hooks/usePlansManager';
 import { getAllPlans, getPlanDays } from '@/db/planDao';
 import { getLatestAdaptivePlanAny, deleteAdaptivePlanData, type AdaptivePlanRow } from '@/db/adaptiveDao';
-import { getWeeklyPlanner, setPlannerDay, type WeeklyPlanner, type PlannerEntry } from '@/db/plannerDao';
+import { getWeeklyPlanner, setPlannerDay, clearPlannerForPlan, type WeeklyPlanner, type PlannerEntry } from '@/db/plannerDao';
 import { getUnfinishedSession, discardSession, getAllSessions } from '@/db/workoutDao';
 import type { WorkoutPlan } from '@/types';
 import { PLAN_TYPE_PT } from '@/types';
@@ -226,6 +226,15 @@ export default function StartScreen() {
             setCreatingNewPlan(true);
             try {
               await deleteAdaptivePlanData(adaptiveStatus.adaptivePlanId);
+              // BUGFIX: startAdaptivePlan's own stale-slot cleanup only finds
+              // "the previous active adaptive plan" — but deleteAdaptivePlanData
+              // just deleted that row, so by the time the wizard finishes,
+              // there's nothing left for it to find, and this plan's old
+              // weekday assignments (e.g. Mon/Wed from a 3-day split) linger
+              // in the planner forever, pointing at a plan no longer running
+              // any cycle. Clear them here instead, while the plan_id is
+              // still known.
+              await clearPlannerForPlan(adaptiveStatus.planId);
               router.push('/adaptive/start');
             } catch (err) {
               console.error('[adaptive] deleteAdaptivePlanData failed:', err);

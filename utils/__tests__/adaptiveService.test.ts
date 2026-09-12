@@ -16,6 +16,7 @@ jest.mock('@/db/planDao', () => ({
 }));
 jest.mock('@/db/plannerDao', () => ({
   setPlannerDay: jest.fn().mockResolvedValue(undefined),
+  clearPlannerForPlan: jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('@/db/adaptiveDao', () => ({
   getActiveAdaptivePlan: jest.fn(),
@@ -108,29 +109,56 @@ describe('goalFromOnboarding', () => {
 });
 
 describe('distributeDaysAcrossWeek', () => {
-  it('spreads a 3-day plan onto Mon/Wed/Fri from a Monday start', () => {
+  it('spreads a 3-day plan onto today/+2/+4 when today is Monday', () => {
     expect(distributeDaysAcrossWeek(3, 1)).toEqual([1, 3, 5]);
   });
 
-  it('spreads a 2-day plan onto Mon/Thu', () => {
+  it('spreads a 2-day plan onto today/+3 when today is Monday', () => {
     expect(distributeDaysAcrossWeek(2, 1)).toEqual([1, 4]);
   });
 
-  it('fills 6 days consecutively, leaving one rest day', () => {
+  it('fills 6 days consecutively starting today, leaving one rest day', () => {
     expect(distributeDaysAcrossWeek(6, 1)).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
-  it('a single day lands exactly on weekStartDow', () => {
+  it('a single day lands exactly on today', () => {
     expect(distributeDaysAcrossWeek(1, 3)).toEqual([3]);
   });
 
   it('wraps weekday indices past Saturday back to Sunday', () => {
-    // Starting on Friday (5), a 3-day spread would naively go 5, 7, 9 —
-    // must wrap to the 0=Sun..6=Sat range the rest of the app uses.
+    // Today is Friday (5); a 3-day spread would naively go 5, 7, 9 — must
+    // wrap to the 0=Sun..6=Sat range the rest of the app uses.
     expect(distributeDaysAcrossWeek(3, 5)).toEqual([5, 0, 2]);
   });
 
   it('returns nothing for a plan with no days', () => {
     expect(distributeDaysAcrossWeek(0, 1)).toEqual([]);
+  });
+
+  // BUGFIX regression: this used to anchor on weekStartDow (the NSPI cycle's
+  // own week-boundary answer) instead of today, so generating a plan any day
+  // other than that exact weekday could leave the first reachable session
+  // days away — e.g. a Monday-anchored 3-day split (Mon/Wed/Fri) generated
+  // on a Thursday had already missed two of the week's three active days.
+  it('always includes today as the first active day, whatever today is', () => {
+    for (let today = 0; today <= 6; today++) {
+      for (const daysCount of [1, 2, 3, 4, 5, 6]) {
+        const result = distributeDaysAcrossWeek(daysCount, today);
+        expect(result[0]).toBe(today);
+      }
+    }
+  });
+
+  it('never schedules a day that has already passed this week (mid/end-of-week generation)', () => {
+    // "Already passed this week" here means an offset that would wrap
+    // BACKWARDS past today — every offset must be reachable by moving
+    // forward 0-6 days from today, never by moving backward first.
+    for (let today = 0; today <= 6; today++) {
+      for (const daysCount of [1, 2, 3, 4, 5, 6]) {
+        const result = distributeDaysAcrossWeek(daysCount, today);
+        const forwardOffsets = result.map(wd => (wd - today + 7) % 7);
+        expect(forwardOffsets).toEqual([...forwardOffsets].sort((a, b) => a - b));
+      }
+    }
   });
 });

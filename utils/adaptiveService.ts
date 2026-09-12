@@ -23,7 +23,7 @@ import {
   updatePlanExercise,
   getPlanDays,
 } from '@/db/planDao';
-import { setPlannerDay } from '@/db/plannerDao';
+import { setPlannerDay, clearPlannerForPlan } from '@/db/plannerDao';
 import * as dao from '@/db/adaptiveDao';
 import type { PlanExercise } from '@/types';
 import {
@@ -280,17 +280,29 @@ export interface StartAdaptiveResult {
 }
 
 /**
- * Spreads a plan's training days evenly across the week starting at
- * weekStartDow, e.g. 3 days from a Monday start lands on Mon/Wed/Fri, 2
- * days on Mon/Thu, 6 on Mon-Sat with Sunday as the lone rest day —
- * floor(i*7/daysCount) is the standard even-spacing formula. Weekday
- * indices follow the app's existing 0=Sun..6=Sat convention (see
- * WEEKDAY_LABELS in utils/reminders.ts and db/plannerDao.ts).
+ * Spreads a plan's training days evenly across the week starting TODAY, e.g.
+ * 3 days from a Thursday start lands on Thu/Sat/Mon, 2 days on Thu/Sun, 6 on
+ * Thu-Tue with Wed as the lone rest day — floor(i*7/daysCount) is the
+ * standard even-spacing formula. Weekday indices follow the app's existing
+ * 0=Sun..6=Sat convention (see WEEKDAY_LABELS in utils/reminders.ts and
+ * db/plannerDao.ts).
+ *
+ * BUGFIX: this used to anchor on weekStartDow (the "which day does your
+ * training week start" answer, e.g. Monday) instead of today. weekStartDow
+ * is a real, separate concept — it still anchors the NSPI cycle's own
+ * scoring window (see weekWindow/startOfAdaptiveWeek in adaptiveWeek.ts) —
+ * but using it here too meant a plan started on, say, a Thursday with a
+ * Monday-anchored 3-day split (Mon/Wed/Fri) had already missed two of this
+ * week's three active days, leaving the very first actually-reachable
+ * session up to 4 days away. Anchoring on today instead guarantees the
+ * offset-0 day is always today, so the cycle's first session is today (if
+ * today is meant to be a training day at all) or the soonest day after —
+ * never a day that's already passed this week.
  */
-export function distributeDaysAcrossWeek(daysCount: number, weekStartDow: number): number[] {
+export function distributeDaysAcrossWeek(daysCount: number, todayDow: number): number[] {
   if (daysCount <= 0) return [];
   const n = Math.min(daysCount, 7);
-  return Array.from({ length: n }, (_, i) => (weekStartDow + Math.floor((i * 7) / n)) % 7);
+  return Array.from({ length: n }, (_, i) => (todayDow + Math.floor((i * 7) / n)) % 7);
 }
 
 /** Map the onboarding goal keys to the four adaptive goals. */
@@ -306,6 +318,11 @@ export function goalFromOnboarding(key: string): AdaptiveGoal {
 export async function startAdaptivePlan(opts: StartAdaptiveOptions): Promise<StartAdaptiveResult> {
   const now = opts.now ?? new Date();
   const db = await getDatabase();
+
+  // Whatever plan the outgoing adaptive cycle was running on — needed below
+  // to clear ITS weekday slots out of the planner. Read before
+  // deactivateAllAdaptivePlans() makes it unreachable as "the active one".
+  const previousActive = await dao.getActiveAdaptivePlan();
 
   await dao.deactivateAllAdaptivePlans();
   const adaptivePlanId = await dao.createAdaptivePlan({
@@ -355,8 +372,19 @@ export async function startAdaptivePlan(opts: StartAdaptiveOptions): Promise<Sta
   // de hoje". Claiming the plan's own days here is what makes turning on
   // periodization actually produce a schedule, not just a plan sitting
   // unassigned.
+  //
+  // BUGFIX: switching from one adaptive plan to another (e.g. via "Criar
+  // plano novo") only ever wrote the NEW plan's days, never removed the
+  // OUTGOING plan's — a weekday the old distribution touched but the new one
+  // doesn't kept showing that stale plan/day, no longer backed by any active
+  // cycle. Clearing the previous plan's slots first (only when it's actually
+  // a different plan — reapplying periodization to the same plan shouldn't
+  // wipe anything) keeps the grid showing only what's real right now.
+  if (previousActive && previousActive.plan_id !== opts.planId) {
+    await clearPlannerForPlan(previousActive.plan_id);
+  }
   const planDays = await getPlanDays(opts.planId);
-  const weekdays = distributeDaysAcrossWeek(planDays.length, opts.weekStartDow);
+  const weekdays = distributeDaysAcrossWeek(planDays.length, now.getDay());
   for (let i = 0; i < planDays.length; i++) {
     await setPlannerDay(weekdays[i], { planId: opts.planId, dayIndex: planDays[i].day_index });
   }

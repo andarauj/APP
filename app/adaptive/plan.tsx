@@ -17,6 +17,7 @@ import { ArrowLeft, Sparkles, RefreshCw, Compass, Lock, ChevronRight, Trash2 } f
 import { useTheme } from '@/hooks/useTheme';
 import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
 import { getAdaptivePlanById, getAllWeeksForPlan, deleteAdaptivePlanData, type AdaptiveWeekWithCycle } from '@/db/adaptiveDao';
+import { clearPlannerForPlan } from '@/db/plannerDao';
 import { PHASE_ORDER, PHASE_LABEL_PT, PHASE_COLOR, CYCLE_RATIONALE_PT, phaseSpec } from '@/utils/adaptivePlan';
 import type { AdaptivePhase, AdaptiveGoal, AdaptiveExperience } from '@/utils/nspi';
 import { Card } from '@/components/ui/Card';
@@ -155,6 +156,13 @@ export default function AdaptivePlanScreen() {
             setCreatingNew(true);
             try {
               await deleteAdaptivePlanData(status.adaptivePlanId);
+              // BUGFIX: startAdaptivePlan's own stale-slot cleanup looks up
+              // "the previous active adaptive plan" to know which weekday
+              // slots to clear — but deleteAdaptivePlanData just deleted
+              // that row, so it finds nothing, and this plan's old weekday
+              // assignments linger in the planner forever. Clear them here,
+              // while the plan_id is still known.
+              await clearPlannerForPlan(status.planId);
               router.replace('/adaptive/start');
             } catch (err) {
               console.error('[adaptive] deleteAdaptivePlanData failed:', err);
