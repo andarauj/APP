@@ -75,7 +75,21 @@ export default function AdaptiveStartScreen() {
     if (!isReady) return;
     let mounted = true;
     setLoadingPlans(true);
-    getAllPlans().then(p => { if (mounted) setPlans(p); }).catch(() => { if (mounted) setPlans([]); }).finally(() => { if (mounted) setLoadingPlans(false); });
+    getAllPlans().then(p => {
+      if (!mounted) return;
+      // BUGFIX (reported as "duplicação"): getAllPlans() is unfiltered, and
+      // every "Criar plano novo" run through this exact wizard inserts a
+      // fresh workout_plans row literally named "Plano Adaptativo" (see
+      // generatePlan's customName in utils/planGenerator.ts) — running the
+      // wizard's own "create new" path more than once (e.g. via "Criar
+      // plano novo" on the Plano Adaptativo card once a cycle already
+      // exists) left every earlier, now-obsolete run's row still showing
+      // here, indistinguishable from the current one. Auto-generated plans
+      // (this wizard's own output, Treino Inteligente, 5/3/1) were never
+      // meant to be reselected from this specific picker — "Meus Planos"
+      // already excludes them the same way (hooks/usePlansManager.ts).
+      setPlans(p.filter(pl => !pl.is_auto_generated));
+    }).catch(() => { if (mounted) setPlans([]); }).finally(() => { if (mounted) setLoadingPlans(false); });
     return () => { mounted = false; };
   }, [isReady]));
 

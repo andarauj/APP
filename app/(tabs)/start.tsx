@@ -118,7 +118,11 @@ export default function StartScreen() {
     getLatestAdaptivePlanAny().then(p => { setHasAdaptivePlanEver(!!p); setAdaptivePlanRow(p); }).catch(() => { setHasAdaptivePlanEver(false); setAdaptivePlanRow(null); });
 
     try {
-      const [allPlans, p] = await Promise.all([getAllPlans(), getWeeklyPlanner()]);
+      const [allPlansRaw, p] = await Promise.all([getAllPlans(), getWeeklyPlanner()]);
+      // Same dedup as hooks/usePlansManager.ts and app/adaptive/start.tsx:
+      // auto-generated plans (adaptive wizard, Treino Inteligente, 5/3/1)
+      // were never meant to be manually assigned to a weekday here.
+      const allPlans = allPlansRaw.filter(pl => !pl.is_auto_generated);
       setPlans(allPlans);
       setPlanner(p);
 
@@ -136,7 +140,10 @@ export default function StartScreen() {
       const dayExerciseCounts: Record<string, number> = {};
       const daysByPlan = await Promise.all(planIds.map(planId => getPlanDays(planId)));
       planIds.forEach((planId, i) => {
-        const found = allPlans.find(pl => pl.id === planId);
+        // Unfiltered lookup: a day may already be assigned to an
+        // auto-generated plan from before this picker excluded them, and
+        // that label should still resolve correctly.
+        const found = allPlansRaw.find(pl => pl.id === planId);
         if (found) names[planId] = found.name;
         for (const d of daysByPlan[i]) {
           dayLabels[`${planId}:${d.day_index}`] = d.day_label;
