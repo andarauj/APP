@@ -1,4 +1,4 @@
-import { mainPattern, movementBucket, tallyMovementBuckets } from '../movementClassify';
+import { mainPattern, movementBucket, tallyMovementBuckets, isCompoundMovement } from '../movementClassify';
 
 describe('mainPattern — the five compounds', () => {
   it('recognises the barbell lifts by name', () => {
@@ -93,6 +93,33 @@ describe('movementBucket — six balance buckets', () => {
     expect(movementBucket('Machine Chest Thing', 'chest')).toBe('horiz_push');
     expect(movementBucket('Some Delt Machine', 'shoulders')).toBe('vert_push');
     expect(movementBucket('Posterior Chain Machine', 'glutes')).toBe('hinge');
+  });
+});
+
+describe('isCompoundMovement', () => {
+  it('recognises multi-joint lifts as compound, including ones mainPattern does not tag', () => {
+    expect(isCompoundMovement('Barbell Back Squat')).toBe(true);
+    expect(isCompoundMovement('Conventional Deadlift')).toBe(true);
+    expect(isCompoundMovement('Bench Press')).toBe(true);
+    expect(isCompoundMovement('Leg Press')).toBe(true); // not one of mainPattern's "big five", still multi-joint
+    expect(isCompoundMovement('Pull-Up')).toBe(true);
+    expect(isCompoundMovement('Walking Lunge')).toBe(true);
+    expect(isCompoundMovement('Hip Thrust')).toBe(true);
+  });
+
+  it('recognises single-joint accessory work as isolation, even when movementBucket would group it with a compound pattern', () => {
+    // movementBucket puts lateral raises in 'vert_push' with overhead
+    // pressing (same balance pattern) — isCompoundMovement must not.
+    expect(movementBucket('Lateral Raise', 'shoulders')).toBe('vert_push');
+    expect(isCompoundMovement('Lateral Raise')).toBe(false);
+
+    expect(isCompoundMovement('Bicep Curl')).toBe(false);
+    expect(isCompoundMovement('Triceps Pushdown')).toBe(false);
+    expect(isCompoundMovement('Leg Extension')).toBe(false);
+    expect(isCompoundMovement('Cable Crossover')).toBe(false);
+    expect(isCompoundMovement('Standing Calf Raise')).toBe(false);
+    expect(isCompoundMovement('Dumbbell Shrug')).toBe(false);
+    expect(isCompoundMovement('Preacher Curl')).toBe(false);
   });
 });
 

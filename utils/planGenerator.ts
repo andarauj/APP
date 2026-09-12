@@ -7,6 +7,7 @@ import { MUSCLE_GROUPS_PT } from '@/types';
 import type { BodyAnalysis } from './bodyAnalysis';
 import { selectTodaysMuscles, muscleGroupCountForMinutes, pickMuscleNeedingMoreVolume } from './dailyWorkoutGenerator';
 import { detectPerformanceRegression, detectRpeCreep } from './fatigueSignals';
+import { isCompoundMovement } from './movementClassify';
 
 interface DaySplit {
   label: string;
@@ -375,33 +376,70 @@ async function suggestWeightForExercise(exerciseId: number, reps: string): Promi
   return lastSet ? lastSet.weight : 0;
 }
 
+/**
+ * Rest by goal AND by whether the exercise is compound (multi-joint) or
+ * isolation (single-joint) — see REST_INTERVAL_RESEARCH.md for full sourcing.
+ * Previously a single flat number per goal, identical for a heavy squat and
+ * a bicep curl in the same session. Values here are the well-established
+ * *direction and rough magnitude* from the literature, not a single settled
+ * number (ACSM and NSCA don't even agree with each other on hypertrophy
+ * rest) — treat these as a defensible midpoint, not a precise scientific
+ * constant.
+ *
+ * strength:    ACSM 2009 — 3-5min core lifts / 1-2min assistance work,
+ *              advanced strength phase (its own compound/isolation split).
+ * hypertrophy: ACSM's 1-2min baseline, weighted toward the top of that
+ *              range per Schoenfeld et al. 2016 (JSCR) — a controlled trial
+ *              found 3min rest produced significantly more strength AND
+ *              hypertrophy than 1min — and Singer et al. 2024's Bayesian
+ *              meta-analysis, which found no extra benefit past ~90s. The
+ *              previous flat 30s was below every source reviewed.
+ * endurance:   ACSM — <90s for >15 reps at 40-60%1RM.
+ * cardio/mobility: unchanged — these goals aren't about compound/isolation
+ *              strength work.
+ */
+const REST_SECONDS_TABLE: Record<PlanType, { compound: number; isolation: number }> = {
+  strength: { compound: 240, isolation: 90 },
+  hypertrophy: { compound: 120, isolation: 75 },
+  endurance: { compound: 45, isolation: 30 },
+  cardio: { compound: 30, isolation: 30 },
+  mobility: { compound: 30, isolation: 30 },
+};
+
+export function restSecondsFor(planType: PlanType, exerciseName: string): number {
+  const spec = REST_SECONDS_TABLE[planType] ?? REST_SECONDS_TABLE.hypertrophy;
+  return isCompoundMovement(exerciseName) ? spec.compound : spec.isolation;
+}
+
 function setsRepsForPlanType(
   planType: PlanType,
   exerciseIndex: number,
+  exerciseName: string,
   extraSets: number = 0,
 ): {
   sets: number; reps: string; rest: number; setType: SetType;
 } {
   const isWarmup = exerciseIndex === 0;
+  const rest = restSecondsFor(planType, exerciseName);
   switch (planType) {
     case 'strength':
       return {
         sets: (isWarmup ? 4 : 5) + extraSets,
         reps: isWarmup ? '5' : '3-5',
-        rest: 180,
+        rest,
         setType: isWarmup ? 'warmup' : 'normal',
       };
     case 'endurance':
-      return { sets: 3 + extraSets, reps: '15-20', rest: 45, setType: 'normal' };
+      return { sets: 3 + extraSets, reps: '15-20', rest, setType: 'normal' };
     case 'cardio':
-      return { sets: 4 + extraSets, reps: '20+', rest: 30, setType: 'normal' };
+      return { sets: 4 + extraSets, reps: '20+', rest, setType: 'normal' };
     case 'mobility':
-      return { sets: 2, reps: '10-12', rest: 30, setType: 'normal' };
+      return { sets: 2, reps: '10-12', rest, setType: 'normal' };
     default:
       return {
         sets: (isWarmup ? 3 : 4) + extraSets,
         reps: isWarmup ? '12-15' : '8-12',
-        rest: 30,
+        rest,
         setType: isWarmup ? 'warmup' : 'normal',
       };
   }
@@ -511,7 +549,7 @@ export async function generatePlan(
       for (let i = 0; i < ordered.length; i++) {
         const ex = ordered[i];
         const extra = extraSetsForFocus(ex.primary_muscle, focusAreas);
-        const { sets, reps, rest, setType } = setsRepsForPlanType(planType, i, extra);
+        const { sets, reps, rest, setType } = setsRepsForPlanType(planType, i, ex.name, extra);
         const weightTarget = await suggestWeightForExercise(ex.id, reps);
         await addExerciseToPlan(
           planId,
@@ -632,7 +670,7 @@ export async function generateTodaysWorkout(
     for (let i = 0; i < ordered.length; i++) {
       const ex = ordered[i];
       const extra = extraSetsForFocus(ex.primary_muscle, focusAreas);
-      const { sets, reps, rest, setType } = setsRepsForPlanType('hypertrophy', i, extra);
+      const { sets, reps, rest, setType } = setsRepsForPlanType('hypertrophy', i, ex.name, extra);
       const weightTarget = await suggestWeightForExercise(ex.id, reps);
       await addExerciseToPlan(planId, ex.id, sets, reps, weightTarget, rest, setType, null, '', orderIndex++, 'Hoje', 0);
     }
@@ -694,7 +732,7 @@ export async function generateHomeWorkout(
     let orderIndex = 0;
     for (let i = 0; i < ordered.length; i++) {
       const ex = ordered[i];
-      const { sets, reps, rest, setType } = setsRepsForPlanType('hypertrophy', i);
+      const { sets, reps, rest, setType } = setsRepsForPlanType('hypertrophy', i, ex.name);
       const weightTarget = await suggestWeightForExercise(ex.id, reps);
       await addExerciseToPlan(planId, ex.id, sets, reps, weightTarget, rest, setType, null, '', orderIndex++, 'Treino em Casa', 0);
     }

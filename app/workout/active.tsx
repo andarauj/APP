@@ -25,6 +25,7 @@ import { parseTempo, calculatePlates } from '@/utils/calculators';
 import { hapticTap, hapticSuccess, hapticWarning, hapticSelect } from '@/utils/haptics';
 import { playRestEndSound } from '@/utils/sound';
 import { findSupersetPartner } from '@/utils/supersets';
+import { restSecondsFor } from '@/utils/planGenerator';
 import { suggestSetAdjustment, type AutoRegulationSuggestion } from '@/utils/autoRegulation';
 import { TempoMetronomeBox } from '@/components/workout/TempoMetronomeBox';
 import { RestRing } from '@/components/ui/RestRing';
@@ -436,7 +437,12 @@ export default function ActiveWorkoutScreen() {
       defaultSets: 3,
       defaultRepsTarget: defaultReps,
       defaultWeight: lastSet?.weight || 0,
-      restSeconds: restDuration,
+      // Grounded per-exercise default (see REST_INTERVAL_RESEARCH.md)
+      // instead of inheriting restDuration, which is really just "whatever
+      // the last completed exercise's rest happened to be" — an exercise
+      // added mid-workout has no such history yet. 'hypertrophy' matches
+      // the 8-12 rep default just above.
+      restSeconds: restSecondsFor('hypertrophy', ex.name),
       expanded: true,
       progression: progression?.shouldProgress
         ? { suggestedWeight: progression.suggestedWeight, reason: progression.reason }

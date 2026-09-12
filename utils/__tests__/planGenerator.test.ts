@@ -1,4 +1,4 @@
-import { movementFamily, pickExercisesForDay, orderByMuscleGroup, getSplitDays, AVAILABLE_DAYS, shouldAddConditioningFinisher, suggestedDaysPerWeek } from '../planGenerator';
+import { movementFamily, pickExercisesForDay, orderByMuscleGroup, getSplitDays, AVAILABLE_DAYS, shouldAddConditioningFinisher, suggestedDaysPerWeek, restSecondsFor } from '../planGenerator';
 import type { Exercise, MuscleGroup } from '@/types';
 
 function ex(id: number, name: string, primary_muscle: MuscleGroup, equipment: Exercise['equipment']): Exercise {
@@ -259,6 +259,35 @@ describe('pickExercisesForDay with excludedMuscles (injuries)', () => {
     ];
     const picked = pickExercisesForDay(pool, ['chest'], 45, 'any', ['shoulders'], undefined, undefined, ['shoulders']);
     expect(picked.some(p => p.primary_muscle === 'shoulders')).toBe(false);
+  });
+});
+
+describe('restSecondsFor', () => {
+  it('gives compound movements more rest than isolation ones, for every goal', () => {
+    for (const goal of ['strength', 'hypertrophy', 'endurance'] as const) {
+      expect(restSecondsFor(goal, 'Barbell Back Squat')).toBeGreaterThan(restSecondsFor(goal, 'Leg Extension'));
+    }
+  });
+
+  it('matches ACSM 2009\'s advanced-strength-phase split: 3-5min core lifts, 1-2min assistance work', () => {
+    expect(restSecondsFor('strength', 'Deadlift')).toBeGreaterThanOrEqual(180);
+    expect(restSecondsFor('strength', 'Deadlift')).toBeLessThanOrEqual(300);
+    expect(restSecondsFor('strength', 'Bicep Curl')).toBeGreaterThanOrEqual(60);
+    expect(restSecondsFor('strength', 'Bicep Curl')).toBeLessThanOrEqual(120);
+  });
+
+  it('hypertrophy rest is grounded above the old flat 30s default — ACSM\'s own floor is 60s', () => {
+    expect(restSecondsFor('hypertrophy', 'Bench Press')).toBeGreaterThanOrEqual(60);
+    expect(restSecondsFor('hypertrophy', 'Cable Crossover')).toBeGreaterThanOrEqual(60);
+  });
+
+  it('cardio and mobility are unaffected by the compound/isolation split', () => {
+    expect(restSecondsFor('cardio', 'Treadmill Run')).toBe(restSecondsFor('cardio', 'Jumping Jacks'));
+    expect(restSecondsFor('mobility', 'Hip Flexor Stretch')).toBe(restSecondsFor('mobility', 'World\'s Greatest Stretch'));
+  });
+
+  it('falls back to the hypertrophy table for an unrecognised goal', () => {
+    expect(restSecondsFor('unknown' as any, 'Bench Press')).toBe(restSecondsFor('hypertrophy', 'Bench Press'));
   });
 });
 

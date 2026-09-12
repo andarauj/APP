@@ -114,6 +114,33 @@ export function movementBucket(name: string, primaryMuscle = '', equipment = '')
   }
 }
 
+/**
+ * True multi-joint ("compound") vs. single-joint ("isolation") movement —
+ * a different question from movementBucket above, which groups by
+ * movement-pattern *balance* and would wrongly call a lateral raise
+ * "vert_push", lumping it in with overhead pressing. This is used instead
+ * for rest-interval prescription (see PERIODIZATION_RESEARCH.md and
+ * restSecondsFor in utils/planGenerator.ts), where a lateral raise and an
+ * overhead press need very different rest despite sharing a bucket.
+ *
+ * Isolation movements have a small, fairly closed vocabulary (curl,
+ * extension, raise, fly, pushdown, kickback, shrug...), so those are
+ * enumerated directly; everything else typed 'strength' defaults to
+ * compound, since most distinctly-named exercises in this dataset
+ * (presses, rows, pulls, squats, lunges, cleans...) genuinely are — a leg
+ * press or a pull-up is multi-joint even though neither is one of the
+ * mainPattern() "big five" barbell lifts.
+ */
+const ISOLATION_KEYWORDS = [
+  'curl', 'extension', 'raise', 'fly', 'flye', 'crossover', 'cross over',
+  'pushdown', 'push down', 'kickback', 'kick back', 'shrug', 'preacher',
+  'concentration',
+];
+
+export function isCompoundMovement(name: string): boolean {
+  return !has(norm(name), ...ISOLATION_KEYWORDS);
+}
+
 /** Tally a list of trained sets into the six-bucket shape computeNspi wants. */
 export function tallyMovementBuckets(
   sets: { name: string; primaryMuscle?: string; equipment?: string }[],
