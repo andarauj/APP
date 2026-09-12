@@ -13,7 +13,7 @@ import { ArrowLeft, Sparkles } from 'lucide-react-native';
 import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { hapticSelect, hapticSuccess } from '@/utils/haptics';
-import { getAllPlans, getPlanDays } from '@/db/planDao';
+import { getAllPlans, getPlanDays, filterUserSelectablePlans } from '@/db/planDao';
 import { generatePlan, suggestedDaysPerWeek, type EquipmentPreference } from '@/utils/planGenerator';
 import { startAdaptivePlan } from '@/utils/adaptiveService';
 import type { AdaptiveGoal } from '@/utils/nspi';
@@ -79,16 +79,11 @@ export default function AdaptiveStartScreen() {
       if (!mounted) return;
       // BUGFIX (reported as "duplicação"): getAllPlans() is unfiltered, and
       // every "Criar plano novo" run through this exact wizard inserts a
-      // fresh workout_plans row literally named "Plano Adaptativo" (see
-      // generatePlan's customName in utils/planGenerator.ts) — running the
-      // wizard's own "create new" path more than once (e.g. via "Criar
-      // plano novo" on the Plano Adaptativo card once a cycle already
-      // exists) left every earlier, now-obsolete run's row still showing
-      // here, indistinguishable from the current one. Auto-generated plans
-      // (this wizard's own output, Treino Inteligente, 5/3/1) were never
-      // meant to be reselected from this specific picker — "Meus Planos"
-      // already excludes them the same way (hooks/usePlansManager.ts).
-      setPlans(p.filter(pl => !pl.is_auto_generated));
+      // fresh workout_plans row literally named "Plano Adaptativo" — running
+      // the wizard's own "create new" path more than once left every
+      // earlier, now-obsolete run's row still showing here, indistinguishable
+      // from the current one. See db/planDao.ts's filterUserSelectablePlans.
+      setPlans(filterUserSelectablePlans(p));
     }).catch(() => { if (mounted) setPlans([]); }).finally(() => { if (mounted) setLoadingPlans(false); });
     return () => { mounted = false; };
   }, [isReady]));

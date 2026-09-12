@@ -9,6 +9,23 @@ export async function getAllPlans(): Promise<WorkoutPlan[]> {
   return rows as WorkoutPlan[];
 }
 
+/**
+ * Plans a person can knowingly pick from a manual picker — the adaptive
+ * wizard's own plan list, the weekly planner's "Que plano treinas neste
+ * dia?" picker, "Meus Planos". Excludes auto-generated output (adaptive
+ * wizard runs, Treino Inteligente, 5/3/1): every "Criar plano novo" run
+ * through the wizard inserts a fresh row literally named "Plano Adaptativo"
+ * (see generatePlan's customName in utils/planGenerator.ts), so repeating
+ * that path leaves every earlier, now-obsolete run's row still in the
+ * table — none of those rows was ever meant to be reselected here. A day
+ * already assigned to one of these plans from before this filter existed
+ * still resolves its own name via the unfiltered list at the call site;
+ * this function only governs what's offered going forward.
+ */
+export function filterUserSelectablePlans(plans: WorkoutPlan[]): WorkoutPlan[] {
+  return plans.filter(p => !p.is_auto_generated);
+}
+
 export async function getPlanById(id: number): Promise<WorkoutPlan | null> {
   const db = await getDatabase();
   const row = await db.getFirstAsync('SELECT * FROM workout_plans WHERE id = ?', [id]);

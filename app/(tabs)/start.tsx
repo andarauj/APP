@@ -5,7 +5,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
 import { usePlansManager } from '@/hooks/usePlansManager';
-import { getAllPlans, getPlanDays } from '@/db/planDao';
+import { getAllPlans, getPlanDays, filterUserSelectablePlans } from '@/db/planDao';
 import { getLatestAdaptivePlanAny, deleteAdaptivePlanData, type AdaptivePlanRow } from '@/db/adaptiveDao';
 import { getWeeklyPlanner, setPlannerDay, clearPlannerForPlan, type WeeklyPlanner, type PlannerEntry } from '@/db/plannerDao';
 import { getUnfinishedSessionWithProgress, discardSession, finishSessionAsIs, getAllSessions } from '@/db/workoutDao';
@@ -119,10 +119,7 @@ export default function StartScreen() {
 
     try {
       const [allPlansRaw, p] = await Promise.all([getAllPlans(), getWeeklyPlanner()]);
-      // Same dedup as hooks/usePlansManager.ts and app/adaptive/start.tsx:
-      // auto-generated plans (adaptive wizard, Treino Inteligente, 5/3/1)
-      // were never meant to be manually assigned to a weekday here.
-      const allPlans = allPlansRaw.filter(pl => !pl.is_auto_generated);
+      const allPlans = filterUserSelectablePlans(allPlansRaw);
       setPlans(allPlans);
       setPlanner(p);
 

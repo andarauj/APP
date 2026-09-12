@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { Alert } from 'react-native';
-import { getAllPlans, deletePlan, duplicatePlan, getPlanDayCounts } from '@/db/planDao';
+import { getAllPlans, deletePlan, duplicatePlan, getPlanDayCounts, filterUserSelectablePlans } from '@/db/planDao';
 import { clearPlannerForPlan } from '@/db/plannerDao';
 import { hapticWarning } from '@/utils/haptics';
 import { groupPlansByName, type PlanGroup } from '@/utils/planGrouping';
@@ -26,7 +26,7 @@ export function usePlansManager() {
       // makes its own plan behind the scenes, but that lives in the
       // calendar as a record of what happened each day, not here as
       // something to reopen and reuse deliberately.
-      const data = (await getAllPlans()).filter(p => !p.is_auto_generated);
+      const data = filterUserSelectablePlans(await getAllPlans());
       setPlans(data);
       const counts = await getPlanDayCounts(data.map(p => p.id));
       setDayCounts(counts);
