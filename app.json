@@ -22,7 +22,8 @@
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.SCHEDULE_EXACT_ALARM",
         "android.permission.RECORD_AUDIO"
-      ]
+      ],
+      "versionCode": 2
     },
     "_comment_platforms": "Android only. Web is out because expo-sqlite there needs the wa-sqlite WASM asset and the whole app is built around a local SQLite database; iOS is out because nothing has ever been built or tested for it. Declaring the platform explicitly makes a build for anything else fail loudly rather than half-succeed.",
     "platforms": [
