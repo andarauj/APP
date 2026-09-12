@@ -2,12 +2,12 @@ import { getDatabase } from './database';
 import type { WorkoutSession, WorkoutSet, SetType, PersonalRecord } from '@/types';
 import { calculate1RM } from '@/utils/calculators';
 
-export async function createSession(name: string, planId: number | null): Promise<number> {
+export async function createSession(name: string, planId: number | null, dayIndex: number | null = null): Promise<number> {
   const db = await getDatabase();
   const now = Math.floor(Date.now() / 1000);
   const result = await db.runAsync(
-    'INSERT INTO workout_sessions (plan_id, name, started_at) VALUES (?, ?, ?)',
-    [planId, name, now]
+    'INSERT INTO workout_sessions (plan_id, day_index, name, started_at) VALUES (?, ?, ?, ?)',
+    [planId, dayIndex, name, now]
   );
   return result.lastInsertRowId as number;
 }
@@ -333,6 +333,48 @@ export async function getUnfinishedSession(): Promise<WorkoutSession | null> {
     'SELECT * FROM workout_sessions WHERE ended_at IS NULL ORDER BY started_at DESC LIMIT 1'
   );
   return (row as WorkoutSession) || null;
+}
+
+/**
+ * getUnfinishedSession plus how many sets it actually has logged — the
+ * session row alone can't answer "was anything actually done here", which
+ * app/(tabs)/start.tsx's recovery banner needs to decide between silently
+ * discarding an empty draft (see the silent-discard rule in its own
+ * comment) and surfacing a real "you have a workout in progress" prompt.
+ */
+export async function getUnfinishedSessionWithProgress(): Promise<{ session: WorkoutSession; completedSets: number } | null> {
+  const session = await getUnfinishedSession();
+  if (!session) return null;
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ c: number }>(
+    'SELECT COUNT(*) as c FROM workout_sets WHERE session_id = ?',
+    [session.id]
+  );
+  return { session, completedSets: row?.c ?? 0 };
+}
+
+/**
+ * Ends a session using whatever is already logged for it, without needing
+ * the active workout screen's own live React state — the "Concluir o que
+ * foi feito" recovery action runs from app/(tabs)/start.tsx, which never
+ * mounted that screen for this session. total_duration is deliberately
+ * left untouched: it already holds whatever completeSet's own checkpoint
+ * last wrote (see app/workout/active.tsx), which is the real active-time
+ * total: recomputing from `now - started_at` here would inflate it with
+ * however long the session sat abandoned before this was called.
+ */
+export async function finishSessionAsIs(sessionId: number): Promise<void> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ sets: number; volume: number }>(
+    "SELECT COUNT(*) as sets, COALESCE(SUM(reps * weight), 0) as volume FROM workout_sets WHERE session_id = ? AND set_type != 'warmup'",
+    [sessionId]
+  );
+  await updateSession({
+    id: sessionId,
+    ended_at: Math.floor(Date.now() / 1000),
+    total_sets: row?.sets ?? 0,
+    total_volume: row?.volume ?? 0,
+  });
 }
 
 export async function discardSession(sessionId: number): Promise<void> {

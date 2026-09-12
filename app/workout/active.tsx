@@ -5,13 +5,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { useAppMode } from '@/hooks/useAppMode';
+import { useActiveWorkout } from '@/hooks/useActiveWorkout';
 import { useStopwatch, useCountdown } from '@/hooks/useTimers';
 import { getPlanExercisesWithDetails } from '@/db/planDao';
 import { getAdaptiveStatus } from '@/utils/adaptiveService';
 import { getExerciseStates, type AdaptiveExerciseStateRow } from '@/db/adaptiveDao';
 import { PHASE_LABEL_PT, PHASE_COLOR, phaseSpec } from '@/utils/adaptivePlan';
 import type { AdaptiveGoal, AdaptivePhase } from '@/utils/nspi';
-import { createSession, updateSession, discardSession, addSet, updateWorkoutSet, getLastSetForExercise, getLastSessionSetsByIndex, getHistoricalRpeAtWeight , getProgressionSuggestion, getSessionTemplate } from '@/db/workoutDao';
+import { createSession, updateSession, discardSession, addSet, updateWorkoutSet, getLastSetForExercise, getLastSessionSetsByIndex, getHistoricalRpeAtWeight , getProgressionSuggestion, getSessionTemplate, getSessionById, getSessionSetsWithExercise } from '@/db/workoutDao';
 import { searchExercises, getAlternativeExercises, setExerciseUserNotes } from '@/db/exerciseDao';
 import { getSettingWithDefault, DEFAULT_SETTINGS } from '@/db/settingsDao';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -77,11 +78,58 @@ interface ActiveExercise {
 const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10];
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
 
+/** Row shape returned by db/workoutDao.ts's getSessionSetsWithExercise. */
+interface LoggedSetRow {
+  id: number; exercise_id: number; set_index: number; reps: number; weight: number;
+  rpe: number | null; set_type: SetType; is_pr: number;
+  exercise_name: string; primary_muscle: string; equipment: string;
+}
+
+/**
+ * Rebuilds one exercise card entirely from what's already logged for it —
+ * used when resuming a session for an exercise that isn't part of the
+ * plan day being loaded (added manually via "Adicionar Exercício" before
+ * the session was minimized or interrupted, or the exercise list of a
+ * "Treino Livre" session that had no plan at all). Every set it produces
+ * is done:true, since by definition every row here came from a completed
+ * addSet() call — there is nothing "next" to suggest weight/reps for.
+ */
+function rebuildExerciseFromLoggedSets(exerciseId: number, sets: LoggedSetRow[], expanded: boolean): ActiveExercise {
+  const sorted = [...sets].sort((a, b) => a.set_index - b.set_index);
+  const first = sorted[0];
+  return {
+    exerciseId,
+    name: first.exercise_name,
+    primaryMuscle: first.primary_muscle,
+    equipment: first.equipment,
+    sets: sorted.map(s => ({
+      reps: String(s.reps), weight: String(s.weight), rpe: s.rpe,
+      setType: s.set_type, done: true, dbId: s.id, isPr: !!s.is_pr,
+    })),
+    defaultSets: sorted.length,
+    defaultRepsTarget: String(first.reps),
+    defaultWeight: first.weight,
+    restSeconds: Number(DEFAULT_SETTINGS.defaultRestSeconds),
+    expanded,
+    imageUrl: '',
+  };
+}
+
 export default function ActiveWorkoutScreen() {
-  const { planId, planName, dayIndex, repeatSessionId } = useLocalSearchParams<{ planId: string; planName: string; dayIndex?: string; repeatSessionId?: string }>();
+  const { planId, planName, dayIndex, repeatSessionId, resumeSessionId } = useLocalSearchParams<{ planId: string; planName: string; dayIndex?: string; repeatSessionId?: string; resumeSessionId?: string }>();
   const { colors } = useTheme();
   const { isSimple } = useAppMode();
   const router = useRouter();
+  const { minimize, clearMinimized } = useActiveWorkout();
+
+  // Being on this screen at all — fresh start or resumed — means the
+  // session is no longer minimized, regardless of how it got here (tapping
+  // the mini-player already clears this itself, but a deep link or the
+  // recovery banner's "Continuar Treino" don't go through that).
+  useEffect(() => {
+    clearMinimized();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [exercises, setExercises] = useState<ActiveExercise[]>([]);
@@ -201,7 +249,7 @@ export default function ActiveWorkoutScreen() {
   // misunderstanding. useStopwatch already supported a controllable `running`
   // flag; it just wasn't wired to anything in the UI.
   const [workoutPaused, setWorkoutPaused] = useState(false);
-  const { elapsed: totalElapsed } = useStopwatch(!workoutPaused);
+  const { elapsed: totalElapsed, setBase: setTotalElapsedBase } = useStopwatch(!workoutPaused);
 
   // Rest timer — PERF: the countdown itself (useCountdown, ticking every
   // 250ms) used to be called directly here, in ActiveWorkoutScreen's own
@@ -288,8 +336,38 @@ export default function ActiveWorkoutScreen() {
     setRestRemindersEnabled(await getSettingWithDefault('restNotifyEnabled', '1') === '1');
     setKeepAwake(await getSettingWithDefault('keepScreenAwake', '1') === '1');
 
-    // Create session
-    const sid = await createSession(planName || 'Treino', Number(planId) || null);
+    // Resuming an existing, still-open session (the recovery flow in
+    // app/(tabs)/start.tsx, or the minimized mini-player) reuses its row
+    // and reloads whatever was already logged for it, instead of
+    // createSession() starting a brand new one — that's the whole point of
+    // "continue where I left off" rather than "start over from scratch".
+    const routeDayIndex = dayIndex !== undefined && dayIndex !== '' ? Number(dayIndex) : null;
+    let sid: number;
+    // Which plan day to reload — the resumed session's own day_index when
+    // resuming (it may differ from whatever this route happened to be
+    // opened with), otherwise the route's own param.
+    let effectiveDayIndex = routeDayIndex;
+    let resumedSets: Awaited<ReturnType<typeof getSessionSetsWithExercise>> = [];
+    if (resumeSessionId) {
+      const existing = await getSessionById(Number(resumeSessionId));
+      if (existing && !existing.ended_at) {
+        sid = existing.id;
+        effectiveDayIndex = existing.day_index;
+        resumedSets = await getSessionSetsWithExercise(sid);
+        // Jump the clock straight to the last checkpoint instead of
+        // recomputing from started_at — see useStopwatch's setBase comment
+        // for why that would inflate the duration with absence time.
+        if (existing.total_duration > 0) setTotalElapsedBase(existing.total_duration);
+      } else {
+        // The session vanished, or was already finished elsewhere (e.g.
+        // "Concluir o que foi feito" from the recovery banner) between
+        // navigating here and this screen mounting — fall back to a
+        // normal fresh start rather than resuming nothing.
+        sid = await createSession(planName || 'Treino', Number(planId) || null, routeDayIndex);
+      }
+    } else {
+      sid = await createSession(planName || 'Treino', Number(planId) || null, routeDayIndex);
+    }
     setSessionId(sid);
 
     // Repeat a previous session: rebuild the same exercises and set counts,
@@ -342,12 +420,28 @@ export default function ActiveWorkoutScreen() {
       return;
     }
 
+    // Sets already logged for the resumed session, grouped by exercise —
+    // consumed (and removed from this map) as each plan exercise below
+    // claims its own; whatever's left afterward was added manually mid-
+    // workout (not part of this plan day) and gets appended as its own
+    // card via rebuildExerciseFromLoggedSets so it isn't silently dropped.
+    const resumedByExercise = new Map<number, typeof resumedSets>();
+    for (const s of resumedSets) {
+      const list = resumedByExercise.get(s.exercise_id) ?? [];
+      list.push(s);
+      resumedByExercise.set(s.exercise_id, list);
+    }
+
     if (Number(planId) > 0) {
       const allPlanExs = await getPlanExercisesWithDetails(Number(planId));
       // Load only the selected training day. Without this, starting a workout
       // from a multi-day plan queued up every exercise of every day at once.
-      const planExs = dayIndex !== undefined && dayIndex !== ''
-        ? allPlanExs.filter(pe => (pe.day_index ?? 0) === Number(dayIndex))
+      // effectiveDayIndex (not the raw route param) so a resumed session
+      // reloads the day it actually was — not whatever this route happened
+      // to be opened with (the mini-player/recovery banner navigate here
+      // with no dayIndex at all, since only the session id is known then).
+      const planExs = effectiveDayIndex !== null
+        ? allPlanExs.filter(pe => (pe.day_index ?? 0) === effectiveDayIndex)
         : allPlanExs;
       const activeExs: ActiveExercise[] = await Promise.all(
         planExs.map(async (pe, i) => {
@@ -360,17 +454,38 @@ export default function ActiveWorkoutScreen() {
           const weight = progression?.shouldProgress
             ? String(progression.suggestedWeight)
             : lastSet ? String(lastSet.weight) : String(pe.weight_target || 0);
+          const resumedForThisExercise = resumedByExercise.get(pe.exercise_id) ?? [];
+          resumedByExercise.delete(pe.exercise_id);
+          const resumedByIndex = new Map(resumedForThisExercise.map(s => [s.set_index, s]));
+          // At least the plan's own set count, but stretched to cover any
+          // logged set beyond it too (e.g. an extra set added before the
+          // session was minimized) — otherwise that set's own progress
+          // would silently fall off the end of the array on resume.
+          const setCount = resumedForThisExercise.length
+            ? Math.max(pe.sets, Math.max(...resumedForThisExercise.map(s => s.set_index)) + 1)
+            : pe.sets;
           return {
             planExerciseId: pe.id,
             exerciseId: pe.exercise_id,
             name: pe.exercise_name,
             primaryMuscle: pe.primary_muscle,
             equipment: pe.equipment,
-            sets: Array.from({ length: pe.sets }, (_, si) => ({
-              reps, weight, rpe: null, setType: pe.set_type as SetType, done: false,
-              previousReps: previousByIndex[si] ? String(previousByIndex[si].reps) : undefined,
-              previousWeight: previousByIndex[si] ? String(previousByIndex[si].weight) : undefined,
-            })),
+            sets: Array.from({ length: setCount }, (_, si) => {
+              const resumed = resumedByIndex.get(si);
+              if (resumed) {
+                return {
+                  reps: String(resumed.reps), weight: String(resumed.weight), rpe: resumed.rpe,
+                  setType: resumed.set_type as SetType, done: true, dbId: resumed.id, isPr: !!resumed.is_pr,
+                  previousReps: previousByIndex[si] ? String(previousByIndex[si].reps) : undefined,
+                  previousWeight: previousByIndex[si] ? String(previousByIndex[si].weight) : undefined,
+                };
+              }
+              return {
+                reps, weight, rpe: null, setType: pe.set_type as SetType, done: false,
+                previousReps: previousByIndex[si] ? String(previousByIndex[si].reps) : undefined,
+                previousWeight: previousByIndex[si] ? String(previousByIndex[si].weight) : undefined,
+              };
+            }),
             defaultSets: pe.sets,
             defaultRepsTarget: pe.reps_target,
             defaultWeight: pe.weight_target,
@@ -388,7 +503,20 @@ export default function ActiveWorkoutScreen() {
           };
         })
       );
-      setExercises(activeExs);
+      const extraExs = Array.from(resumedByExercise.entries()).map(([exerciseId, sets]) =>
+        rebuildExerciseFromLoggedSets(exerciseId, sets, false)
+      );
+      setExercises([...activeExs, ...extraExs]);
+    } else if (resumedSets.length > 0) {
+      // A "Treino Livre" (no plan) session that was minimized/interrupted —
+      // every exercise in it was necessarily added manually, so the whole
+      // list is reconstructed straight from what's logged, the same way an
+      // unplanned extra exercise is handled above.
+      setExercises(
+        Array.from(resumedByExercise.entries()).map(([exerciseId, sets], i) =>
+          rebuildExerciseFromLoggedSets(exerciseId, sets, i === 0)
+        )
+      );
     }
   };
 
@@ -627,6 +755,15 @@ export default function ActiveWorkoutScreen() {
       0, setElapsed, set.setType
     );
 
+    // Checkpoint the real elapsed time after every set — atomic persistence
+    // (see finishSessionAsIs/useStopwatch's setBase): if the app is killed
+    // before this session is properly finished, whoever resumes or
+    // force-finishes it later reads this instead of recomputing from
+    // started_at, which would count the entire abandoned gap as workout
+    // time. Fire-and-forget: this must never delay the set's own
+    // completion feedback (haptics, PR check, rest timer below).
+    updateSession({ id: sessionId, total_duration: totalElapsed }).catch(() => {});
+
     if (isPr) {
       hapticSuccess();
       setNewPrs(prev => [...prev, ex.name]);
@@ -829,13 +966,35 @@ export default function ActiveWorkoutScreen() {
     // mark the session as ended and save whatever totals existed — even
     // when literally nothing had been logged (0 sets, 0kg, 0 exercises).
     // The dialog even said "o progresso será guardado", which is the
-    // opposite of what tapping something called "cancel" should do. Now
-    // there are two genuinely different options: discard (deletes the
-    // session and its sets entirely — nothing saved) and save-and-exit
-    // (the old behavior, for when you actually did some work and just
-    // want to stop here rather than finish properly).
-    Alert.alert('Sair do treino', 'O que queres fazer?', [
-      { text: 'Continuar treino', style: 'cancel' },
+    // opposite of what tapping something called "cancel" should do.
+    //
+    // Now offers three genuinely different, non-destructive-by-default
+    // paths: minimize (session stays open in the background — the mini-
+    // player, see hooks/useActiveWorkout.tsx — nothing is lost or ended),
+    // save-and-finish (ends the session now with whatever's logged), and
+    // discard (deletes the session and its sets entirely). "Minimizar" is
+    // the 'cancel'-styled, safe default — matching what pressing back
+    // actually usually means ("get me out of here", not "end my workout").
+    Alert.alert('Treino em Curso', 'Queres minimizar, guardar ou descartar?', [
+      {
+        text: 'Minimizar', style: 'cancel', onPress: () => {
+          if (sessionId) {
+            const current = exercises.find(e => e.sets.some(s => !s.done)) ?? exercises[0];
+            minimize({
+              sessionId,
+              planId: Number(planId) || null,
+              dayIndex: dayIndex !== undefined && dayIndex !== '' ? Number(dayIndex) : null,
+              name: planName || 'Treino',
+              currentExerciseName: current?.name ?? 'Treino',
+              doneSets: totalSets,
+              totalPlannedSets,
+              baseElapsedSeconds: totalElapsed,
+              minimizedAtMs: Date.now(),
+            });
+          }
+          router.back();
+        }
+      },
       {
         text: 'Descartar', style: 'destructive', onPress: async () => {
           hapticWarning();
@@ -849,7 +1008,7 @@ export default function ActiveWorkoutScreen() {
         }
       },
       {
-        text: 'Guardar e sair', onPress: async () => {
+        text: 'Guardar', onPress: async () => {
           try {
             if (sessionId) {
               const endTime = Math.floor(Date.now() / 1000);
@@ -867,7 +1026,7 @@ export default function ActiveWorkoutScreen() {
         }
       },
     ]);
-  }, [sessionId, router, totalElapsed, totalVolume, totalSets]);
+  }, [sessionId, router, totalElapsed, totalVolume, totalSets, totalPlannedSets, exercises, planId, planName, dayIndex, minimize]);
 
   // BUGFIX (reported): the confirmation dialog above only fired from the
   // header's "Cancelar" button — Android's physical/gesture back button

@@ -28,7 +28,20 @@ export function useStopwatch(running: boolean) {
     setElapsed(0);
   }, [running]);
 
-  return { elapsed, reset };
+  // Resuming a session already loads its persisted total_duration
+  // asynchronously (see app/workout/active.tsx's init()), well after this
+  // hook's first render — a plain constructor argument can't express that.
+  // setBase jumps the clock straight to that checkpointed value once it's
+  // known, instead of recomputing elapsed from started_at, which would
+  // count time the app was closed/backgrounded as if it were active workout
+  // time.
+  const setBase = useCallback((seconds: number) => {
+    baseRef.current = seconds;
+    startTimeRef.current = running ? Date.now() : null;
+    setElapsed(seconds);
+  }, [running]);
+
+  return { elapsed, reset, setBase };
 }
 
 export function useCountdown(duration: number, running: boolean, onComplete?: () => void) {

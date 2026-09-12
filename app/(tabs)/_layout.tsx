@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { View } from 'react-native';
 import { Tabs, useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,6 +9,7 @@ import { useQuickActionRouting } from 'expo-quick-actions/router';
 import { getAllSessions } from '@/db/workoutDao';
 import { useDatabase } from '@/hooks/useDatabase';
 import { hapticSelect } from '@/utils/haptics';
+import { ActiveWorkoutMiniPlayer } from '@/components/workout/ActiveWorkoutMiniPlayer';
 
 // A "repeat last workout" shortcut can't bake a session id into the static
 // action definition — the id set today would still be there (and wrong)
@@ -65,7 +67,10 @@ export default function TabsLayout() {
     return true; // handled manually — don't let the router also try a (nonexistent) static href
   });
 
+  const tabBarHeight = 60 + bottomPad;
+
   return (
+    <View style={{ flex: 1 }}>
     <Tabs
       screenListeners={{
         tabPress: () => hapticSelect(),
@@ -76,7 +81,7 @@ export default function TabsLayout() {
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
           borderTopWidth: 1,
-          height: 60 + bottomPad,
+          height: tabBarHeight,
           paddingBottom: bottomPad,
           paddingTop: 8,
         },
@@ -172,5 +177,10 @@ export default function TabsLayout() {
         }}
       />
     </Tabs>
+    {/* Sits just above the tab bar so switching tabs never hides it, and it
+        never covers the tabs themselves — see hooks/useActiveWorkout.tsx
+        for why this needs to live outside any single screen. */}
+    <ActiveWorkoutMiniPlayer bottomOffset={tabBarHeight + 8} />
+    </View>
   );
 }

@@ -8,7 +8,7 @@ import { usePlansManager } from '@/hooks/usePlansManager';
 import { getAllPlans, getPlanDays } from '@/db/planDao';
 import { getLatestAdaptivePlanAny, deleteAdaptivePlanData, type AdaptivePlanRow } from '@/db/adaptiveDao';
 import { getWeeklyPlanner, setPlannerDay, clearPlannerForPlan, type WeeklyPlanner, type PlannerEntry } from '@/db/plannerDao';
-import { getUnfinishedSession, discardSession, getAllSessions } from '@/db/workoutDao';
+import { getUnfinishedSessionWithProgress, discardSession, finishSessionAsIs, getAllSessions } from '@/db/workoutDao';
 import type { WorkoutPlan } from '@/types';
 import { PLAN_TYPE_PT } from '@/types';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -19,6 +19,13 @@ import { getRollingScheduleForPlan, pastWeekdaysWithoutTracking, isWeekdayPast, 
 import { PlanGroupCard } from '@/components/ui/PlanGroupCard';
 import { PlanVersionModal } from '@/components/ui/PlanVersionModal';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { formatDateTime } from '@/utils/format';
+
+/** A session left open longer than this is treated as "de ontem" (stale) —
+ *  the recovery prompt's copy and default framing change accordingly (see
+ *  the "GESTÃO DE TIMEOUT" requirement it exists for), though the same 3
+ *  actions (Continuar/Concluir/Descartar) still apply either way. */
+const UNFINISHED_SESSION_STALE_SECONDS = 12 * 3600;
 
 const WEEKDAY_FULL = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 // Planner state stays keyed 0=Sun..6=Sat everywhere (matches every other
@@ -52,7 +59,10 @@ export default function StartScreen() {
   const plansManager = usePlansManager();
 
   const [plans, setPlans] = useState<WorkoutPlan[]>([]);
-  const [unfinished, setUnfinished] = useState<{ id: number; name: string; started_at: number } | null>(null);
+  const [unfinished, setUnfinished] = useState<{
+    id: number; name: string; planId: number | null; dayIndex: number | null;
+    started_at: number; completedSets: number; isStale: boolean;
+  } | null>(null);
   const [lastSession, setLastSession] = useState<{ id: number; name: string; total_sets: number } | null>(null);
   const [planner, setPlanner] = useState<WeeklyPlanner>({});
   const [planNames, setPlanNames] = useState<Record<number, string>>({});
@@ -78,7 +88,32 @@ export default function StartScreen() {
   const [plannerLoaded, setPlannerLoaded] = useState(false);
 
   const loadStart = useCallback(async () => {
-    getUnfinishedSession().then(s => setUnfinished(s as any)).catch(() => setUnfinished(null));
+    // Session-resilience recovery: a workout can be left open by an app
+    // kill, a dead battery, a call, or just closing the app mid-set — this
+    // decides what to do about whatever's still open, every time the
+    // Treino tab gains focus (see useFocusEffect below).
+    getUnfinishedSessionWithProgress().then(async result => {
+      if (!result) { setUnfinished(null); return; }
+      // Silent-discard rule: nothing was ever actually logged (e.g. the
+      // app died the instant the workout started) — not worth interrupting
+      // anyone over zero progress, so this cleans up quietly instead of
+      // surfacing a decision for it.
+      if (result.completedSets === 0) {
+        await discardSession(result.session.id).catch(() => {});
+        setUnfinished(null);
+        return;
+      }
+      const ageSeconds = Math.floor(Date.now() / 1000) - result.session.started_at;
+      setUnfinished({
+        id: result.session.id,
+        name: result.session.name,
+        planId: result.session.plan_id,
+        dayIndex: result.session.day_index,
+        started_at: result.session.started_at,
+        completedSets: result.completedSets,
+        isStale: ageSeconds > UNFINISHED_SESSION_STALE_SECONDS,
+      });
+    }).catch(() => setUnfinished(null));
     getAllSessions(1, 0).then(s => setLastSession((s[0] as any) || null)).catch(() => setLastSession(null));
     getLatestAdaptivePlanAny().then(p => { setHasAdaptivePlanEver(!!p); setAdaptivePlanRow(p); }).catch(() => { setHasAdaptivePlanEver(false); setAdaptivePlanRow(null); });
 
@@ -174,6 +209,11 @@ export default function StartScreen() {
   };
 
   const startPlannerDay = (entry: PlannerEntry) => {
+    // Only one active session at a time — trying to start a second one
+    // while another is still open redirects to the same recovery decision
+    // as tapping the "sessão em curso" banner directly, rather than
+    // silently creating a second, orphaned workout_sessions row.
+    if (unfinished) { openUnfinishedDialog(); return; }
     const planName = planNames[entry.planId] || 'Treino';
     const dayLabel = planDayLabels[`${entry.planId}:${entry.dayIndex}`];
     router.push({
@@ -269,16 +309,54 @@ export default function StartScreen() {
     return null;
   }, [effectivePlanner, today]);
 
-  const handleDiscardUnfinished = () => {
+  // Session-resilience recovery actions (see the "unfinished" state's own
+  // load comment). All three route through this one dialog, opened either
+  // by tapping the "sessão em curso" banner directly or by trying to start
+  // any other workout while one is already open — there's no such thing as
+  // two active sessions at once, so that attempt redirects here too.
+  const resumeUnfinished = useCallback(() => {
     if (!unfinished) return;
-    Alert.alert('Descartar treino', `Descartar "${unfinished.name}" e as series registadas?`, [
+    router.push({
+      pathname: '/workout/active',
+      params: { planId: String(unfinished.planId ?? 0), planName: unfinished.name, resumeSessionId: String(unfinished.id) },
+    });
+  }, [unfinished, router]);
+
+  const finishUnfinishedAsIs = useCallback(async () => {
+    if (!unfinished) return;
+    await finishSessionAsIs(unfinished.id).catch(() => {});
+    setUnfinished(null);
+  }, [unfinished]);
+
+  const discardUnfinished = useCallback(() => {
+    if (!unfinished) return;
+    // "Exige confirmação" — this is the second, destructive step; the first
+    // (openUnfinishedDialog) already asked once by offering it as an option
+    // alongside two non-destructive ones.
+    const plural = unfinished.completedSets !== 1;
+    Alert.alert('Eliminar registos desta sessão?', `A${plural ? 's' : ''} ${unfinished.completedSets} série${plural ? 's' : ''} já registada${plural ? 's' : ''} em "${unfinished.name}" ser${plural ? 'ão' : 'á'} apagada${plural ? 's' : ''} permanentemente.`, [
       { text: 'Cancelar', style: 'cancel' },
       {
-        text: 'Descartar', style: 'destructive',
+        text: 'Eliminar', style: 'destructive',
         onPress: async () => { await discardSession(unfinished.id); setUnfinished(null); },
       },
     ]);
-  };
+  }, [unfinished]);
+
+  const openUnfinishedDialog = useCallback(() => {
+    if (!unfinished) return;
+    const setsPlural = unfinished.completedSets !== 1;
+    const setsLabel = `${unfinished.completedSets} série${setsPlural ? 's' : ''} já registada${setsPlural ? 's' : ''}`;
+    const title = unfinished.isStale ? 'Treino pendente de ontem' : 'Sessão em curso';
+    const message = unfinished.isStale
+      ? `Encontrámos um treino ("${unfinished.name}", ${setsLabel}, iniciado ${formatDateTime(unfinished.started_at)}) que ficou por terminar. Desejas guardar o progresso feito ou descartar?`
+      : `"${unfinished.name}" — ${setsLabel}, iniciado às ${formatDateTime(unfinished.started_at)}. O que queres fazer?`;
+    Alert.alert(title, message, [
+      { text: 'Continuar Treino', style: 'cancel', onPress: resumeUnfinished },
+      { text: 'Concluir o que foi Feito', onPress: finishUnfinishedAsIs },
+      { text: 'Descartar Treino', style: 'destructive', onPress: discardUnfinished },
+    ]);
+  }, [unfinished, resumeUnfinished, finishUnfinishedAsIs, discardUnfinished]);
 
   /**
    * The rich hero card's own action, not just its "Ver o meu plano" button
@@ -416,11 +494,43 @@ export default function StartScreen() {
         )}
         {activeTab === 'plano' && plannerLoaded && adaptiveLoaded && !(!adaptiveStatus && plans.length === 0) && (
           <>
+            {/* Sessão em Curso — a workout can be left open by an app kill,
+                a dead battery, a call, or just closing the app mid-set.
+                Takes over the primary action slot entirely (there's only
+                ever one active session; starting a second one doesn't make
+                sense) until it's resumed, finished, or discarded. */}
+            {unfinished && (
+              <TouchableOpacity
+                style={[styles.todayCard, { backgroundColor: unfinished.isStale ? colors.errorContainer : colors.accentContainer }]}
+                onPress={openUnfinishedDialog}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel={`Sessão em curso: ${unfinished.name}, ${unfinished.completedSets} séries registadas, toca para continuar, concluir ou descartar`}
+              >
+                <View style={[styles.quickIcon, { backgroundColor: colors.surface }]}>
+                  <AlertCircle size={28} color={unfinished.isStale ? colors.error : colors.accent} />
+                </View>
+                <View style={styles.quickInfo}>
+                  <Text style={[styles.quickTitle, { color: colors.text }]}>
+                    {unfinished.isStale ? 'Treino Pendente de Ontem' : 'Sessão em Curso'}
+                  </Text>
+                  <Text style={[styles.quickDesc, { color: colors.textSecondary }]} numberOfLines={1}>
+                    {unfinished.name} · {unfinished.completedSets} série{unfinished.completedSets === 1 ? '' : 's'}
+                  </Text>
+                  <Text style={[styles.quickDesc, { color: colors.textSecondary }]} numberOfLines={1}>
+                    Iniciado às {formatDateTime(unfinished.started_at)}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            )}
+
             {/* Ação Principal — sempre uma e só uma: o treino de hoje (se
                 estiver agendado) ou o aviso de descanso com o próximo
                 treino. Vem primeiro porque é a única coisa que a pessoa
-                precisa de decidir agora. */}
-            {todayEntry ? (() => {
+                precisa de decidir agora. Escondida enquanto existir uma
+                sessão em curso — iniciar outro treino não faz sentido
+                antes de resolver o que já está aberto. */}
+            {!unfinished && (todayEntry ? (() => {
               const todayDayName = planDayLabels[`${todayEntry.planId}:${todayEntry.dayIndex}`] || planNames[todayEntry.planId] || 'Treino';
               return (
               <TouchableOpacity
@@ -476,7 +586,7 @@ export default function StartScreen() {
                   </Text>
                 </View>
               </View>
-            )}
+            ))}
 
             {/* Planeador Semanal — toca num dia atribuído para o iniciar,
                 mantém premido (ou toca num dia vazio) para atribuir/editar. */}
@@ -563,46 +673,16 @@ export default function StartScreen() {
         {/* TAB: INSTANTÂNEO — começar já, sem plano fixo */}
         {activeTab === 'instantaneo' && (
           <>
-            {/* Unfinished workout recovery. A session row is created the
-                moment a workout starts, so closing the app mid-workout used
-                to leave it stranded with no way to resume or clear it. Lives
-                here (not on the Plano tab) so an active adaptive cycle's
-                screen stays exactly the 3 blocks it's meant to be — this is
-                about an ad-hoc interrupted session, the same family as
-                Treino Livre/Repetir below, not about which plan is running. */}
-            {unfinished && (
-              <View style={[styles.resumeCard, { backgroundColor: colors.accentContainer, borderColor: colors.accent }]}>
-                <View style={styles.resumeTop}>
-                  <AlertCircle size={20} color={colors.accent} />
-                  <Text style={[styles.resumeTitle, { color: colors.accent }]}>Treino por terminar</Text>
-                </View>
-                <Text style={[styles.resumeName, { color: colors.text }]} numberOfLines={1}>{unfinished.name}</Text>
-                <View style={styles.resumeActions}>
-                  <TouchableOpacity
-                    style={[styles.resumeBtn, { backgroundColor: colors.accent }]}
-                    onPress={() => router.push({ pathname: '/workout/summary', params: { sessionId: unfinished.id } })}
-                    accessibilityRole="button"
-                    accessibilityLabel="Ver resumo do treino por terminar"
-                  >
-                    <Text style={[styles.resumeBtnText, { color: colors.onAccent }]}>Ver resumo</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.resumeBtnOutline, { borderColor: colors.accent }]}
-                    onPress={handleDiscardUnfinished}
-                    accessibilityRole="button"
-                    accessibilityLabel="Descartar treino por terminar"
-                  >
-                    <Text style={[styles.resumeBtnOutlineText, { color: colors.accent }]}>Descartar</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
+            {/* Session-resilience recovery now lives as the priority banner
+                at the top of the Plano tab (there's only ever one active
+                session at a time, so it doesn't need its own separate card
+                here too — see the "unfinished" block there). */}
 
             <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>COMEÇAR AGORA</Text>
 
             <TouchableOpacity
               style={[styles.quickCard, { backgroundColor: colors.primary }]}
-              onPress={() => router.push({ pathname: '/workout/active', params: { planId: 0, planName: 'Treino Livre' } })}
+              onPress={() => unfinished ? openUnfinishedDialog() : router.push({ pathname: '/workout/active', params: { planId: 0, planName: 'Treino Livre' } })}
               activeOpacity={0.85}
             >
               <View style={styles.quickIcon}><Zap size={32} color={colors.onPrimary} /></View>
@@ -616,7 +696,7 @@ export default function StartScreen() {
             {lastSession && (
               <TouchableOpacity
                 style={[styles.repeatCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                onPress={() => router.push({
+                onPress={() => unfinished ? openUnfinishedDialog() : router.push({
                   pathname: '/workout/active',
                   params: { planId: 0, planName: lastSession.name, repeatSessionId: String(lastSession.id) },
                 })}

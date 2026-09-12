@@ -101,6 +101,7 @@ export interface PlanDay {
 export interface WorkoutSession {
   id: number;
   plan_id: number | null;
+  day_index: number | null;
   name: string;
   started_at: number;
   ended_at: number | null;

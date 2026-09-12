@@ -3,6 +3,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { DatabaseProvider } from '@/hooks/useDatabase';
+import { ActiveWorkoutProvider } from '@/hooks/useActiveWorkout';
 import { useFonts } from 'expo-font';
 import {
   Inter_400Regular,
@@ -55,18 +56,20 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <DatabaseProvider>
-          <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="workout/active" options={{ presentation: 'fullScreenModal' }} />
-            <Stack.Screen name="workout/summary" />
-            <Stack.Screen name="plan/[id]" />
-            <Stack.Screen name="plan/create" />
-            <Stack.Screen name="plan/auto" />
-            <Stack.Screen name="exercise/[id]" />
-            <Stack.Screen name="+not-found" />
-          </Stack>
-          <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
-          <UpdateBanner />
+          <ActiveWorkoutProvider>
+            <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="(tabs)" />
+              <Stack.Screen name="workout/active" options={{ presentation: 'fullScreenModal' }} />
+              <Stack.Screen name="workout/summary" />
+              <Stack.Screen name="plan/[id]" />
+              <Stack.Screen name="plan/create" />
+              <Stack.Screen name="plan/auto" />
+              <Stack.Screen name="exercise/[id]" />
+              <Stack.Screen name="+not-found" />
+            </Stack>
+            <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
+            <UpdateBanner />
+          </ActiveWorkoutProvider>
         </DatabaseProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
