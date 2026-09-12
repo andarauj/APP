@@ -13,9 +13,11 @@ import { ExerciseTile } from '@/components/ui/ExerciseTile';
 import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
 import { getPlanById, getPlanExercisesWithDetails, addExerciseToPlan, deletePlanExercise, updatePlanExercise, reorderPlanExercises } from '@/db/planDao';
 import { searchExercises } from '@/db/exerciseDao';
+import { getLastSetForExercise } from '@/db/workoutDao';
 import { exportPlanAsXml, shareXmlFile } from '@/utils/xmlExport';
 import { parseTempo } from '@/utils/calculators';
-import type { WorkoutPlan, SetType, MuscleGroup , Exercise } from '@/types';
+import { estimateDayMinutes, formatMinutes } from '@/utils/workoutTime';
+import type { WorkoutPlan, SetType, MuscleGroup , Exercise, WorkoutSet } from '@/types';
 import { PLAN_TYPE_PT, SPLIT_TYPE_PT, MUSCLE_GROUPS_PT, EQUIPMENT_PT, SET_TYPE_PT } from '@/types';
 import { Play, Plus, Trash2, Download, X, CalendarDays, ChevronUp, ChevronDown } from 'lucide-react-native';
 
@@ -34,6 +36,7 @@ export default function PlanDetailScreen() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [selectedDay, setSelectedDay] = useState(0);
+  const [lastSets, setLastSets] = useState<Record<number, WorkoutSet | null>>({});
 
   // load() re-reads the plan from the database every time this screen gains
   // focus, which is what makes edits made in the exercise picker show up on
@@ -44,6 +47,15 @@ export default function PlanDetailScreen() {
     const exs = await getPlanExercisesWithDetails(Number(id));
     setPlan(p);
     setExercises(exs);
+
+    // "Recent history": the last logged set for each exercise in this plan,
+    // regardless of which session it came from — fired in parallel rather
+    // than one query per exercise awaited in sequence.
+    const exerciseIds = Array.from(new Set(exs.map((e: any) => e.exercise_id)));
+    const lasts = await Promise.all(exerciseIds.map(exId => getLastSetForExercise(exId)));
+    const byId: Record<number, WorkoutSet | null> = {};
+    exerciseIds.forEach((exId, i) => { byId[exId] = lasts[i]; });
+    setLastSets(byId);
   }, [id]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -134,6 +146,7 @@ export default function PlanDetailScreen() {
     new Set(dayExercises.map((e: any) => MUSCLE_GROUPS_PT[e.primary_muscle as MuscleGroup]))
   );
   const dayTotalSets = dayExercises.reduce((sum: number, e: any) => sum + (e.sets || 0), 0);
+  const estimatedMinutes = estimateDayMinutes(dayExercises.map((e: any) => ({ sets: e.sets, restSeconds: e.rest_seconds })));
 
   return (
     <SafeAreaView edges={['top','bottom']} style={[styles.screen, { backgroundColor: colors.background }]}>
@@ -202,7 +215,7 @@ export default function PlanDetailScreen() {
               <Text style={[styles.dayTitle, { color: colors.text }]}>{activeDay.day_label}</Text>
             </View>
             <Text style={[styles.daySub, { color: colors.textSecondary }]}>
-              {dayExercises.length} exercícios · {dayTotalSets} séries
+              {dayExercises.length} exercícios · {dayTotalSets} séries · ~{formatMinutes(estimatedMinutes)}
             </Text>
             {dayMuscles.length > 0 && (
               <View style={styles.dayMuscles}>
@@ -252,6 +265,11 @@ export default function PlanDetailScreen() {
                 <Text style={[styles.exSub, { color: colors.textSecondary }]}>
                   {ex.sets} séries · {ex.reps_target} reps{ex.weight_target > 0 ? ` · ${ex.weight_target}kg` : ''} · {ex.rest_seconds}s descanso
                 </Text>
+                {lastSets[ex.exercise_id] && (
+                  <Text style={[styles.exHistory, { color: colors.textTertiary }]}>
+                    Última vez: {lastSets[ex.exercise_id]!.weight}kg × {lastSets[ex.exercise_id]!.reps}
+                  </Text>
+                )}
               </View>
               <View style={styles.reorderBtns}>
                 <TouchableOpacity
@@ -432,6 +450,7 @@ const styles = StyleSheet.create({
   reorderBtns: { alignItems: 'center', justifyContent: 'center' },
   exName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   exSub: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
+  exHistory: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 15, marginTop: 2 },
   addExBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 12, borderWidth: 2, borderStyle: 'dashed', paddingVertical: 14, marginBottom: 32 },
   addExText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
   iconBtn: { width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
