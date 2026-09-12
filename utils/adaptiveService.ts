@@ -23,7 +23,8 @@ import {
   updatePlanExercise,
   getPlanDays,
 } from '@/db/planDao';
-import { setPlannerDay, clearPlannerForPlan } from '@/db/plannerDao';
+import { setPlannerDay, clearPlannerForPlan, getWeeklyPlanner } from '@/db/plannerDao';
+import { getCompletedSessionCountForPlan } from '@/db/workoutDao';
 import * as dao from '@/db/adaptiveDao';
 import type { PlanExercise } from '@/types';
 import {
@@ -303,6 +304,114 @@ export function distributeDaysAcrossWeek(daysCount: number, todayDow: number): n
   if (daysCount <= 0) return [];
   const n = Math.min(daysCount, 7);
   return Array.from({ length: n }, (_, i) => (todayDow + Math.floor((i * 7) / n)) % 7);
+}
+
+// ---------------------------------------------------------------------------
+// rolling workouts (zero treinos perdidos)
+// ---------------------------------------------------------------------------
+
+export interface RollingScheduleEntry {
+  weekday: number;   // 0=Sun..6=Sat
+  dayIndex: number;  // which plan_exercises day_index this weekday shows
+  isBacklog: boolean; // true only for today, and only when it's standing in for a missed earlier day
+}
+
+/**
+ * Pure core of "rolling workouts". The weekly planner is a fixed recurring
+ * template (Mon→Push, Wed→Pull, ...) with no idea whether any session ever
+ * actually happened — so today just showed whatever weekday it is,
+ * regardless of whether an earlier day in the sequence got skipped. This
+ * recomputes what today (and the rest of the week) should show once actual
+ * completions are taken into account, without needing a new "pending
+ * session" table: it only needs how many of this plan's sessions have
+ * completed since the week started, and treats that count as "how far
+ * through the day-sequence the person really is."
+ *
+ * Days strictly before today are left showing their native assignment —
+ * this doesn't rewrite history, only what's still ahead. From today onward,
+ * slot k (0 = today, 1 = the next scheduled day after today, ...) shows
+ * day-sequence position `completedCount + k`, cycling through the plan's
+ * days with `% planDayIndices.length`. When there's a genuine backlog
+ * (completedCount is behind how many native slots have already elapsed
+ * before today), today is forced to show the first not-yet-done day —
+ * even on a weekday the plan never natively scheduled — and every later
+ * native slot shifts to absorb the delay, so the sequence (Push→Pull→
+ * Pernas) keeps its order instead of jumping ahead over what was missed.
+ * Caught up (or ahead), the formula collapses to exactly the native
+ * assignment — this is the only code path start.tsx needs for the week.
+ */
+export function computeRollingSchedule(
+  scheduledWeekdays: number[],
+  planDayIndices: number[],
+  completedCount: number,
+  today: number,
+  weekStartDow: number,
+): RollingScheduleEntry[] {
+  const D = planDayIndices.length;
+  if (D === 0) return [];
+  const offset = (wd: number) => (wd - weekStartDow + 7) % 7;
+  const todayOffset = offset(today);
+  const sorted = [...new Set(scheduledWeekdays)].sort((a, b) => offset(a) - offset(b));
+
+  const past = sorted.filter(wd => offset(wd) < todayOffset);
+  const upcoming = sorted.filter(wd => offset(wd) >= todayOffset);
+  const elapsedBeforeToday = past.length;
+  const hasBacklog = completedCount < elapsedBeforeToday;
+  const isTodayNative = sorted.includes(today);
+
+  const result: RollingScheduleEntry[] = past.map((wd, i) => ({
+    weekday: wd,
+    dayIndex: planDayIndices[i % D],
+    isBacklog: false,
+  }));
+
+  let k = 0;
+  if (hasBacklog) {
+    // Forced catch-up slot — today, whether or not it was ever natively
+    // scheduled. If it WAS native, this replaces (not duplicates) its own
+    // entry below, since `upcoming` still contains it.
+    result.push({ weekday: today, dayIndex: planDayIndices[completedCount % D], isBacklog: true });
+    k = 1;
+  } else if (isTodayNative) {
+    result.push({ weekday: today, dayIndex: planDayIndices[completedCount % D], isBacklog: false });
+    k = 1;
+  }
+
+  for (const wd of upcoming) {
+    if (wd === today) continue; // already emitted above, either forced or native
+    result.push({ weekday: wd, dayIndex: planDayIndices[(completedCount + k) % D], isBacklog: false });
+    k += 1;
+  }
+
+  return result;
+}
+
+/**
+ * DB-orchestrating wrapper: reads this plan's current weekly assignment,
+ * its distinct days, and how many of its sessions have completed since the
+ * adaptive week started, then applies computeRollingSchedule. Returns null
+ * when the plan has no days yet (nothing to roll) rather than an empty
+ * schedule, so callers can tell "no plan" apart from "plan not scheduled
+ * on any day this week".
+ */
+export async function getRollingScheduleForPlan(
+  planId: number,
+  weekStartDow: number,
+  now: Date = new Date(),
+): Promise<RollingScheduleEntry[] | null> {
+  const [planner, planDays] = await Promise.all([getWeeklyPlanner(), getPlanDays(planId)]);
+  if (planDays.length === 0) return null;
+
+  const scheduledWeekdays = Object.entries(planner)
+    .filter(([, entry]) => entry?.planId === planId)
+    .map(([weekday]) => Number(weekday));
+  if (scheduledWeekdays.length === 0) return null;
+
+  const { start } = weekWindow(now, weekStartDow, 0);
+  const completedCount = await getCompletedSessionCountForPlan(planId, start);
+  const planDayIndices = planDays.map(d => d.day_index);
+
+  return computeRollingSchedule(scheduledWeekdays, planDayIndices, completedCount, now.getDay(), weekStartDow);
 }
 
 /** Map the onboarding goal keys to the four adaptive goals. */

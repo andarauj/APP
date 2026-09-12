@@ -45,6 +45,20 @@ export async function getAllSessions(limit = 100, offset = 0): Promise<WorkoutSe
   return rows as WorkoutSession[];
 }
 
+/** How many completed sessions a plan has had since `sinceTs` (epoch
+ *  seconds) — the "rolling workouts" queue (see adaptiveService's
+ *  computeRollingSchedule) uses this count to know how far through this
+ *  week's sequence of days the person actually is, regardless of which
+ *  weekday each one landed on. */
+export async function getCompletedSessionCountForPlan(planId: number, sinceTs: number): Promise<number> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ c: number }>(
+    'SELECT COUNT(*) as c FROM workout_sessions WHERE plan_id = ? AND ended_at IS NOT NULL AND started_at >= ?',
+    [planId, sinceTs]
+  );
+  return row?.c ?? 0;
+}
+
 export async function getRecentSessions(days: number): Promise<WorkoutSession[]> {
   const db = await getDatabase();
   const cutoff = Math.floor(Date.now() / 1000) - days * 86400;

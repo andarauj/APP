@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, Modal, FlatList, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
@@ -15,6 +15,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Play, Zap, Plus, AlertCircle, RotateCcw, RefreshCw, Calendar, Check as CheckIcon, X as XIcon, Sparkles, ListChecks, ChevronRight, Home as HomeIcon } from 'lucide-react-native';
 import { WEEKDAY_LABELS } from '@/utils/reminders';
 import { PHASE_LABEL_PT, PHASE_COLOR, PHASE_RPE_PT } from '@/utils/adaptivePlan';
+import { getRollingScheduleForPlan, type RollingScheduleEntry } from '@/utils/adaptiveService';
 import { PlanGroupCard } from '@/components/ui/PlanGroupCard';
 import { PlanVersionModal } from '@/components/ui/PlanVersionModal';
 
@@ -184,7 +185,51 @@ export default function StartScreen() {
     });
   };
 
-  const todayEntry = planner[today];
+  // Rolling workouts ("zero treinos perdidos"): the raw planner is a fixed
+  // recurring template with no idea whether Wednesday's session actually
+  // happened, so a missed day would otherwise just be silently skipped once
+  // its weekday passed. This recomputes, purely for display/start — never
+  // persisted, so it's always driven by real completions — which weekday
+  // should show which of the adaptive plan's days once a backlog exists.
+  // Only applies to the plan the NSPI engine is actively running; a
+  // manually-assigned non-adaptive day is left exactly as scheduled.
+  const [rollingSchedule, setRollingSchedule] = useState<RollingScheduleEntry[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!adaptiveStatus) { setRollingSchedule(null); return; }
+    const weekStartDow = new Date(adaptiveStatus.weekStart * 1000).getDay();
+    getRollingScheduleForPlan(adaptiveStatus.planId, weekStartDow)
+      .then(s => { if (!cancelled) setRollingSchedule(s); })
+      .catch(() => { if (!cancelled) setRollingSchedule(null); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adaptiveStatus?.planId, adaptiveStatus?.weekStart, planner]);
+
+  const rollingByWeekday = useMemo(() => {
+    const map: Record<number, RollingScheduleEntry> = {};
+    for (const entry of rollingSchedule ?? []) map[entry.weekday] = entry;
+    return map;
+  }, [rollingSchedule]);
+
+  // Same shape as `planner`, but with the active adaptive plan's days
+  // swapped for whatever the rolling schedule says they should be this
+  // week — including days it forces onto a weekday that was never natively
+  // scheduled (a missed day pulled forward onto today). Everything that
+  // only needs to DISPLAY or START a day reads this instead of `planner`
+  // directly; the day-assignment picker still reads/writes the raw
+  // `planner`, since reassigning a day by hand should edit the actual
+  // template, not today's computed view of it.
+  const effectivePlanner = useMemo(() => {
+    if (!adaptiveStatus || Object.keys(rollingByWeekday).length === 0) return planner;
+    const merged: WeeklyPlanner = { ...planner };
+    for (const [wdStr, entry] of Object.entries(rollingByWeekday)) {
+      merged[Number(wdStr)] = { planId: adaptiveStatus.planId, dayIndex: entry.dayIndex };
+    }
+    return merged;
+  }, [planner, rollingByWeekday, adaptiveStatus]);
+
+  const todayEntry = effectivePlanner[today];
+  const todayIsBacklog = rollingByWeekday[today]?.isBacklog ?? false;
 
   // The next scheduled day after today, wrapping the week — feeds the rest-day
   // card below so "sem treino hoje" still tells the person when to come back,
@@ -192,11 +237,11 @@ export default function StartScreen() {
   const nextPlannedEntry = useMemo(() => {
     for (let offset = 1; offset <= 7; offset++) {
       const weekday = (today + offset) % 7;
-      const entry = planner[weekday];
+      const entry = effectivePlanner[weekday];
       if (entry) return { weekday, entry };
     }
     return null;
-  }, [planner, today]);
+  }, [effectivePlanner, today]);
 
   const handleDiscardUnfinished = () => {
     if (!unfinished) return;
@@ -320,15 +365,17 @@ export default function StartScreen() {
                 precisa de decidir agora. */}
             {todayEntry ? (
               <TouchableOpacity
-                style={[styles.todayCard, { backgroundColor: colors.secondary }]}
+                style={[styles.todayCard, { backgroundColor: todayIsBacklog ? colors.error : colors.secondary }]}
                 onPress={() => startPlannerDay(todayEntry)}
                 activeOpacity={0.85}
                 accessibilityRole="button"
-                accessibilityLabel={`Iniciar treino de hoje: ${planNames[todayEntry.planId] || 'Treino'}`}
+                accessibilityLabel={`${todayIsBacklog ? 'Treino em atraso' : 'Iniciar treino de hoje'}: ${planNames[todayEntry.planId] || 'Treino'}`}
               >
-                <View style={styles.quickIcon}><Play size={28} color="#fff" /></View>
+                <View style={styles.quickIcon}>
+                  {todayIsBacklog ? <AlertCircle size={28} color="#fff" /> : <Play size={28} color="#fff" />}
+                </View>
                 <View style={styles.quickInfo}>
-                  <Text style={styles.quickTitle}>Iniciar Treino de Hoje</Text>
+                  <Text style={styles.quickTitle}>{todayIsBacklog ? 'Treino em Atraso' : 'Iniciar Treino de Hoje'}</Text>
                   <Text style={styles.quickDesc} numberOfLines={1}>
                     {planDayLabels[`${todayEntry.planId}:${todayEntry.dayIndex}`] || planNames[todayEntry.planId] || 'Treino'}
                   </Text>
@@ -370,15 +417,16 @@ export default function StartScreen() {
               <View style={styles.plannerRow}>
                 {WEEKDAY_DISPLAY_ORDER.map(weekday => {
                   const label = WEEKDAY_LABELS[weekday];
-                  const entry = planner[weekday];
+                  const entry = effectivePlanner[weekday];
                   const isToday = weekday === today;
+                  const isBacklog = rollingByWeekday[weekday]?.isBacklog ?? false;
                   return (
                     <TouchableOpacity
                       key={weekday}
                       style={[
                         styles.plannerDay,
-                        { backgroundColor: entry ? colors.primaryContainer : colors.surfaceVariant },
-                        isToday && { borderWidth: 2, borderColor: colors.primary },
+                        { backgroundColor: isBacklog ? colors.errorContainer : entry ? colors.primaryContainer : colors.surfaceVariant },
+                        isToday && { borderWidth: 2, borderColor: isBacklog ? colors.error : colors.primary },
                       ]}
                       onPress={() => entry ? startPlannerDay(entry) : openDayPicker(weekday)}
                       onLongPress={() => openDayPicker(weekday)}

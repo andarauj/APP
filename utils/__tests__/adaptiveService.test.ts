@@ -17,6 +17,10 @@ jest.mock('@/db/planDao', () => ({
 jest.mock('@/db/plannerDao', () => ({
   setPlannerDay: jest.fn().mockResolvedValue(undefined),
   clearPlannerForPlan: jest.fn().mockResolvedValue(undefined),
+  getWeeklyPlanner: jest.fn().mockResolvedValue({}),
+}));
+jest.mock('@/db/workoutDao', () => ({
+  getCompletedSessionCountForPlan: jest.fn().mockResolvedValue(0),
 }));
 jest.mock('@/db/adaptiveDao', () => ({
   getActiveAdaptivePlan: jest.fn(),
@@ -32,8 +36,11 @@ jest.mock('@/db/adaptiveDao', () => ({
   createCycle: jest.fn().mockResolvedValue(2),
 }));
 
-import { closeWeekIfDue, goalFromOnboarding, distributeDaysAcrossWeek } from '../adaptiveService';
+import { closeWeekIfDue, goalFromOnboarding, distributeDaysAcrossWeek, computeRollingSchedule, getRollingScheduleForPlan } from '../adaptiveService';
 import * as dao from '@/db/adaptiveDao';
+import { getWeeklyPlanner } from '@/db/plannerDao';
+import { getCompletedSessionCountForPlan } from '@/db/workoutDao';
+import { getPlanDays } from '@/db/planDao';
 
 const asMock = (fn: unknown) => fn as jest.Mock;
 
@@ -160,5 +167,130 @@ describe('distributeDaysAcrossWeek', () => {
         expect(forwardOffsets).toEqual([...forwardOffsets].sort((a, b) => a - b));
       }
     }
+  });
+});
+
+// Sun=0, Mon=1, Tue=2, Wed=3, Thu=4, Fri=5, Sat=6 — matches WEEKDAY_LABELS.
+describe('computeRollingSchedule', () => {
+  const PPL = [0, 1, 2]; // Push, Pull, Pernas day_index
+
+  it('the exact reported scenario: Wednesday missed, Thursday must show Wednesday\'s session', () => {
+    // Mon/Wed/Fri split, week starts Monday. Monday's Push was done
+    // (completedCount=1), Wednesday's Pull was not. Checking on Thursday.
+    const result = computeRollingSchedule([1, 3, 5], PPL, 1, 4, 1);
+    const thursday = result.find(e => e.weekday === 4);
+    expect(thursday).toEqual({ weekday: 4, dayIndex: 1, isBacklog: true }); // Pull, forced, labelled late
+  });
+
+  it('same backlog, checking on Friday instead: still shows the missed Wednesday session, not Friday\'s own', () => {
+    const result = computeRollingSchedule([1, 3, 5], PPL, 1, 5, 1);
+    const friday = result.find(e => e.weekday === 5);
+    expect(friday).toEqual({ weekday: 5, dayIndex: 1, isBacklog: true });
+  });
+
+  it('cascades every later native day by the backlog amount ("efeito dominó")', () => {
+    // Still Thursday, same backlog of 1. Friday (native) must absorb what
+    // was going to be Thursday's slot conceptually — i.e. keep going in
+    // sequence AFTER the forced catch-up, not repeat or skip a day.
+    const result = computeRollingSchedule([1, 3, 5], PPL, 1, 4, 1);
+    const friday = result.find(e => e.weekday === 5);
+    expect(friday).toEqual({ weekday: 5, dayIndex: 2, isBacklog: false }); // Pernas
+  });
+
+  it('leaves days before today showing their native assignment, untouched', () => {
+    const result = computeRollingSchedule([1, 3, 5], PPL, 1, 4, 1);
+    const monday = result.find(e => e.weekday === 1);
+    expect(monday).toEqual({ weekday: 1, dayIndex: 0, isBacklog: false }); // Push, native, past
+  });
+
+  it('caught up exactly: today shows its own native day, nothing marked late', () => {
+    // Wednesday, having done Monday's session — right on schedule.
+    const result = computeRollingSchedule([1, 3, 5], PPL, 1, 3, 1);
+    const wednesday = result.find(e => e.weekday === 3);
+    expect(wednesday).toEqual({ weekday: 3, dayIndex: 1, isBacklog: false });
+  });
+
+  it('a genuinely free rest day (no backlog) stays a rest day — no session is forced', () => {
+    // Tuesday isn't native, and Monday's session is already done — no
+    // reason to force anything onto Tuesday.
+    const result = computeRollingSchedule([1, 3, 5], PPL, 1, 2, 1);
+    expect(result.find(e => e.weekday === 2)).toBeUndefined();
+  });
+
+  it('ahead of schedule (an extra session already logged) pulls the whole rest of the week forward too', () => {
+    // Monday done twice somehow, or an extra session logged — completedCount
+    // outruns elapsedBeforeToday. Should not throw or go backwards; next
+    // slots simply advance further in the sequence.
+    const result = computeRollingSchedule([1, 3, 5], PPL, 2, 2, 1);
+    const wednesday = result.find(e => e.weekday === 3);
+    expect(wednesday).toEqual({ weekday: 3, dayIndex: 2, isBacklog: false }); // Pernas, not Pull
+  });
+
+  it('multiple missed days still force just one catch-up session onto today, oldest first', () => {
+    // Monday and Wednesday both missed; checking Friday with nothing done
+    // at all this week.
+    const result = computeRollingSchedule([1, 3, 5], PPL, 0, 5, 1);
+    const friday = result.find(e => e.weekday === 5);
+    expect(friday).toEqual({ weekday: 5, dayIndex: 0, isBacklog: true }); // Push — the oldest undone
+  });
+
+  it('wraps correctly through the plan\'s own day count once the backlog exceeds it', () => {
+    // Nothing done all week, checking a 5-day plan (only 2 distinct days)
+    // on the last scheduled day — confirms the modulo path cycles cleanly
+    // instead of throwing or indexing out of bounds.
+    const longResult = computeRollingSchedule([1, 2, 3, 4, 5], [0, 1], 0, 5, 1);
+    expect(longResult.every(e => e.dayIndex === 0 || e.dayIndex === 1)).toBe(true);
+  });
+
+  it('a day scheduled on a weekday before weekStartDow still sorts correctly (week wraparound)', () => {
+    // Week starts Friday; native days Fri/Sun/Tue. Checking on Sunday.
+    const result = computeRollingSchedule([5, 0, 2], PPL, 1, 0, 5);
+    const sunday = result.find(e => e.weekday === 0);
+    expect(sunday).toEqual({ weekday: 0, dayIndex: 1, isBacklog: false }); // caught up, native Pull
+  });
+
+  it('returns nothing for a plan with no distinct days', () => {
+    expect(computeRollingSchedule([1, 3, 5], [], 0, 1, 1)).toEqual([]);
+  });
+});
+
+describe('getRollingScheduleForPlan', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('orchestrates the exact reported scenario end-to-end through the DB layer', async () => {
+    asMock(getWeeklyPlanner).mockResolvedValue({
+      1: { planId: 42, dayIndex: 0 },
+      3: { planId: 42, dayIndex: 1 },
+      5: { planId: 42, dayIndex: 2 },
+    });
+    asMock(getCompletedSessionCountForPlan).mockResolvedValue(1); // only Monday done
+    asMock(getPlanDays).mockResolvedValue([
+      { day_index: 0, day_label: 'Push', exercise_count: 4 },
+      { day_index: 1, day_label: 'Pull', exercise_count: 4 },
+      { day_index: 2, day_label: 'Pernas', exercise_count: 4 },
+    ]);
+
+    // Thursday, week starts Monday. Built from local components (not
+    // Date.UTC) specifically so .getDay() can't shift by a timezone offset
+    // and land on the wrong weekday depending on where the test runs.
+    const thursday = new Date(2026, 8, 10); // confirmed Thursday
+    const result = await getRollingScheduleForPlan(42, 1, thursday);
+
+    expect(result?.find(e => e.weekday === thursday.getDay())).toEqual({
+      weekday: thursday.getDay(), dayIndex: 1, isBacklog: true,
+    });
+  });
+
+  it('returns null when the plan has no days', async () => {
+    asMock(getPlanDays).mockResolvedValue([]);
+    expect(await getRollingScheduleForPlan(42, 1)).toBeNull();
+  });
+
+  it('returns null when the plan is not scheduled on any weekday', async () => {
+    asMock(getWeeklyPlanner).mockResolvedValue({ 1: { planId: 99, dayIndex: 0 } });
+    asMock(getPlanDays).mockResolvedValue([{ day_index: 0, day_label: 'Push', exercise_count: 4 }]);
+    expect(await getRollingScheduleForPlan(42, 1)).toBeNull();
   });
 });
