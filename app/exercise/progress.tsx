@@ -1,20 +1,20 @@
 import { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, ActivityIndicator, SafeAreaView } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ChevronLeft, Zap } from 'lucide-react-native';
+import { View, Text, ScrollView, StyleSheet, ActivityIndicator, SafeAreaView } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
+import { Zap } from 'lucide-react-native';
 import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { getExerciseById } from '@/db/exerciseDao';
 import { getExerciseProgression, getProgressionSuggestionForExercise, getSetsForExerciseHistory } from '@/db/workoutDao';
 import { LineChart, StatCard } from '@/components/ui/Charts';
 import { Card } from '@/components/ui/Card';
+import { ScreenHeader } from '@/components/ui/ScreenHeader';
 import type { Exercise, WorkoutSet } from '@/types';
 import { formatVolume } from '@/utils/format';
 
 export default function ExerciseProgressScreen() {
   const { colors } = useTheme();
   const { isReady } = useDatabase();
-  const router = useRouter();
   const { exerciseId: idParam } = useLocalSearchParams();
 
   const [exercise, setExercise] = useState<Exercise | null>(null);
@@ -53,13 +53,7 @@ export default function ExerciseProgressScreen() {
   if (loading) {
     return (
       <SafeAreaView style={[styles.screen, { backgroundColor: colors.background }]}>
-        <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <ChevronLeft size={24} color={colors.text} />
-          </TouchableOpacity>
-          <Text style={[styles.headerTitle, { color: colors.text }]}>A carregar...</Text>
-          <View style={{ width: 24 }} />
-        </View>
+        <ScreenHeader title="A carregar..." showBack />
         <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
@@ -70,13 +64,7 @@ export default function ExerciseProgressScreen() {
   if (!exercise) {
     return (
       <SafeAreaView style={[styles.screen, { backgroundColor: colors.background }]}>
-        <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <ChevronLeft size={24} color={colors.text} />
-          </TouchableOpacity>
-          <Text style={[styles.headerTitle, { color: colors.text }]}>Exercício não encontrado</Text>
-          <View style={{ width: 24 }} />
-        </View>
+        <ScreenHeader title="Exercício não encontrado" showBack />
       </SafeAreaView>
     );
   }
@@ -97,16 +85,7 @@ export default function ExerciseProgressScreen() {
 
   return (
     <SafeAreaView style={[styles.screen, { backgroundColor: colors.background }]}>
-      {/* Header */}
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <ChevronLeft size={24} color={colors.text} />
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>
-          {exercise.name}
-        </Text>
-        <View style={{ width: 24 }} />
-      </View>
+      <ScreenHeader title={exercise.name} subtitle="Progressão detalhada" showBack />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* Sugestão de Progressão */}
@@ -219,20 +198,6 @@ export default function ExerciseProgressScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    flex: 1,
-    textAlign: 'center',
-  },
   content: { paddingHorizontal: 16, paddingVertical: 16, paddingBottom: 32 },
   
   suggestionCard: {

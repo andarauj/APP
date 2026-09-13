@@ -2,15 +2,17 @@
  * Adaptive engine — orchestration (see NSPI_ENGINE.md §4, §5, N4).
  *
  * The glue between the pure maths (nspi / adaptivePlan / adaptiveDecision /
- * adaptiveWeek), the adaptive_* tables (db/adaptiveDao), and the live plan
- * (plan_exercises). Two entry points:
+ * adaptiveWeek), the adaptive_* tables (db/adaptiveDao), and the template
+ * (plan_exercises — structure only). Two entry points:
  *
  *   - startAdaptivePlan  : turn periodization on for a plan — snapshot base
  *                          targets, open cycle 1, write the On-Ramp week,
- *                          push its targets onto the plan
+ *                          materialize the remaining PHASE_ORDER weeks as
+ *                          status='planned' (so "Ver o meu plano" is complete
+ *                          immediately). Does not rewrite plan_exercises.
  *   - closeWeekIfDue     : if the active week's window has elapsed, score it,
- *                          decide the next week, rewrite the plan targets, and
- *                          open the next week row. Idempotent — a second call
+ *                          decide the next week, and promote the next planned
+ *                          week (or insert one). Idempotent — a second call
  *                          for the same transition is a no-op.
  *
  * closeWeekIfDue never throws: it is meant to run from a screen focus effect
@@ -20,7 +22,6 @@
 import { getDatabase } from '@/db/database';
 import {
   getPlanExercisesWithDetails,
-  updatePlanExercise,
   getPlanDays,
 } from '@/db/planDao';
 import { setPlannerDay, clearPlannerForPlan, getWeeklyPlanner } from '@/db/plannerDao';
@@ -39,7 +40,21 @@ import {
   phaseTargets,
   epley1RM,
   loadIncrement,
+  roundToIncrement,
 } from './adaptivePlan';
+import {
+  groupWorkoutsFromTemplate,
+  mesocycleLengthForExperience,
+  mesocyclePhaseSchedule,
+  nextWeekOpenStrategy,
+  parsePlannedDays,
+  remainingScheduleSlots,
+  snapshotWorkoutsForPhase,
+  type MesocyclePhaseSlot,
+  type MesocycleWorkout,
+  type TemplateExercise,
+} from './mesocycleMaterialize';
+import { nudgeAccessoryVolume } from './movementBalance';
 import {
   decideNextWeek,
   type AdaptiveDecision,
@@ -52,6 +67,7 @@ import {
   type WeekSetRow,
 } from './adaptiveWeek';
 import { mainPattern, movementBucket, type MovementBucketKey } from './movementClassify';
+import { auditTrainingDose, planTypeForGoal } from './trainingDose';
 
 const DAY = 86400;
 const nowS = () => Math.floor(Date.now() / 1000);
@@ -61,6 +77,13 @@ const nowS = () => Math.floor(Date.now() / 1000);
  *  falling back to the untouched baseline for anything unexpected. */
 function normalizeExperience(raw: string | null | undefined): AdaptiveExperience {
   return raw === 'beginner' || raw === 'advanced' ? raw : 'intermediate';
+}
+
+function weekInPhaseAmong(
+  weeks: { phase: AdaptivePhase; week_index: number }[],
+  week: { phase: AdaptivePhase; week_index: number },
+): number {
+  return weeks.filter(w => w.phase === week.phase && w.week_index < week.week_index).length;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +170,8 @@ interface AppliedSnapshot {
   appliedAt: number;
   setsPlanned: number;
   bucketTargets: Partial<Record<MovementBucketKey, number>>;
-  exercises: { exerciseId: number; sets: number; reps: string; weight: number }[];
+  exercises: { exerciseId: number; sets: number; reps: string; weight: number; targetRir?: number }[];
+  days: MesocycleWorkout[];
 }
 
 interface ApplyResult {
@@ -156,9 +180,9 @@ interface ApplyResult {
 }
 
 /**
- * Rewrite every plan_exercises row (sets / reps / weight) to the targets for
- * `phase`, and roll adaptive_exercise_state forward. Exercises and day order
- * are never touched — periodization adjusts the numbers, not the plan itself.
+ * Compute this phase's prescription and roll adaptive_exercise_state
+ * forward. plan_exercises is the editable template and is never rewritten
+ * here — the week snapshot is the source of truth for sets/reps/load.
  */
 async function applyPhaseToPlan(
   adaptivePlanId: number,
@@ -166,7 +190,7 @@ async function applyPhaseToPlan(
   phase: AdaptivePhase,
   goal: AdaptiveGoal,
   experience: AdaptiveExperience,
-  opts: { seedBaseSets?: boolean } = {},
+  opts: { seedBaseSets?: boolean; weekInPhase?: number } = {},
 ): Promise<ApplyResult> {
   const exs = await getPlanExercisesWithDetails(planId);
   const states = await dao.getExerciseStates(adaptivePlanId);
@@ -191,8 +215,12 @@ async function applyPhaseToPlan(
     let e1rm = await bestE1rmForExercise(pe.exercise_id);
     if (e1rm <= 0 && prevWeight > 0) e1rm = epley1RM(prevWeight, 8); // rough fallback
 
-    const t = phaseTargets(phase, goal, baseSets, e1rm, stall, increment, experience);
-    const newWeight = t.targetWeight > 0 ? t.targetWeight : (pe.weight_target || prevWeight || 0);
+    const t = phaseTargets(phase, goal, baseSets, e1rm, stall, increment, experience, opts.weekInPhase ?? 0);
+    let newWeight = t.targetWeight > 0 ? t.targetWeight : (pe.weight_target || prevWeight || 0);
+    if (stall >= 2 && prevWeight > 0) {
+      const cut = roundToIncrement(prevWeight * 0.925, increment || 2.5);
+      newWeight = Math.min(newWeight, Math.max(increment || 1, cut));
+    }
     const newReps = `${t.repLow}-${t.repHigh}`;
     const newSets = t.targetSets;
 
@@ -218,7 +246,6 @@ async function applyPhaseToPlan(
       tempo: pe.tempo ?? '',
       notes: pe.notes ?? '',
     };
-    await updatePlanExercise(updated);
 
     const progressed = newWeight > prevWeight + 0.01;
     const newStall = progressed ? 0 : (t.targetWeight > 0 ? stall + 1 : stall);
@@ -231,10 +258,26 @@ async function applyPhaseToPlan(
       lastProgressedAt: progressed ? nowS() : (state?.last_progressed_at ?? null),
     });
 
-    snapshotExercises.push({ exerciseId: pe.exercise_id, sets: newSets, reps: newReps, weight: updated.weight_target });
+    snapshotExercises.push({
+      exerciseId: pe.exercise_id,
+      sets: newSets,
+      reps: newReps,
+      weight: updated.weight_target,
+      targetRir: t.targetRir,
+    });
     const bucket = movementBucket(pe.exercise_name ?? '', pe.primary_muscle ?? '', pe.equipment ?? '');
     if (bucket) bucketTargets[bucket] = (bucketTargets[bucket] ?? 0) + newSets;
   }
+
+  const days = groupWorkoutsFromTemplate(exs as TemplateExercise[], (_row, i) => {
+    const n = snapshotExercises[i];
+    return {
+      sets: n?.sets ?? 0,
+      reps: n?.reps ?? '',
+      weight: n?.weight ?? 0,
+      targetRir: n && 'targetRir' in n ? (n as { targetRir?: number }).targetRir : undefined,
+    };
+  });
 
   const changed: string[] = [];
   const setDelta = setsAfter - setsBefore;
@@ -254,8 +297,156 @@ async function applyPhaseToPlan(
       setsPlanned: setsAfter,
       bucketTargets,
       exercises: snapshotExercises,
+      days,
     },
   };
+}
+
+/** Project a future phase onto the current template without rewriting plan_exercises. */
+async function projectPhaseSnapshot(
+  adaptivePlanId: number,
+  planId: number,
+  phase: AdaptivePhase,
+  goal: AdaptiveGoal,
+  experience: AdaptiveExperience,
+  weekInPhase = 0,
+): Promise<AppliedSnapshot> {
+  const exs = await getPlanExercisesWithDetails(planId);
+  const states = await dao.getExerciseStates(adaptivePlanId);
+  const stateByEx = new Map(states.map(s => [s.exercise_id, s]));
+  const template: TemplateExercise[] = (exs as TemplateExercise[]).map(pe => ({
+    ...pe,
+    base_sets: stateByEx.get(pe.exercise_id)?.base_sets
+      ?? (pe as TemplateExercise).base_sets
+      ?? pe.sets,
+    weight_target: stateByEx.get(pe.exercise_id)?.current_weight ?? pe.weight_target ?? 0,
+  }));
+  const days = nudgeAccessoryVolume(snapshotWorkoutsForPhase(template, phase, goal, experience, weekInPhase));
+  const exercises = days.flatMap(d => d.exercises.map(e => ({
+    exerciseId: e.exerciseId,
+    sets: e.sets,
+    reps: e.reps,
+    weight: e.weight,
+  })));
+  const bucketTargets: Partial<Record<MovementBucketKey, number>> = {};
+  for (const pe of exs) {
+    const day = days.find(d => d.dayIndex === Number(pe.day_index ?? 0));
+    const hit = day?.exercises.find(e => e.exerciseId === pe.exercise_id);
+    const bucket = movementBucket(pe.exercise_name ?? '', pe.primary_muscle ?? '', pe.equipment ?? '');
+    if (bucket && hit) bucketTargets[bucket] = (bucketTargets[bucket] ?? 0) + hit.sets;
+  }
+  return {
+    phase,
+    goal,
+    appliedAt: nowS(),
+    setsPlanned: exercises.reduce((s, e) => s + e.sets, 0),
+    bucketTargets,
+    exercises,
+    days,
+  };
+}
+
+async function insertPlannedPhaseWeeks(opts: {
+  cycleId: number;
+  adaptivePlanId: number;
+  planId: number;
+  goal: AdaptiveGoal;
+  experience: AdaptiveExperience;
+  afterWeekIndex: number;
+  afterWeekEnd: number;
+  phases: MesocyclePhaseSlot[];
+}): Promise<void> {
+  let weekIndex = opts.afterWeekIndex;
+  let start = opts.afterWeekEnd;
+  for (const slot of opts.phases) {
+    weekIndex += 1;
+    const snapshot = await projectPhaseSnapshot(
+      opts.adaptivePlanId,
+      opts.planId,
+      slot.phase,
+      opts.goal,
+      opts.experience,
+      slot.weekInPhase,
+    );
+    await dao.insertWeek({
+      cycleId: opts.cycleId,
+      weekIndex,
+      phase: slot.phase,
+      isBridge: slot.isBridge,
+      planned: snapshot,
+      weekStart: start,
+      weekEnd: start + 7 * DAY,
+      status: 'planned',
+    });
+    start += 7 * DAY;
+  }
+}
+
+/**
+ * Heal an existing adaptive plan that only has the active week row.
+ * Safe to call on every status read — no-op once PHASE_ORDER is persisted.
+ */
+export async function ensureMesocycleWeeks(adaptivePlanId: number): Promise<number> {
+  const plan = await dao.getAdaptivePlanById(adaptivePlanId);
+  if (!plan) return 0;
+  const cycle = await dao.getOpenCycle(adaptivePlanId);
+  if (!cycle) return 0;
+  const weeks = (await dao.getAllWeeksForPlan(adaptivePlanId)).filter(w => w.cycle_id === cycle.id);
+  if (weeks.length === 0) return 0;
+  const experience = normalizeExperience(plan.experience);
+  const schedule = mesocyclePhaseSchedule(mesocycleLengthForExperience(experience));
+  const missing = remainingScheduleSlots(weeks, schedule);
+  if (missing.length > 0) {
+    const last = weeks[weeks.length - 1];
+    await insertPlannedPhaseWeeks({
+      cycleId: cycle.id,
+      adaptivePlanId,
+      planId: plan.plan_id,
+      goal: plan.goal,
+      experience,
+      afterWeekIndex: Math.max(...weeks.map(w => w.week_index)),
+      afterWeekEnd: last.week_end,
+      phases: missing,
+    });
+  }
+
+  // Old week-1 rows only stored a flat exercise list. Attach days so
+  // "Ver o meu plano" can render Push/Pull/Legs without a second schema.
+  for (const w of weeks) {
+    if (w.status === 'done') continue;
+    if (parsePlannedDays(w.planned_json).length > 0) continue;
+    const snapshot = await projectPhaseSnapshot(
+      adaptivePlanId, plan.plan_id, w.phase, plan.goal, experience,
+      weekInPhaseAmong(weeks, w),
+    );
+    await dao.updateWeekPlannedJson(w.id, snapshot);
+  }
+
+  return missing.length;
+}
+
+/**
+ * After the person edits the template, rebuild snapshots for weeks that
+ * are not done. History (done weeks + sessions) stays untouched.
+ */
+export async function refreshPlannedWeeksFromTemplate(workoutPlanId: number): Promise<number> {
+  const active = await dao.getActiveAdaptivePlan();
+  if (!active || active.plan_id !== workoutPlanId) return 0;
+  const cycle = await dao.getOpenCycle(active.id);
+  if (!cycle) return 0;
+  const weeks = (await dao.getAllWeeksForPlan(active.id)).filter(w => w.cycle_id === cycle.id);
+  const experience = normalizeExperience(active.experience);
+  let updated = 0;
+  for (const w of weeks) {
+    if (w.status === 'done') continue;
+    const snapshot = await projectPhaseSnapshot(
+      active.id, active.plan_id, w.phase, active.goal, experience,
+      weekInPhaseAmong(weeks, w),
+    );
+    await dao.updateWeekPlannedJson(w.id, snapshot);
+    updated += 1;
+  }
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -536,12 +727,16 @@ export async function startAdaptivePlan(opts: StartAdaptiveOptions): Promise<Sta
   const cycleId = await dao.createCycle(adaptivePlanId, 1, baseline);
 
   const win = weekWindow(now, opts.weekStartDow, 0);
+  const experience = normalizeExperience(opts.experience);
+  const planDays = await getPlanDays(opts.planId);
+  const weekdays = distributeDaysAcrossWeek(planDays.length, now.getDay());
+  const remainingSlots = mesocyclePhaseSchedule(mesocycleLengthForExperience(experience)).slice(1);
 
   let applied!: ApplyResult;
   let weekId!: number;
   let recap!: WeeklyRecap;
   await db.withTransactionAsync(async () => {
-    applied = await applyPhaseToPlan(adaptivePlanId, opts.planId, 'on_ramp', opts.goal, normalizeExperience(opts.experience), { seedBaseSets: true });
+    applied = await applyPhaseToPlan(adaptivePlanId, opts.planId, 'on_ramp', opts.goal, experience, { seedBaseSets: true });
     recap = {
       phaseFrom: 'on_ramp',
       phaseTo: 'on_ramp',
@@ -559,7 +754,18 @@ export async function startAdaptivePlan(opts: StartAdaptiveOptions): Promise<Sta
       planned: applied.snapshot,
       weekStart: win.start,
       weekEnd: win.end,
+      status: 'active',
       recap,
+    });
+    await insertPlannedPhaseWeeks({
+      cycleId,
+      adaptivePlanId,
+      planId: opts.planId,
+      goal: opts.goal,
+      experience,
+      afterWeekIndex: 1,
+      afterWeekEnd: win.end,
+      phases: remainingSlots,
     });
   });
 
@@ -580,8 +786,6 @@ export async function startAdaptivePlan(opts: StartAdaptiveOptions): Promise<Sta
   if (previousActive && previousActive.plan_id !== opts.planId) {
     await clearPlannerForPlan(previousActive.plan_id);
   }
-  const planDays = await getPlanDays(opts.planId);
-  const weekdays = distributeDaysAcrossWeek(planDays.length, now.getDay());
   for (let i = 0; i < planDays.length; i++) {
     await setPlannerDay(weekdays[i], { planId: opts.planId, dayIndex: planDays[i].day_index });
   }
@@ -644,7 +848,10 @@ export async function closeWeekIfDue(now: Date = new Date()): Promise<CloseWeekR
     if (!weekIsOver(activeWeek.week_end, now)) return null;
 
     const nextStart = activeWeek.week_end;
-    if (await dao.planWeekExistsForStart(plan.id, nextStart)) return null; // already transitioned
+    const existingNext = await dao.getWeekForPlanAtStart(plan.id, nextStart);
+    if (existingNext && (existingNext.status === 'active' || existingNext.status === 'done')) {
+      return null; // already transitioned
+    }
 
     const goal = plan.goal;
     const experience = normalizeExperience(plan.experience);
@@ -681,6 +888,17 @@ export async function closeWeekIfDue(now: Date = new Date()): Promise<CloseWeekR
     const states = await dao.getExerciseStates(plan.id);
     const stallCount = states.length ? Math.max(0, ...states.map(s => s.step_stall_count)) : 0;
 
+    const plannedDays = parsePlannedDays(activeWeek.planned_json);
+    const doseExercises = plannedDays.flatMap(d => d.exercises.map(e => ({
+      muscle: e.muscle,
+      sets: e.sets,
+      dayIndex: d.dayIndex,
+      setType: 'normal' as const,
+    })));
+    const doseAudit = auditTrainingDose(doseExercises, planTypeForGoal(goal), experience);
+    const musclesBelowFloor = doseAudit.filter(r => r.status === 'low').length;
+    const musclesAboveCap = doseAudit.filter(r => r.status === 'high').length;
+
     const decision = decideNextWeek({
       current: assembled.weekSignal,
       recent: doneRows.map(rowToWeekSignal),
@@ -688,6 +906,8 @@ export async function closeWeekIfDue(now: Date = new Date()): Promise<CloseWeekR
       stallCount,
       fatigueFlag: false,
       experience,
+      musclesBelowFloor,
+      musclesAboveCap,
     });
 
     const db = await getDatabase();
@@ -696,8 +916,19 @@ export async function closeWeekIfDue(now: Date = new Date()): Promise<CloseWeekR
     let cycleWrapped = false;
 
     await db.withTransactionAsync(async () => {
-      // 1. rewrite the plan for the next phase
-      applied = await applyPhaseToPlan(plan.id, plan.plan_id, decision.nextPhase, goal, experience);
+      // 1. compute next-phase snapshot + exercise state (template untouched)
+      const cycleWeeks = recentRows
+        .filter(w => w.cycle_id === cycle.id)
+        .concat(activeWeek);
+      const nextWeekInPhase = decision.wrapsCycle
+        ? 0
+        : weekInPhaseAmong(
+          [...cycleWeeks, { phase: decision.nextPhase, week_index: activeWeek.week_index + 1 }],
+          { phase: decision.nextPhase, week_index: activeWeek.week_index + 1 },
+        );
+      applied = await applyPhaseToPlan(plan.id, plan.plan_id, decision.nextPhase, goal, experience, {
+        weekInPhase: nextWeekInPhase,
+      });
 
       // 2. cycle bookkeeping
       let targetCycleId = cycle.id;
@@ -738,16 +969,63 @@ export async function closeWeekIfDue(now: Date = new Date()): Promise<CloseWeekR
         recap,
       });
 
-      // 4. open the next week
-      newWeekId = await dao.insertWeek({
-        cycleId: targetCycleId,
-        weekIndex: nextWeekIndex,
-        phase: decision.nextPhase,
-        isBridge: decision.decision === 'bridge',
-        planned: applied.snapshot,
-        weekStart: nextStart,
-        weekEnd: nextStart + 7 * DAY,
-      });
+      // 4. open the next week — promote a pre-materialized planned row when
+      // it still matches the engine's decision; otherwise insert (and slide
+      // leftover planned weeks forward on hold/bridge/early deload).
+      const strategy = nextWeekOpenStrategy(existingNext, decision);
+      if (strategy === 'wrap') {
+        await dao.deletePlannedWeeksForCycle(cycle.id);
+        newWeekId = await dao.insertWeek({
+          cycleId: targetCycleId,
+          weekIndex: nextWeekIndex,
+          phase: decision.nextPhase,
+          isBridge: false,
+          planned: applied.snapshot,
+          weekStart: nextStart,
+          weekEnd: nextStart + 7 * DAY,
+          status: 'active',
+        });
+        await insertPlannedPhaseWeeks({
+          cycleId: targetCycleId,
+          adaptivePlanId: plan.id,
+          planId: plan.plan_id,
+          goal,
+          experience,
+          afterWeekIndex: nextWeekIndex,
+          afterWeekEnd: nextStart + 7 * DAY,
+          phases: mesocyclePhaseSchedule(mesocycleLengthForExperience(experience)).slice(1),
+        });
+      } else if (strategy === 'promote' && existingNext) {
+        await dao.promotePlannedWeek(existingNext.id, {
+          planned: applied.snapshot,
+          phase: decision.nextPhase,
+          isBridge: decision.decision === 'bridge',
+        });
+        newWeekId = existingNext.id;
+      } else if (strategy === 'insert-shift' && existingNext) {
+        await dao.shiftWeeksOnOrAfter(cycle.id, nextStart, 7 * DAY);
+        newWeekId = await dao.insertWeek({
+          cycleId: targetCycleId,
+          weekIndex: nextWeekIndex,
+          phase: decision.nextPhase,
+          isBridge: decision.decision === 'bridge',
+          planned: applied.snapshot,
+          weekStart: nextStart,
+          weekEnd: nextStart + 7 * DAY,
+          status: 'active',
+        });
+      } else {
+        newWeekId = await dao.insertWeek({
+          cycleId: targetCycleId,
+          weekIndex: nextWeekIndex,
+          phase: decision.nextPhase,
+          isBridge: decision.decision === 'bridge',
+          planned: applied.snapshot,
+          weekStart: nextStart,
+          weekEnd: nextStart + 7 * DAY,
+          status: 'active',
+        });
+      }
     });
 
     const recap: WeeklyRecap = {
@@ -796,6 +1074,7 @@ export interface AdaptiveStatus {
   experience: AdaptiveExperience;
   cycleIndex: number;
   weekIndex: number;
+  weekId: number;
   phase: AdaptivePhase;
   isBridge: boolean;
   weekStart: number;
@@ -811,6 +1090,11 @@ export async function getAdaptiveStatus(): Promise<AdaptiveStatus | null> {
     if (!plan) return null;
     const cycle = await dao.getOpenCycle(plan.id) ?? await dao.getLatestCycle(plan.id);
     if (!cycle) return null;
+    try {
+      await ensureMesocycleWeeks(plan.id);
+    } catch (healErr) {
+      console.warn('[adaptive] ensureMesocycleWeeks failed:', healErr);
+    }
     const week = (await dao.getActiveWeek(cycle.id)) ?? (await dao.getLatestWeekForPlan(plan.id));
     if (!week) return null;
 
@@ -849,6 +1133,7 @@ export async function getAdaptiveStatus(): Promise<AdaptiveStatus | null> {
       experience: normalizeExperience(plan.experience),
       cycleIndex: cycle.cycle_index,
       weekIndex: week.week_index,
+      weekId: week.id,
       phase: week.phase,
       isBridge: !!week.is_bridge,
       weekStart: week.week_start,

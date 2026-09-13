@@ -17,10 +17,18 @@ import { ArrowLeft, Sparkles, RefreshCw, Compass, Lock, ChevronRight, Trash2 } f
 import { useTheme } from '@/hooks/useTheme';
 import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
 import { getAdaptivePlanById, getAllWeeksForPlan, deleteAdaptivePlanData, type AdaptiveWeekWithCycle } from '@/db/adaptiveDao';
-import { clearPlannerForPlan } from '@/db/plannerDao';
+import { deletePlan, getPlanDays } from '@/db/planDao';
+import { clearPlannerForPlan, getWeeklyPlanner, type WeeklyPlanner } from '@/db/plannerDao';
+import { weekdayByDayIndexFromPlanner } from '@/utils/scheduleResolve';
+import { getRecentSessions } from '@/db/workoutDao';
 import { PHASE_ORDER, PHASE_LABEL_PT, PHASE_COLOR, CYCLE_RATIONALE_PT, phaseSpec } from '@/utils/adaptivePlan';
+import { type MesocycleWorkout } from '@/utils/mesocycleMaterialize';
+import { buildPlanOverview, plannedWorkoutRouteParams, type OverviewWorkout } from '@/utils/plannedWorkout';
+import { hapticWarning } from '@/utils/haptics';
 import type { AdaptivePhase, AdaptiveGoal, AdaptiveExperience } from '@/utils/nspi';
 import { Card } from '@/components/ui/Card';
+import { InteractivePlanAgenda } from '@/components/ui/InteractivePlanAgenda';
+import type { WorkoutSession } from '@/types';
 
 const GOAL_LABEL_PT: Record<AdaptiveGoal, string> = {
   bulking: 'Ganhar músculo',
@@ -40,8 +48,15 @@ export default function AdaptivePlanScreen() {
   const { status, loaded } = useAdaptiveStatus();
 
   const [daysPerWeek, setDaysPerWeek] = useState(3);
+  const [weekStartDow, setWeekStartDow] = useState(1);
+  const [planDayNames, setPlanDayNames] = useState<string[]>([]);
   const [weeks, setWeeks] = useState<AdaptiveWeekWithCycle[]>([]);
+  const [sessions, setSessions] = useState<WorkoutSession[]>([]);
+  const [planner, setPlanner] = useState<WeeklyPlanner>({});
   const [creatingNew, setCreatingNew] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [agendaDragging, setAgendaDragging] = useState(false);
+  const busy = creatingNew || deleting;
 
   useFocusEffect(useCallback(() => {
     if (!status) return;
@@ -49,10 +64,19 @@ export default function AdaptivePlanScreen() {
     Promise.all([
       getAdaptivePlanById(status.adaptivePlanId),
       getAllWeeksForPlan(status.adaptivePlanId),
-    ]).then(([plan, w]) => {
+      getPlanDays(status.planId),
+      getRecentSessions(42).catch(() => [] as WorkoutSession[]),
+      getWeeklyPlanner().catch(() => ({} as WeeklyPlanner)),
+    ]).then(([plan, w, days, recent, weekly]) => {
       if (!mounted) return;
-      if (plan) setDaysPerWeek(plan.days_per_week);
+      if (plan) {
+        setDaysPerWeek(plan.days_per_week);
+        setWeekStartDow(plan.week_start_dow);
+      }
+      setPlanDayNames(days.map(d => d.day_label));
       setWeeks(w);
+      setSessions(recent);
+      setPlanner(weekly);
     }).catch(() => {});
     return () => { mounted = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -62,6 +86,28 @@ export default function AdaptivePlanScreen() {
     () => (status ? weeks.filter(w => w.cycle_index === status.cycleIndex) : []),
     [weeks, status],
   );
+
+  const overview = useMemo(
+    () => (status
+      ? buildPlanOverview(currentCycleWeeks, sessions, status.planId, weekdayByDayIndexFromPlanner(planner, status.planId))
+      : null),
+    [currentCycleWeeks, sessions, status, planner],
+  );
+
+  const startOverviewWorkout = (weekId: number | undefined, workout: OverviewWorkout) => {
+    if (!status) return;
+    router.push({
+      pathname: '/workout/active',
+      params: plannedWorkoutRouteParams({
+        planId: status.planId,
+        planName: workout.name,
+        dayIndex: workout.dayIndex,
+        weekId: weekId ?? workout.weekId ?? null,
+        weekIndex: workout.id ? Number(workout.id.replace(/^w(\d+)-.*/, '$1')) : null,
+        phase: currentCycleWeeks.find(w => w.id === (weekId ?? workout.weekId))?.phase ?? status.phase,
+      }),
+    });
+  };
 
   const chartPoints = useMemo<ChartPoint[]>(() => {
     if (!status) return [];
@@ -143,7 +189,7 @@ export default function AdaptivePlanScreen() {
    * deactivateAllAdaptivePlans() behavior for what "starting over" means.
    */
   const createNewPlan = () => {
-    if (!status) return;
+    if (!status || busy) return;
     Alert.alert(
       'Criar plano novo?',
       'Isto apaga o progresso do plano adaptativo atual (ciclos e semanas registadas). Os treinos já registados no histórico não são afetados.',
@@ -174,9 +220,44 @@ export default function AdaptivePlanScreen() {
     );
   };
 
+  /** Full stop: wipe adaptive mesocycle + linked workout template + planner slots. */
+  const deletePlanFully = () => {
+    if (!status || busy) return;
+    Alert.alert(
+      'Eliminar plano',
+      'Eliminar o plano adaptativo?\nIsto não elimina o histórico de treinos.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: async () => {
+            hapticWarning();
+            setDeleting(true);
+            const planId = status.planId;
+            try {
+              // deletePlan already clears adaptive rows for this workout plan —
+              // do not call deleteAdaptivePlanData first (plan_id lookup would fail).
+              await deletePlan(planId);
+              await clearPlannerForPlan(planId);
+              router.replace('/(tabs)');
+            } catch (err) {
+              console.error('[adaptive] deletePlan failed:', err);
+              setDeleting(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   return (
     <SafeAreaView style={[styles.screen, { backgroundColor: colors.background }]} edges={['top']}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 48 }}
+        scrollEnabled={!agendaDragging}
+      >
         <View style={[styles.hero, { backgroundColor: colors.accent }]}>
           <TouchableOpacity onPress={() => router.back()} hitSlop={8} style={styles.heroBack} accessibilityRole="button" accessibilityLabel="Voltar">
             <ArrowLeft size={24} color="#fff" />
@@ -211,6 +292,22 @@ export default function AdaptivePlanScreen() {
         </View>
 
         <View style={styles.content}>
+          <InteractivePlanAgenda
+            colors={colors}
+            preferredPlanId={status.planId}
+            onDragActiveChange={setAgendaDragging}
+            weeks={weeks}
+            adaptive={{
+              adaptivePlanId: status.adaptivePlanId,
+              phase: status.phase,
+              goal: status.goal,
+              experience: status.experience,
+              weekStart: status.weekStart,
+              weekEnd: status.weekEnd,
+              weekStartDow,
+            }}
+          />
+
           <Card>
             <Text style={[styles.cardTitle, { color: colors.text }]}>Progressão do treino</Text>
             <View style={styles.legendRow}>
@@ -247,21 +344,38 @@ export default function AdaptivePlanScreen() {
 
           <Text style={[styles.sectionHeading, { color: colors.textSecondary }]}>CICLO {status.cycleIndex}</Text>
 
-          {currentCycleWeeks.map(w => (
-            <WeekCard
-              key={w.id}
-              weekIndex={w.week_index}
-              phase={w.phase}
-              isBridge={!!w.is_bridge}
-              isCurrent={w.status === 'active'}
-              isFirstEver={w.cycle_index === 1 && w.week_index === 1}
-              daysPerWeek={daysPerWeek}
-              filledDays={w.status === 'done' ? daysPerWeek : (w.status === 'active' ? Math.min(daysPerWeek, Math.max(0, Math.round((Date.now() / 1000 - w.week_start) / ((w.week_end - w.week_start) / daysPerWeek)))) : 0)}
-              goal={status.goal}
-              experience={status.experience}
-              colors={colors}
-            />
-          ))}
+          {(overview?.weeks ?? []).map(w => {
+            const raw = currentCycleWeeks.find(row => row.id === w.weekId);
+            const workouts: MesocycleWorkout[] = w.workouts.map(ow => ({
+              dayIndex: ow.dayIndex,
+              dayLabel: ow.name,
+              exercises: ow.exercises,
+            }));
+            const names = workouts.length > 0 ? workouts.map(d => d.dayLabel) : planDayNames;
+            const completed = w.workouts.filter(ow => ow.state === 'completed').map(ow => ow.dayIndex);
+            return (
+              <WeekCard
+                key={w.weekId ?? w.weekIndex}
+                weekIndex={w.weekIndex}
+                phase={w.phase}
+                isBridge={w.isBridge}
+                isCurrent={w.status === 'active'}
+                isFirstEver={!!raw && raw.cycle_index === 1 && w.weekIndex === 1}
+                daysPerWeek={Math.max(daysPerWeek, names.length)}
+                filledDays={w.status === 'done' ? names.length : completed.length}
+                planDayNames={names}
+                workouts={workouts}
+                completedDayIndexes={completed}
+                goal={status.goal}
+                experience={status.experience}
+                colors={colors}
+                onStartWorkout={(dayIndex) => {
+                  const hit = w.workouts.find(ow => ow.dayIndex === dayIndex);
+                  if (hit) startOverviewWorkout(w.weekId, hit);
+                }}
+              />
+            );
+          })}
           {remainingPhases.map((phase, i) => (
             <WeekCard
               key={phase}
@@ -272,6 +386,9 @@ export default function AdaptivePlanScreen() {
               isFirstEver={false}
               daysPerWeek={daysPerWeek}
               filledDays={0}
+              planDayNames={planDayNames}
+              workouts={[]}
+              completedDayIndexes={[]}
               goal={status.goal}
               experience={status.experience}
               colors={colors}
@@ -301,24 +418,38 @@ export default function AdaptivePlanScreen() {
             <BenefitRow icon={Sparkles} colors={colors} text="Pesos, repetições e exercícios ajustam-se sozinhos ao que registares — não precisas de decidir nada à mão." />
           </View>
 
-          <TouchableOpacity
-            style={styles.newPlanLink}
-            onPress={createNewPlan}
-            disabled={creatingNew}
-            accessibilityRole="button"
-            accessibilityLabel="Criar plano novo"
-          >
-            {creatingNew
-              ? <ActivityIndicator size="small" color={colors.error} />
-              : <Trash2 size={16} color={colors.error} />}
-            <Text style={[styles.newPlanLinkText, { color: colors.error }]}>Criar plano novo</Text>
-          </TouchableOpacity>
+          <View style={styles.planActions}>
+            <TouchableOpacity
+              style={styles.newPlanLink}
+              onPress={createNewPlan}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel="Criar plano novo"
+            >
+              {creatingNew
+                ? <ActivityIndicator size="small" color={colors.error} />
+                : <RefreshCw size={16} color={colors.error} />}
+              <Text style={[styles.newPlanLinkText, { color: colors.error }]}>Criar plano novo</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.newPlanLink}
+              onPress={deletePlanFully}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel="Eliminar plano"
+            >
+              {deleting
+                ? <ActivityIndicator size="small" color={colors.error} />
+                : <Trash2 size={16} color={colors.error} />}
+              <Text style={[styles.newPlanLinkText, { color: colors.error }]}>Eliminar plano</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </ScrollView>
 
       <View style={[styles.footer, { backgroundColor: colors.background, borderTopColor: colors.border }]}>
-        <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: colors.primary }]} onPress={() => router.navigate('/(tabs)/start')}>
-          <Text style={styles.primaryBtnText}>Começar a treinar</Text>
+        <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: colors.primary }]} onPress={() => router.navigate('/(tabs)')}>
+          <Text style={styles.primaryBtnText}>Ir para Hoje</Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -374,14 +505,20 @@ function Chart({ points, colors }: { points: ChartPoint[]; colors: any }) {
 }
 
 function WeekCard({
-  weekIndex, phase, isBridge, isCurrent, isFirstEver, daysPerWeek, filledDays, goal, experience, colors, preview,
+  weekIndex, phase, isBridge, isCurrent, isFirstEver, daysPerWeek, filledDays, planDayNames, workouts, completedDayIndexes, goal, experience, colors, preview, onStartWorkout,
 }: {
   weekIndex: number; phase: AdaptivePhase; isBridge: boolean; isCurrent: boolean; isFirstEver: boolean;
-  daysPerWeek: number; filledDays: number; goal: AdaptiveGoal; experience: AdaptiveExperience; colors: any; preview?: boolean;
+  daysPerWeek: number; filledDays: number; planDayNames: string[];
+  workouts: MesocycleWorkout[];
+  completedDayIndexes: number[];
+  goal: AdaptiveGoal; experience: AdaptiveExperience; colors: any; preview?: boolean;
+  onStartWorkout?: (dayIndex: number) => void;
 }) {
   const spec = phaseSpec(phase, goal, experience);
+  const names = planDayNames.length > 0 ? planDayNames : Array.from({ length: daysPerWeek }, (_, i) => `Treino ${i + 1}`);
+  const done = new Set(completedDayIndexes.map(Number));
   return (
-    <Card style={preview ? { opacity: 0.6 } : undefined}>
+    <Card style={preview ? { opacity: 0.85 } : undefined}>
       <View style={styles.weekRow}>
         <Text style={[styles.cardTitle, { color: colors.text }]}>Semana {weekIndex}</Text>
         <View style={[styles.phasePill, { backgroundColor: PHASE_COLOR[phase] + '22' }]}>
@@ -391,25 +528,60 @@ function WeekCard({
         </View>
       </View>
       <Text style={[styles.body, { color: colors.textSecondary, marginTop: 6 }]}>{spec.expect}</Text>
+      {phase === 'accumulation' && isBridge && (
+        <Text style={[styles.body, { color: colors.primary, marginTop: 4 }]}>
+          Esta acumulação tem mais séries que a semana anterior — o volume sobe dentro do bloco.
+        </Text>
+      )}
       {isFirstEver && (
         <Text style={[styles.body, { color: colors.primary, marginTop: 4 }]}>
           Volume calibrado a partir das tuas primeiras sessões.
         </Text>
       )}
-      <View style={styles.dotsRow}>
-        {Array.from({ length: daysPerWeek }).map((_, i) => (
-          <View
-            key={i}
-            style={[
-              styles.dot,
-              i < filledDays
-                ? { backgroundColor: PHASE_COLOR[phase] }
-                : { backgroundColor: 'transparent', borderColor: colors.border, borderWidth: 1.5, borderStyle: 'dashed' as const },
-            ]}
-          />
-        ))}
+      <View style={styles.weekDaysList}>
+        {names.map((name, i) => {
+          const workout = workouts[i];
+          const completed = workout ? done.has(workout.dayIndex) : i < filledDays;
+          const planned = !completed;
+          const Chip = onStartWorkout && workout ? TouchableOpacity : View;
+          return (
+            <Chip
+              key={`${name}-${i}`}
+              style={[styles.weekDayChip, { borderColor: colors.border, backgroundColor: colors.surfaceVariant }]}
+              {...(onStartWorkout && workout ? {
+                onPress: () => onStartWorkout(workout.dayIndex),
+                accessibilityRole: 'button' as const,
+                accessibilityLabel: `Abrir ${name}`,
+              } : {})}
+            >
+              <View
+                style={[
+                  styles.dot,
+                  completed
+                    ? { backgroundColor: PHASE_COLOR[phase] }
+                    : { backgroundColor: 'transparent', borderColor: colors.border, borderWidth: 1.5, borderStyle: 'dashed' as const },
+                ]}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.weekDayName, { color: colors.text }]} numberOfLines={1}>{name}</Text>
+                {workout && workout.exercises.length > 0 && (
+                  <Text style={[styles.body, { color: colors.textTertiary, marginTop: 2 }]} numberOfLines={1}>
+                    {workout.exercises.length} exercícios
+                    {workout.exercises[0]
+                      ? ` · ${workout.exercises[0].sets}×${workout.exercises[0].reps}`
+                      : ''}
+                    {planned ? ' · planeado' : ' · concluído'}
+                  </Text>
+                )}
+              </View>
+            </Chip>
+          );
+        })}
       </View>
       {isCurrent && <Text style={[styles.currentTag, { color: colors.primary }]}>Semana atual</Text>}
+      {preview && (
+        <Text style={[styles.currentTag, { color: colors.textTertiary }]}>A materializar no ciclo…</Text>
+      )}
     </Card>
   );
 }
@@ -460,13 +632,17 @@ const styles = StyleSheet.create({
   phasePill: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
   phasePillText: { fontFamily: 'Inter-Bold', fontSize: 11 },
   dotsRow: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  weekDaysList: { gap: 8, marginTop: 12 },
+  weekDayChip: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 8 },
+  weekDayName: { fontFamily: 'Inter-SemiBold', fontSize: 13, flex: 1 },
   dot: { width: 10, height: 10, borderRadius: 5 },
   currentTag: { fontFamily: 'Inter-Bold', fontSize: 11, marginTop: 10 },
   lockedCard: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   lockIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   benefitRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, paddingHorizontal: 4 },
   benefitIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  newPlanLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16, paddingVertical: 10 },
+  planActions: { marginTop: 16, gap: 4 },
+  newPlanLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 10 },
   newPlanLinkText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   footer: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 16, borderTopWidth: StyleSheet.hairlineWidth },
   primaryBtn: { height: 54, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },

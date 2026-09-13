@@ -60,8 +60,8 @@ export default function FavoritesScreen() {
     <TouchableOpacity
       style={[styles.exerciseRow, { borderBottomColor: colors.border }]}
       onPress={() => router.push({
-        pathname: '/exercise/details',
-        params: { exerciseId: item.id.toString() },
+        pathname: '/exercise/[id]',
+        params: { id: item.id.toString() },
       })}
     >
       <View style={{ flex: 1 }}>

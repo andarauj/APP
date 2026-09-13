@@ -1,16 +1,15 @@
 import { useState, useCallback, useEffect } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, Modal, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useTheme } from '@/hooks/useTheme';
+import { useTheme, setThemeOverride, type AppTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { Card } from '@/components/ui/Card';
-import { LineChart } from '@/components/ui/LineChart';
-import { detectMeasurementTrend } from '@/utils/bodyAnalysis';
+import { ScreenHeader } from '@/components/ui/ScreenHeader';
 import { Button } from '@/components/ui/Button';
+import { BodyTrackingSection } from '@/components/body/BodyTrackingSection';
 import { Chip } from '@/components/ui/Chip';
 import { Badge } from '@/components/ui/Badge';
 import { getPersonalRecords, getWeeklyVolumeByMuscle, getAchievementStats } from '@/db/workoutDao';
-import { getAllBodyMetrics, addBodyMetric, deleteBodyMetric, getLatestBodyMetric } from '@/db/bodyMetricsDao';
 import { getAllSettings, setSetting } from '@/db/settingsDao';
 import { getLatestAdaptivePlanAny, setAdaptivePlanActive, updateAdaptivePlanWeekStart, updateAdaptivePlanExperience, type AdaptivePlanRow } from '@/db/adaptiveDao';
 import { exportFullBackupZip, restoreFullBackup, restoreFullBackupZip, exportHistoryAsCsv, exportTrainingReport, shareTextFile  } from '@/utils/xmlExport';
@@ -19,20 +18,19 @@ import { calculate1RM, calculate1RMPercentages, calculatePlates, calculateWarmup
 import { scheduleWorkoutReminders, cancelAllWorkoutReminders, WEEKDAY_LABELS } from '@/utils/reminders';
 import { formatDate, formatVolume } from '@/utils/format';
 import { RADIUS } from '@/constants/tokens';
-import { pickBodyPhoto, captureBodyPhoto, removeBodyPhoto } from '@/utils/bodyPhoto';
 import { exportTrainingReportWithPhotos, shareZipFile } from '@/utils/exportWithPhotos';
-import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
-import type { PersonalRecord, BodyMetric, MuscleGroup } from '@/types';
+import type { Theme } from '@/constants/colors';
+import type { PersonalRecord, MuscleGroup } from '@/types';
 import { MUSCLE_GROUPS_PT } from '@/types';
 import { useFocusEffect, useRouter } from 'expo-router';
 import {
   Trophy, Calculator, Scale, Settings as SettingsIcon, Download, Upload,
-  Plus, Trash2, ChevronDown, ChevronUp, Dumbbell, Award, Zap, ScanLine, Sparkles,
-  Camera, ImagePlus, Ruler, Flame,
+  ChevronDown, ChevronUp, Dumbbell, Award, Zap, Sparkles,
+  Camera, Flame, History as HistoryIcon, Compass, ChevronRight,
+  type LucideIcon,
 } from 'lucide-react-native';
 
 type Tab = 'records' | 'calc' | 'body' | 'settings';
-type BodyChartMetric = 'weight' | 'body_fat' | 'chest' | 'waist' | 'hips' | 'arm' | 'thigh' | 'back';
 
 const EXPERIENCE_LEVELS = [
   { key: 'beginner', label: 'Iniciante' },
@@ -44,12 +42,9 @@ export default function ProfileScreen() {
   const { colors } = useTheme();
   const { isReady } = useDatabase();
   const router = useRouter();
-  const [tab, setTab] = useState<Tab>('records');
+  const [tab, setTab] = useState<Tab>('settings');
   const [prs, setPrs] = useState<PersonalRecord[]>([]);
-  const [bodyMetrics, setBodyMetrics] = useState<BodyMetric[]>([]);
-  const [latestBody, setLatestBody] = useState<BodyMetric | null>(null);
   const [settings, setSettings] = useState<Record<string, string>>({});
-  const [showAddBody, setShowAddBody] = useState(false);
   const [showBackupMenu, setShowBackupMenu] = useState(false);
   const [weeklyVolume, setWeeklyVolume] = useState<{ muscle: string; sets: number; volume: number }[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -70,17 +65,13 @@ export default function ProfileScreen() {
 
   const loadAll = async () => {
     try {
-      const [p, bm, lb, st, wv, ls] = await Promise.all([
+      const [p, st, wv, ls] = await Promise.all([
         getPersonalRecords(),
-        getAllBodyMetrics(),
-        getLatestBodyMetric(),
         getAllSettings(),
         getWeeklyVolumeByMuscle(7),
         getAchievementStats(),
       ]);
       setPrs(p);
-      setBodyMetrics(bm);
-      setLatestBody(lb);
       setSettings(st);
       setWeeklyVolume(wv);
       setLifetimeStats(ls);
@@ -98,11 +89,17 @@ export default function ProfileScreen() {
     // back with a clear message if the save actually failed.
     const previous = settings[key];
     setSettings(prev => ({ ...prev, [key]: value }));
+    if (key === 'theme' && (value === 'dark' || value === 'light' || value === 'system' || value === 'oled')) {
+      setThemeOverride(value as AppTheme);
+    }
     try {
       await setSetting(key, value);
     } catch (err) {
       console.error('Failed to save setting:', key, err);
       setSettings(prev => ({ ...prev, [key]: previous }));
+      if (key === 'theme' && (previous === 'dark' || previous === 'light' || previous === 'system' || previous === 'oled' || previous === undefined)) {
+        setThemeOverride((previous as AppTheme | undefined) ?? 'system');
+      }
       Alert.alert('Não foi possível guardar', 'Tenta novamente.');
     }
   };
@@ -210,9 +207,7 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Perfil</Text>
-      </View>
+      <ScreenHeader title="Perfil" />
 
       {/* Lifetime summary — a quick "how far have I come" snapshot, visible
           regardless of which sub-tab is open below. There's no account/login
@@ -250,14 +245,44 @@ export default function ProfileScreen() {
         </View>
       )}
 
+      {/* History + Discover stay off the tab bar — clear entry points here. */}
+      <View style={[styles.quickLinks, { borderBottomColor: colors.border }]}>
+        <TouchableOpacity
+          style={[styles.quickLink, { backgroundColor: colors.surface, borderColor: colors.border }]}
+          onPress={() => router.push('/(tabs)/history')}
+          accessibilityRole="button"
+          accessibilityLabel="Ver histórico de sessões"
+        >
+          <HistoryIcon size={18} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.quickLinkTitle, { color: colors.text }]}>Histórico de sessões</Text>
+            <Text style={[styles.quickLinkSub, { color: colors.textSecondary }]}>Calendário e treinos passados</Text>
+          </View>
+          <ChevronRight size={16} color={colors.textTertiary} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.quickLink, { backgroundColor: colors.surface, borderColor: colors.border }]}
+          onPress={() => router.push('/(tabs)/discover')}
+          accessibilityRole="button"
+          accessibilityLabel="Abrir Descobrir"
+        >
+          <Compass size={18} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.quickLinkTitle, { color: colors.text }]}>Dicas e lições</Text>
+            <Text style={[styles.quickLinkSub, { color: colors.textSecondary }]}>Descobrir — coaching offline</Text>
+          </View>
+          <ChevronRight size={16} color={colors.textTertiary} />
+        </TouchableOpacity>
+      </View>
+
       {/* Tabs */}
       <View style={[styles.tabs, { borderBottomColor: colors.border }]}>
         {([
+          { key: 'settings', label: 'Definições', icon: SettingsIcon },
           { key: 'records', label: 'Recordes', icon: Trophy },
           { key: 'calc', label: 'Calc.', icon: Calculator },
           { key: 'body', label: 'Corpo', icon: Scale },
-          { key: 'settings', label: 'Definições', icon: SettingsIcon },
-        ] as { key: Tab; label: string; icon: any }[]).map(t => {
+        ] as { key: Tab; label: string; icon: LucideIcon }[]).map(t => {
           const Icon = t.icon;
           const active = tab === t.key;
           return (
@@ -280,21 +305,7 @@ export default function ProfileScreen() {
       >
         {tab === 'records' && <RecordsTab prs={prs} colors={colors} weeklyVolume={weeklyVolume} />}
         {tab === 'calc' && <CalculatorTab colors={colors} />}
-        {tab === 'body' && (
-          <BodyTab
-            metrics={bodyMetrics} latest={latestBody} colors={colors}
-            onAdd={() => setShowAddBody(true)}
-            onDelete={async (id) => {
-              const metric = bodyMetrics.find(m => m.id === id);
-              if (metric?.photo_uri) await removeBodyPhoto(metric.photo_uri);
-              await deleteBodyMetric(id);
-              loadAll();
-            }}
-            onAnalyze={() => router.push('/plan/auto')}
-            heightCm={settings.heightCm || ''}
-            onChangeHeight={(v) => handleSettingChange('heightCm', v)}
-          />
-        )}
+        {tab === 'body' && <BodyTrackingSection />}
         {tab === 'settings' && (
           <SettingsTab settings={settings} colors={colors} onChange={handleSettingChange}
             onBackup={() => setShowBackupMenu(true)} onRestore={handleRestore} onExportCsv={handleExportCsv} onExportReport={handleExportReport} onExportReportWithPhotos={handleExportReportWithPhotos}
@@ -302,15 +313,6 @@ export default function ProfileScreen() {
           />
         )}
       </ScrollView>
-
-      {/* Add body metric modal */}
-      <Modal visible={showAddBody} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowAddBody(false)}>
-        <AddBodyModal colors={colors} onClose={() => setShowAddBody(false)} onSave={async (metric) => {
-          await addBodyMetric({ ...metric, date: Math.floor(Date.now() / 1000) });
-          setShowAddBody(false);
-          loadAll();
-        }} />
-      </Modal>
 
       {/* Backup menu */}
       <Modal visible={showBackupMenu} animationType="fade" transparent onRequestClose={() => setShowBackupMenu(false)}>
@@ -359,7 +361,7 @@ export default function ProfileScreen() {
 }
 
 function RecordsTab({ prs, colors, weeklyVolume }: {
-  prs: PersonalRecord[]; colors: any;
+  prs: PersonalRecord[]; colors: Theme;
   weeklyVolume: { muscle: string; sets: number; volume: number }[];
 }) {
   // Weekly set count per muscle is the number hypertrophy programmes are
@@ -462,7 +464,7 @@ function RecordsTab({ prs, colors, weeklyVolume }: {
   );
 }
 
-function CalculatorTab({ colors }: { colors: any }) {
+function CalculatorTab({ colors }: { colors: Theme }) {
   const [calcWeight, setCalcWeight] = useState('');
   const [calcReps, setCalcReps] = useState('');
 
@@ -649,342 +651,14 @@ function CalculatorTab({ colors }: { colors: any }) {
   );
 }
 
-function BodyTab({ metrics, latest, colors, onAdd, onDelete, onAnalyze, heightCm, onChangeHeight }: {
-  metrics: BodyMetric[]; latest: BodyMetric | null; colors: any;
-  onAdd: () => void; onDelete: (id: number) => void; onAnalyze: () => void;
-  heightCm: string; onChangeHeight: (v: string) => void;
-}) {
-  const [heightDraft, setHeightDraft] = useState(heightCm);
-  const [viewingPhoto, setViewingPhoto] = useState<string | null>(null);
-  const [bodyChartMetric, setBodyChartMetric] = useState<BodyChartMetric>('weight');
-  const router = useRouter();
-  const photosTimeline = metrics.filter(m => m.photo_uri).slice().reverse(); // oldest first
-  // Same "last 5, oldest first" window used when feeding history into the
-  // plan generator's body analysis — keeps what's shown here consistent
-  // with what actually influences a generated plan.
-  const waistTrend = detectMeasurementTrend(
-    metrics.slice(0, 5).reverse().map(m => m.waist).filter((w): w is number => w !== null && w !== undefined)
-  );
 
-  // `metrics` arrives newest-first (matches the history list below); a trend
-  // chart reads left-to-right as oldest-to-newest, so this reverses it and
-  // drops any entry missing the selected field rather than plotting a gap
-  // as zero.
-  const bodyChartData = metrics
-    .slice()
-    .reverse()
-    .filter(m => m[bodyChartMetric] !== null && m[bodyChartMetric] !== undefined)
-    .map(m => ({ label: formatDate(m.date), value: m[bodyChartMetric] as number }));
 
-  const bmi = (() => {
-    const h = parseFloat(heightCm) / 100;
-    if (!h || !latest?.weight) return null;
-    return latest.weight / (h * h);
-  })();
 
-  return (
-    <>
-      {/* Height — stored once (doesn't change like weight/measurements do),
-          used for BMI-informed guidance in the body analysis below. */}
-      <Card>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Altura</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
-          <Ruler size={18} color={colors.textSecondary} />
-          <TextInput
-            style={[styles.calcInput, { flex: 1, color: colors.text, backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}
-            value={heightDraft}
-            onChangeText={setHeightDraft}
-            onEndEditing={() => onChangeHeight(heightDraft)}
-            keyboardType="decimal-pad"
-            placeholder="Ex: 175"
-            placeholderTextColor={colors.textTertiary}
-          />
-          <Text style={{ color: colors.textSecondary, fontFamily: 'Inter-Regular', fontSize: 14 }}>cm</Text>
-        </View>
-        {bmi !== null && (
-          <Text style={{ color: colors.textTertiary, fontFamily: 'Inter-Regular', fontSize: 12, marginTop: 8 }}>
-            IMC atual: {bmi.toFixed(1)} — usado apenas como contexto geral para a análise corporal, não é um indicador exato de composição corporal.
-          </Text>
-        )}
-      </Card>
 
-      {/* Progress photo timeline */}
-      {photosTimeline.length > 0 && (
-        <Card>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Text style={[styles.sectionTitle, { color: colors.text }]}>Progresso em Fotos</Text>
-            {photosTimeline.length >= 2 && (
-              <TouchableOpacity
-                onPress={() => router.push('/photo-compare')}
-                accessibilityRole="button"
-                accessibilityLabel="Comparar fotos de progresso"
-              >
-                <Text style={{ color: colors.primary, fontFamily: 'Inter-SemiBold', fontSize: 13 }}>Comparar →</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ height: 160, marginTop: 8 }} contentContainerStyle={{ gap: 8, alignItems: 'center' }}>
-            {photosTimeline.map(m => (
-              <TouchableOpacity key={m.id} onPress={() => setViewingPhoto(m.photo_uri)} activeOpacity={0.8}>
-                <View>
-                  <ExerciseMedia uri={m.photo_uri!} height={140} />
-                  <Text style={{ color: colors.textTertiary, fontFamily: 'Inter-Regular', fontSize: 11, textAlign: 'center', marginTop: 4 }}>
-                    {formatDate(m.date)}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </Card>
-      )}
 
-      {/* Latest stats */}
-      {latest && (
-        <Card>
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>Mais recente</Text>
-          <Text style={[{ color: colors.textTertiary, fontFamily: 'Inter-Regular', fontSize: 13, marginBottom: 10 }]}>{formatDate(latest.date)}</Text>
-          <View style={styles.bodyGrid}>
-            {latest.weight && <BodyStat label="Peso" value={`${latest.weight} kg`} colors={colors} />}
-            {latest.body_fat && <BodyStat label="% Gordura" value={`${latest.body_fat}%`} colors={colors} />}
-            {latest.chest && <BodyStat label="Peito" value={`${latest.chest} cm`} colors={colors} />}
-            {latest.back && <BodyStat label="Costas" value={`${latest.back} cm`} colors={colors} />}
-            {latest.waist && <BodyStat label="Cintura" value={`${latest.waist} cm`} colors={colors} />}
-            {latest.hips && <BodyStat label="Ancas" value={`${latest.hips} cm`} colors={colors} />}
-            {latest.arm && <BodyStat label="Braço" value={`${latest.arm} cm`} colors={colors} />}
-            {latest.thigh && <BodyStat label="Coxa" value={`${latest.thigh} cm`} colors={colors} />}
-          </View>
-          {waistTrend && (
-            <Text style={[styles.trendNote, { color: colors.textSecondary }]}>
-              Cintura {waistTrend.direction === 'increasing' ? 'a subir' : 'a descer'} nas últimas {waistTrend.measurementCount} medições ({waistTrend.direction === 'increasing' ? '+' : '−'}{waistTrend.totalChangeCm}cm) — sem julgamento aqui, só um facto que pode ser útil consoante o teu objetivo.
-            </Text>
-          )}
-        </Card>
-      )}
-
-      {/* Evolution chart — the numbers above tell you where you are; this is
-          where you can actually see the trend, the same way exercise
-          progress already gets a chart on its own detail screen. */}
-      {metrics.length >= 2 && (
-        <Card>
-          <Text style={[styles.sectionTitle, { color: colors.text }]}>Evolução</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.bodyMetricChips} contentContainerStyle={styles.bodyMetricChipsContent}>
-            <Chip label="Peso" selected={bodyChartMetric === 'weight'} onPress={() => setBodyChartMetric('weight')} />
-            <Chip label="% Gordura" selected={bodyChartMetric === 'body_fat'} onPress={() => setBodyChartMetric('body_fat')} />
-            <Chip label="Peito" selected={bodyChartMetric === 'chest'} onPress={() => setBodyChartMetric('chest')} />
-            <Chip label="Costas" selected={bodyChartMetric === 'back'} onPress={() => setBodyChartMetric('back')} />
-            <Chip label="Cintura" selected={bodyChartMetric === 'waist'} onPress={() => setBodyChartMetric('waist')} />
-            <Chip label="Ancas" selected={bodyChartMetric === 'hips'} onPress={() => setBodyChartMetric('hips')} />
-            <Chip label="Braço" selected={bodyChartMetric === 'arm'} onPress={() => setBodyChartMetric('arm')} />
-            <Chip label="Coxa" selected={bodyChartMetric === 'thigh'} onPress={() => setBodyChartMetric('thigh')} />
-          </ScrollView>
-          <LineChart
-            data={bodyChartData}
-            unit={bodyChartMetric === 'weight' ? ' kg' : bodyChartMetric === 'body_fat' ? '%' : ' cm'}
-            emptyLabel="Sem registos suficientes desta medida"
-          />
-        </Card>
-      )}
-
-      <Button title="Registar Medidas" onPress={onAdd} icon={<Plus size={18} color={colors.onPrimary} />} style={{ marginBottom: 8 }} />
-
-      {latest && (
-        <TouchableOpacity
-          style={[styles.analyzeBtn, { backgroundColor: colors.primaryContainer, borderColor: colors.primary }]}
-          onPress={onAnalyze}
-        >
-          <ScanLine size={18} color={colors.primary} />
-          <Text style={[styles.analyzeBtnText, { color: colors.primary }]}>Gerar Plano com Analise Corporal</Text>
-        </TouchableOpacity>
-      )}
-
-      {/* History */}
-      {metrics.length > 0 && (
-        <>
-          <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>HISTÓRICO ({metrics.length})</Text>
-          {metrics.map(m => (
-            <Card key={m.id} style={styles.metricRow}>
-              {m.photo_uri && (
-                <TouchableOpacity onPress={() => setViewingPhoto(m.photo_uri)}>
-                  <ExerciseMedia uri={m.photo_uri} height={44} />
-                </TouchableOpacity>
-              )}
-              <View style={styles.metricLeft}>
-                <Text style={[styles.metricDate, { color: colors.text }]}>{formatDate(m.date)}</Text>
-                <Text style={[styles.metricVals, { color: colors.textSecondary }]}>
-                  {m.weight ? `${m.weight}kg` : ''} {m.body_fat ? `· ${m.body_fat}%` : ''} {m.waist ? `· ${m.waist}cm` : ''}
-                </Text>
-              </View>
-              <TouchableOpacity onPress={() => onDelete(m.id)} hitSlop={8}>
-                <Trash2 size={18} color={colors.error} />
-              </TouchableOpacity>
-            </Card>
-          ))}
-        </>
-      )}
-
-      {metrics.length === 0 && !latest && (
-        <Card style={{ alignItems: 'center', padding: 32, gap: 8 }}>
-          <Scale size={40} color={colors.textTertiary} />
-          <Text style={[{ color: colors.text, fontFamily: 'Inter-Bold', fontSize: 18 }]}>Sem dados corporais</Text>
-          <Text style={[{ color: colors.textSecondary, fontFamily: 'Inter-Regular', fontSize: 14, textAlign: 'center' }]}>
-            Regista o teu peso e medidas para acompanhar a evolução.
-          </Text>
-        </Card>
-      )}
-
-      {/* Full-size photo viewer */}
-      <Modal visible={viewingPhoto !== null} animationType="fade" transparent onRequestClose={() => setViewingPhoto(null)}>
-        <TouchableOpacity style={styles.photoOverlay} activeOpacity={1} onPress={() => setViewingPhoto(null)}>
-          {viewingPhoto && <ExerciseMedia uri={viewingPhoto} height={500} />}
-        </TouchableOpacity>
-      </Modal>
-    </>
-  );
-}
-
-function BodyStat({ label, value, colors }: { label: string; value: string; colors: any }) {
-  return (
-    <View style={styles.bodyStat}>
-      <Text style={[styles.bodyStatVal, { color: colors.primary }]}>{value}</Text>
-      <Text style={[styles.bodyStatLabel, { color: colors.textSecondary }]}>{label}</Text>
-    </View>
-  );
-}
-
-function AddBodyModal({ colors, onClose, onSave }: {
-  colors: any; onClose: () => void;
-  onSave: (m: Omit<BodyMetric, 'id' | 'date'>) => void;
-}) {
-  const [weight, setWeight] = useState('');
-  const [bodyFat, setBodyFat] = useState('');
-  const [chest, setChest] = useState('');
-  const [back, setBack] = useState('');
-  const [waist, setWaist] = useState('');
-  const [hips, setHips] = useState('');
-  const [arm, setArm] = useState('');
-  const [thigh, setThigh] = useState('');
-  const [photoUri, setPhotoUri] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const attachPhoto = async (fromCamera: boolean) => {
-    const uri = fromCamera ? await captureBodyPhoto() : await pickBodyPhoto();
-    if (uri) setPhotoUri(uri);
-  };
-
-  const handleSave = async () => {
-    const values = [weight, bodyFat, chest, back, waist, hips, arm, thigh];
-    if (values.every(v => !v.trim()) && !photoUri) {
-      Alert.alert('Nada para guardar', 'Preenche pelo menos um valor ou tira uma foto.');
-      return;
-    }
-    setSaving(true);
-    await onSave({
-      weight: weight ? parseFloat(weight) : null,
-      body_fat: bodyFat ? parseFloat(bodyFat) : null,
-      chest: chest ? parseFloat(chest) : null,
-      back: back ? parseFloat(back) : null,
-      waist: waist ? parseFloat(waist) : null,
-      hips: hips ? parseFloat(hips) : null,
-      arm: arm ? parseFloat(arm) : null,
-      thigh: thigh ? parseFloat(thigh) : null,
-      photo_uri: photoUri,
-    });
-    setSaving(false);
-  };
-
-  return (
-    <SafeAreaView style={[styles.modalScreen, { backgroundColor: colors.background }]}>
-      <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
-        <Text style={[styles.modalTitle, { color: colors.text }]}>Registar Medidas</Text>
-        <TouchableOpacity onPress={onClose}><Text style={[{ color: colors.primary, fontFamily: 'Inter-SemiBold', fontSize: 16 }]}>Cancelar</Text></TouchableOpacity>
-      </View>
-      <ScrollView contentContainerStyle={{ padding: 20, gap: 16 }} showsVerticalScrollIndicator={false}>
-        {/* Progress photo — tracked alongside the measurements so you can
-            visually compare "when I had these numbers" over time. */}
-        <View>
-          <Text style={[styles.calcLabel, { color: colors.textSecondary, marginBottom: 8 }]}>FOTO DE PROGRESSO (OPCIONAL)</Text>
-          {photoUri ? (
-            <View style={{ gap: 8 }}>
-              <ExerciseMedia uri={photoUri} height={260} />
-              <View style={{ flexDirection: 'row', gap: 8 }}>
-                <TouchableOpacity
-                  style={[bodyPhotoStyles.btn, { backgroundColor: colors.surfaceVariant }]}
-                  onPress={() => attachPhoto(false)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Substituir foto"
-                >
-                  <ImagePlus size={16} color={colors.primary} />
-                  <Text style={[bodyPhotoStyles.btnText, { color: colors.primary }]}>Substituir</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[bodyPhotoStyles.btn, { backgroundColor: colors.surfaceVariant }]}
-                  onPress={() => setPhotoUri(null)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Remover foto"
-                >
-                  <Trash2 size={16} color={colors.error} />
-                  <Text style={[bodyPhotoStyles.btnText, { color: colors.error }]}>Remover</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          ) : (
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <TouchableOpacity
-                style={[bodyPhotoStyles.btn, { backgroundColor: colors.primaryContainer, flex: 1, justifyContent: 'center' }]}
-                onPress={() => attachPhoto(true)}
-                accessibilityRole="button"
-                accessibilityLabel="Tirar foto"
-              >
-                <Camera size={16} color={colors.primary} />
-                <Text style={[bodyPhotoStyles.btnText, { color: colors.primary }]}>Câmara</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[bodyPhotoStyles.btn, { backgroundColor: colors.primaryContainer, flex: 1, justifyContent: 'center' }]}
-                onPress={() => attachPhoto(false)}
-                accessibilityRole="button"
-                accessibilityLabel="Escolher da galeria"
-              >
-                <ImagePlus size={16} color={colors.primary} />
-                <Text style={[bodyPhotoStyles.btnText, { color: colors.primary }]}>Galeria</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-
-        <BodyInput label="Peso (kg)" value={weight} onChange={setWeight} colors={colors} />
-        <BodyInput label="% Gordura" value={bodyFat} onChange={setBodyFat} colors={colors} />
-        <BodyInput label="Peito (cm)" value={chest} onChange={setChest} colors={colors} />
-        <BodyInput label="Costas (cm)" value={back} onChange={setBack} colors={colors} />
-        <BodyInput label="Cintura (cm)" value={waist} onChange={setWaist} colors={colors} />
-        <BodyInput label="Ancas (cm)" value={hips} onChange={setHips} colors={colors} />
-        <BodyInput label="Braço (cm)" value={arm} onChange={setArm} colors={colors} />
-        <BodyInput label="Coxa (cm)" value={thigh} onChange={setThigh} colors={colors} />
-        <Button title="Guardar" onPress={handleSave} loading={saving} style={{ marginTop: 8, marginBottom: 32 }} />
-      </ScrollView>
-    </SafeAreaView>
-  );
-}
-
-const bodyPhotoStyles = StyleSheet.create({
-  btn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 10 },
-  btnText: { fontFamily: 'Inter-SemiBold', fontSize: 13, lineHeight: 17 },
-});
-
-function BodyInput({ label, value, onChange, colors }: { label: string; value: string; onChange: (v: string) => void; colors: any }) {
-  return (
-    <View>
-      <Text style={[styles.calcLabel, { color: colors.textSecondary }]}>{label.toUpperCase()}</Text>
-      <TextInput
-        style={[styles.calcInput, { color: colors.text, backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}
-        value={value} onChangeText={onChange}
-        keyboardType="decimal-pad" placeholder="—" placeholderTextColor={colors.textTertiary}
-      />
-    </View>
-  );
-}
 
 function SettingsTab({ settings, colors, onChange, onBackup, onRestore, onExportCsv, onExportReport, onExportReportWithPhotos, exportingPhotos }: {
-  settings: Record<string, string>; colors: any;
+  settings: Record<string, string>; colors: Theme;
   onChange: (key: string, value: string) => void;
   onBackup: () => void; onRestore: () => void; onExportCsv: () => void; onExportReport: () => void; onExportReportWithPhotos: () => void;
   exportingPhotos: boolean;
@@ -994,6 +668,7 @@ function SettingsTab({ settings, colors, onChange, onBackup, onRestore, onExport
   const themeOptions = [
     { key: 'system', label: 'Sistema' },
     { key: 'dark', label: 'Escuro' },
+    { key: 'oled', label: 'OLED' },
     { key: 'light', label: 'Claro' },
   ];
 
@@ -1098,7 +773,7 @@ function SettingsTab({ settings, colors, onChange, onBackup, onRestore, onExport
   );
 }
 
-function SettingToggle({ label, value, colors, onToggle }: { label: string; value: boolean; colors: any; onToggle: () => void }) {
+function SettingToggle({ label, value, colors, onToggle }: { label: string; value: boolean; colors: Theme; onToggle: () => void }) {
   return (
     <TouchableOpacity style={styles.toggleRow} onPress={onToggle} activeOpacity={0.7}>
       <Text style={[styles.toggleLabel, { color: colors.text }]}>{label}</Text>
@@ -1115,7 +790,7 @@ function SettingToggle({ label, value, colors, onToggle }: { label: string; valu
  * flips lives on adaptive_plan.active, not in the settings table. Turning it
  * on/off never deletes the cycle — just whether closeWeekIfDue looks at it.
  */
-function AdaptiveEngineSettings({ colors }: { colors: any }) {
+function AdaptiveEngineSettings({ colors }: { colors: Theme }) {
   const router = useRouter();
   const [plan, setPlan] = useState<AdaptivePlanRow | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1208,7 +883,7 @@ function AdaptiveEngineSettings({ colors }: { colors: any }) {
 }
 
 function ReminderSettings({ settings, colors, onChange }: {
-  settings: Record<string, string>; colors: any;
+  settings: Record<string, string>; colors: Theme;
   onChange: (key: string, value: string) => void;
 }) {
   const enabled = settings.reminderEnabled === '1';
@@ -1312,14 +987,16 @@ function ReminderSettings({ settings, colors, onChange }: {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  header: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
-  headerTitle: { fontFamily: 'Inter-Bold', fontSize: 28 },
   summaryBlock: { paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, gap: 8 },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between' },
   summaryStat: { alignItems: 'center', gap: 3 },
   summaryValue: { fontFamily: 'Inter-Bold', fontSize: 17 },
   summaryLabel: { fontFamily: 'Inter-Regular', fontSize: 11 },
   summarySince: { fontFamily: 'Inter-Regular', fontSize: 11, textAlign: 'center' },
+  quickLinks: { paddingHorizontal: 16, paddingVertical: 12, gap: 8, borderBottomWidth: 1 },
+  quickLink: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12 },
+  quickLinkTitle: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
+  quickLinkSub: { fontFamily: 'Inter-Regular', fontSize: 12, marginTop: 1 },
   tabs: { flexDirection: 'row', borderBottomWidth: 1 },
   tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 12 },
   tabText: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16 },

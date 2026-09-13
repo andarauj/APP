@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ViewStyle } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator, ViewStyle } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { useTheme } from '@/hooks/useTheme';
 import { BUTTON_HEIGHT, PRESS_SCALE, PRESS_SPRING_IN, PRESS_SPRING_OUT } from '@/constants/tokens';
@@ -15,9 +15,10 @@ interface ButtonProps {
   loading?: boolean;
   icon?: React.ReactNode;
   style?: ViewStyle;
+  className?: string;
 }
 
-export function Button({ title, onPress, variant = 'primary', size = 'medium', disabled, loading, icon, style }: ButtonProps) {
+export function Button({ title, onPress, variant = 'primary', size = 'medium', disabled, loading, icon, style, className }: ButtonProps) {
   const { colors } = useTheme();
 
   const getBgColor = () => {
@@ -54,8 +55,6 @@ export function Button({ title, onPress, variant = 'primary', size = 'medium', d
     switch (size) {
       case 'small': return 38;
       case 'large': return 56;
-      // BUGFIX (design token audit): medium was 50dp, 2dp off the "Volt &
-      // Ink" primary-button standard of exactly 48dp.
       default: return BUTTON_HEIGHT;
     }
   };
@@ -71,19 +70,18 @@ export function Button({ title, onPress, variant = 'primary', size = 'medium', d
   return (
     <AnimatedButtonInner
       title={title} onPress={onPress} disabled={disabled} loading={loading} icon={icon} style={style}
+      className={className}
       bgColor={getBgColor()} textColor={getTextColor()} borderColor={getBorderColor()}
       height={getHeight()} fontSize={getFontSize()} outlined={variant === 'outline'}
     />
   );
 }
 
-// Split out so the scale animation's shared value doesn't need to be
-// recreated on every Button re-render — it's a small perf/clarity win, and
-// keeps the color/sizing logic above readable on its own.
 function AnimatedButtonInner({
-  title, onPress, disabled, loading, icon, style, bgColor, textColor, borderColor, height, fontSize, outlined,
+  title, onPress, disabled, loading, icon, style, className, bgColor, textColor, borderColor, height, fontSize, outlined,
 }: {
   title: string; onPress: () => void; disabled?: boolean; loading?: boolean; icon?: React.ReactNode; style?: ViewStyle;
+  className?: string;
   bgColor: string; textColor: string; borderColor: string; height: number; fontSize: number; outlined: boolean;
 }) {
   const scale = useSharedValue(1);
@@ -98,8 +96,8 @@ function AnimatedButtonInner({
       accessibilityRole="button"
       accessibilityLabel={title}
       accessibilityState={{ disabled: disabled || loading, busy: loading }}
+      className={`items-center justify-center rounded-[14px] px-5 ${className ?? ''}`}
       style={[
-        styles.button,
         { backgroundColor: bgColor, borderColor, height, borderWidth: outlined ? 2 : 0 },
         style,
         animatedStyle,
@@ -109,9 +107,9 @@ function AnimatedButtonInner({
       {loading ? (
         <ActivityIndicator color={textColor} size="small" />
       ) : (
-        <View style={styles.content}>
+        <View className="flex-row items-center gap-2">
           {icon}
-          <Text style={[styles.text, { color: textColor, fontSize }]}>
+          <Text className="font-sans-bold" style={{ color: textColor, fontSize, fontWeight: '700' }}>
             {title}
           </Text>
         </View>
@@ -119,22 +117,3 @@ function AnimatedButtonInner({
     </AnimatedTouchable>
   );
 }
-
-const styles = StyleSheet.create({
-  button: {
-    // Rounded, near-pill CTAs.
-    borderRadius: 14,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-  },
-  content: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  text: {
-    fontFamily: 'Inter-Bold',
-    fontWeight: '700',
-  },
-});

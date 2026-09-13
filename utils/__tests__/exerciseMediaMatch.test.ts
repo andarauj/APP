@@ -55,7 +55,6 @@ describe('exerciseMediaMatch', () => {
 
 describe('exercise-media-matches.json', () => {
   // Lazy require so Jest can load JSON without TS path issues.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const payload = require('../../assets/data/exercise-media-matches.json') as {
     matches: {
       seedName: string;

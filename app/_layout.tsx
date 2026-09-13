@@ -1,3 +1,7 @@
+// NativeWind entry CSS (project root). Relative to app/_layout.tsx — NOT
+// ./global.css, which would look for app/global.css and fail Metro resolve.
+// eslint-disable-next-line import/no-unresolved
+import '../global.css';
 import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -13,16 +17,24 @@ import {
   Inter_900Black,
 } from '@expo-google-fonts/inter';
 import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { UpdateBanner } from '@/components/UpdateBanner';
+import { useTheme } from '@/hooks/useTheme';
 
 SplashScreen.preventAutoHideAsync();
 
+export const unstable_settings = {
+  initialRouteName: '(tabs)',
+};
+
+function ThemedStatusBar() {
+  const { isDark } = useTheme();
+  return <StatusBar style={isDark ? 'light' : 'dark'} />;
+}
+
 export default function RootLayout() {
   useFrameworkReady();
-  const colorScheme = useColorScheme();
 
   const [fontsLoaded, fontError] = useFonts({
     'Inter-Regular': Inter_400Regular,
@@ -45,21 +57,20 @@ export default function RootLayout() {
     }
   }, [fontsLoaded, fontError]);
 
-  if (!fontsLoaded && !fontError) return null;
+  // Always mount <Stack /> so Expo Router's NavigationContainer context exists
+  // on the first paint. Returning null while fonts load can race NativeWind
+  // CSS interop and surface a false "Couldn't find a navigation context".
+  const fontsReady = fontsLoaded || !!fontError;
 
-  // SafeAreaProvider is required for react-native-safe-area-context's
-  // SafeAreaView/useSafeAreaInsets to report real insets. Without it, screens
-  // used React Native's own SafeAreaView, which is a no-op on Android — so on
-  // devices with a punch-hole camera (e.g. Galaxy S24 Ultra) headers rendered
-  // underneath the status bar and the icons appeared to overlap.
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <DatabaseProvider>
           <ActiveWorkoutProvider>
-            <Stack screenOptions={{ headerShown: false }}>
+            <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
               <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="workout/active" options={{ presentation: 'fullScreenModal' }} />
+              <Stack.Screen name="onboarding" options={{ animation: 'fade' }} />
+              <Stack.Screen name="workout/active" options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }} />
               <Stack.Screen name="workout/summary" />
               <Stack.Screen name="plan/[id]" />
               <Stack.Screen name="plan/create" />
@@ -67,8 +78,12 @@ export default function RootLayout() {
               <Stack.Screen name="exercise/[id]" />
               <Stack.Screen name="+not-found" />
             </Stack>
-            <StatusBar style={colorScheme === 'dark' ? 'light' : 'dark'} />
-            <UpdateBanner />
+            {fontsReady ? (
+              <>
+                <ThemedStatusBar />
+                <UpdateBanner />
+              </>
+            ) : null}
           </ActiveWorkoutProvider>
         </DatabaseProvider>
       </SafeAreaProvider>

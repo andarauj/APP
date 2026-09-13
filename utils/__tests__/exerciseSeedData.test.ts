@@ -3,6 +3,7 @@
  */
 import { EXERCISE_SEED_DATA } from '../../db/exerciseSeedData';
 import { normalizeExerciseKey } from '../exerciseNormalize';
+import { movementSubcategory } from '../movementClassify';
 
 /** Known unaccented PT tokens that should not appear in curated seed names. */
 const RESIDUAL_ASCII_NAME = /\b(Flexoes|Elevacao|Extensao|Rotacao|Abducao|Aducao|Adducao|Triceps|Biceps|Maquina|Elastico|Isometrico|Panturrilhas)\b/;
@@ -14,6 +15,14 @@ describe('exerciseSeedData (Phase 3 PT-PT)', () => {
   it('has unique display names', () => {
     const names = EXERCISE_SEED_DATA.map((e) => e.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('classifies every strength seed row with a real movement_type', () => {
+    const unclassified = EXERCISE_SEED_DATA
+      .filter((e) => e.type === 'strength')
+      .filter((e) => movementSubcategory(e.name, e.primary_muscle, e.type) === 'other')
+      .map((e) => e.name);
+    expect(unclassified).toEqual([]);
   });
 
   it('has unique normalized keys (no accent/spacing collisions)', () => {

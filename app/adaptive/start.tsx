@@ -130,6 +130,7 @@ export default function AdaptiveStartScreen() {
           equipmentPref: locDef?.equip ?? 'any',
           customName: 'Plano Adaptativo',
           ignoreUsageHistory: true,
+          experience: (level === 'beginner' || level === 'advanced' ? level : 'intermediate'),
         });
       }
       const planDays = await getPlanDays(finalPlanId);

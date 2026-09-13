@@ -37,6 +37,17 @@ export function setVolume(
   return r * effectiveLoad(weight, equipment, userBodyweightKg);
 }
 
+/** Session tonnage — same rule as workoutDao EFFECTIVE_LOAD_SQL (skip warmup). */
+export function sessionVolumeFromSets(
+  sets: { reps: number; weight: number; set_type?: string | null; equipment?: string | null }[],
+  userBodyweightKg: number | null | undefined,
+): number {
+  return sets.reduce((sum, s) => {
+    if (s.set_type === 'warmup') return sum;
+    return sum + setVolume(s.reps, s.weight, s.equipment, userBodyweightKg);
+  }, 0);
+}
+
 /** Prefer séries/reps as the primary KPI when ≥50% of working sets are bodyweight. */
 export function shouldPreferRepsKpi(bwSets: number, totalSets: number): boolean {
   if (totalSets <= 0) return false;

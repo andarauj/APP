@@ -44,11 +44,42 @@ export function useStopwatch(running: boolean) {
   return { elapsed, reset, setBase };
 }
 
-export function useCountdown(duration: number, running: boolean, onComplete?: () => void) {
-  const [remaining, setRemaining] = useState(duration);
-  const [isFinished, setIsFinished] = useState(false);
-  const endTimeRef = useRef<number | null>(null);
-  // Bumped by reset() so the ticking effect below re-runs even when
+/**
+ * Whole seconds left until a wall-clock deadline.
+ * Shared policy with remainingRestSeconds / FloatingRestBar: Math.ceil so the
+ * UI does not show 0 while any fraction of a second remains.
+ */
+export function secondsUntil(endsAtMs: number, nowMs: number = Date.now()): number {
+  return Math.max(0, Math.ceil((endsAtMs - nowMs) / 1000));
+}
+
+/**
+ * @param duration Display / arm length when idle or when intentionally reset.
+ *   Changing this while a countdown is already bound to endTimeRef does NOT
+ *   replace the deadline — callers that mean "start a new rest of N seconds"
+ *   must call reset(N).
+ * @param bindEndsAtMs Optional absolute deadline (minimize→expand). Seeds
+ *   endTimeRef on first render so the first tick never uses Date.now()+duration.
+ */
+export function useCountdown(
+  duration: number,
+  running: boolean,
+  onComplete?: () => void,
+  bindEndsAtMs?: number | null,
+) {
+  const initialEndsAt =
+    bindEndsAtMs != null && Number.isFinite(bindEndsAtMs) && bindEndsAtMs > Date.now()
+      ? bindEndsAtMs
+      : null;
+
+  const [remaining, setRemaining] = useState(() =>
+    initialEndsAt != null ? secondsUntil(initialEndsAt) : duration
+  );
+  const [isFinished, setIsFinished] = useState(() =>
+    initialEndsAt != null ? secondsUntil(initialEndsAt) <= 0 : false
+  );
+  const endTimeRef = useRef<number | null>(initialEndsAt);
+  // Bumped by reset() / setEndsAt() so the ticking effect below re-runs even when
   // `running` was already true (see that effect's comment for why a plain
   // `running` transition isn't enough).
   const [resetToken, setResetToken] = useState(0);
@@ -64,15 +95,33 @@ export function useCountdown(duration: number, running: boolean, onComplete?: ()
   // not whichever closure happened to exist when the timer started.
   const remainingRef = useRef(remaining);
   remainingRef.current = remaining;
+  const runningRef = useRef(running);
+  runningRef.current = running;
   const onCompleteRef = useRef(onComplete);
   useEffect(() => {
     onCompleteRef.current = onComplete;
   }, [onComplete]);
 
   useEffect(() => {
+    // Active wall-clock countdown: duration is NOT the source of truth.
+    // Overwriting remaining/endTime from a prop change (e.g. init() loading
+    // defaultRestSeconds mid-rest) used to freeze or reset the bar.
+    if (runningRef.current && endTimeRef.current != null) {
+      const left = secondsUntil(endTimeRef.current);
+      remainingRef.current = left;
+      setRemaining(left);
+      setIsFinished(left <= 0);
+      return;
+    }
+
     setRemaining(duration);
     setIsFinished(false);
-    endTimeRef.current = null;
+    if (runningRef.current && duration > 0) {
+      // No deadline yet (first arm, or after pause cleared endTime) — seed from duration.
+      endTimeRef.current = Date.now() + duration * 1000;
+    } else {
+      endTimeRef.current = null;
+    }
   }, [duration]);
 
   useEffect(() => {
@@ -92,7 +141,7 @@ export function useCountdown(duration: number, running: boolean, onComplete?: ()
     }
     const interval = setInterval(() => {
       if (!endTimeRef.current) return;
-      const r = Math.max(0, Math.round((endTimeRef.current - Date.now()) / 1000));
+      const r = secondsUntil(endTimeRef.current);
       setRemaining(r);
       if (r <= 0) {
         setIsFinished(true);
@@ -117,12 +166,17 @@ export function useCountdown(duration: number, running: boolean, onComplete?: ()
   }, [running, resetToken]);
 
   const addTime = useCallback((seconds: number) => {
+    // Mutate the deadline before setState so callers (FloatingRestBar
+    // onDeadlineChange) can read getEndsAt() synchronously after addTime().
+    if (endTimeRef.current) {
+      endTimeRef.current += seconds * 1000;
+    }
     setRemaining(prev => {
       const newRemaining = Math.max(0, prev + seconds);
-      if (endTimeRef.current) {
-        endTimeRef.current += seconds * 1000;
+      if (!endTimeRef.current && runningRef.current && newRemaining > 0) {
+        endTimeRef.current = Date.now() + newRemaining * 1000;
       }
-      setIsFinished(false);
+      setIsFinished(newRemaining <= 0);
       return newRemaining;
     });
   }, []);
@@ -130,10 +184,27 @@ export function useCountdown(duration: number, running: boolean, onComplete?: ()
   const reset = useCallback((newDuration?: number) => {
     const d = newDuration ?? duration;
     setRemaining(d);
+    remainingRef.current = d;
     setIsFinished(false);
     endTimeRef.current = null;
     setResetToken(t => t + 1);
   }, [duration]);
 
-  return { remaining, isFinished, addTime, reset };
+  /**
+   * Bind the countdown to an absolute wall-clock deadline (mini-player expand).
+   * Keeps one source of truth with remainingRestSeconds / restEndsAtMs.
+   */
+  const setEndsAt = useCallback((endsAtMs: number) => {
+    const left = secondsUntil(endsAtMs);
+    remainingRef.current = left;
+    setRemaining(left);
+    setIsFinished(left <= 0);
+    endTimeRef.current = left > 0 ? endsAtMs : null;
+    setResetToken(t => t + 1);
+  }, []);
+
+  /** Current absolute deadline, or null when idle / finished. */
+  const getEndsAt = useCallback(() => endTimeRef.current, []);
+
+  return { remaining, isFinished, addTime, reset, setEndsAt, getEndsAt };
 }

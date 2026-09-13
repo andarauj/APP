@@ -208,6 +208,7 @@ export default function OnboardingScreen() {
           excludedMuscles,
           customName: 'O meu plano',
           ignoreUsageHistory: true,
+          experience: (level === 'beginner' || level === 'advanced' ? level : 'intermediate'),
         });
         // Every answer above only decides WHICH exercises go in; this is
         // what makes them also decide HOW the plan progresses week to week

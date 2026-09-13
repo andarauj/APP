@@ -1,5 +1,7 @@
 import {
   calculate1RM,
+  calculate1RMBrzycki,
+  estimate1RM,
   calculate1RMPercentages,
   calculatePlates,
   calculateWarmupSets,
@@ -29,6 +31,18 @@ describe('calculate1RM (Epley formula)', () => {
     expect(calculate1RM(0, 5)).toBe(0);
     expect(calculate1RM(80, 0)).toBe(0);
     expect(calculate1RM(-10, 5)).toBe(0);
+  });
+});
+
+describe('calculate1RMBrzycki / estimate1RM', () => {
+  it('Brzycki is defined for mid-range reps', () => {
+    expect(calculate1RMBrzycki(100, 5)).toBeGreaterThan(100);
+  });
+
+  it('estimate1RM averages Epley and Brzycki', () => {
+    const e = calculate1RM(100, 5);
+    const b = calculate1RMBrzycki(100, 5);
+    expect(estimate1RM(100, 5)).toBe(Math.round(((e + b) / 2) * 10) / 10);
   });
 });
 

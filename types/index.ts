@@ -39,7 +39,7 @@ export type SetType = 'normal' | 'warmup' | 'dropset' | 'failure' | 'amrap';
 
 export type PlanType = 'strength' | 'hypertrophy' | 'endurance' | 'cardio' | 'mobility';
 
-export type SplitType = 'abc' | 'ppl' | 'fullbody' | 'upper_lower' | 'bro' | 'custom';
+export type SplitType = 'abc' | 'ppl' | 'fullbody' | 'upper_lower' | 'bro' | 'ul_ppl' | 'custom';
 
 export interface Exercise {
   id: number;
@@ -61,6 +61,7 @@ export interface Exercise {
   video_cached_path?: string; // caminho local de vídeo em cache
   gif_url?: string;
   thumbnail_url?: string;
+  movement_type?: string;
 }
 
 export interface WorkoutPlan {
@@ -72,6 +73,8 @@ export interface WorkoutPlan {
   is_auto_generated: number; // 0 or 1
   created_at: number;
   updated_at: number;
+  /** Day slots (can be empty of exercises). SSOT for Overview days. */
+  days_json?: string | null;
 }
 
 export interface PlanExercise {
@@ -92,6 +95,8 @@ export interface PlanExercise {
   /** Rep cadence like "3-1-2-0" (down-pause-up-pause, seconds). */
   tempo: string;
   notes: string;
+  /** Prescribed reps in reserve (null/undefined = not set). Logged effort stays RPE. */
+  target_rir?: number | null;
 }
 
 export interface PlanDay {
@@ -111,6 +116,8 @@ export interface WorkoutSession {
   total_volume: number;
   total_sets: number;
   notes: string;
+  adaptive_week_id?: number | null;
+  phase?: string | null;
 }
 
 export interface WorkoutSet {
@@ -214,5 +221,6 @@ export const SPLIT_TYPE_PT: Record<SplitType, string> = {
   fullbody: 'Full Body',
   upper_lower: 'Upper/Lower',
   bro: 'Bro Split',
+  ul_ppl: 'Upper/Lower + PPL',
   custom: 'Personalizado',
 };

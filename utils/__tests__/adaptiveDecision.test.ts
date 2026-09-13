@@ -133,6 +133,27 @@ describe('experience adjusts the advance threshold', () => {
   });
 });
 
+describe('volume landmarks feed the weekly decision', () => {
+  it('bridges accumulation when planned sets sit below the floor but the work was done', () => {
+    const r = decideNextWeek(inp({
+      current: wk({ phase: 'accumulation', nspiVolume: 95, nspiLoad: 70, nspiBalance: 80 }),
+      recent: [wk({ nspiLoad: 55 })],
+      musclesBelowFloor: 2,
+    }));
+    expect(r.decision).toBe('bridge');
+    expect(r.nextPhase).toBe('accumulation');
+  });
+
+  it('deloads early when several muscles sit above the planning cap', () => {
+    const r = decideNextWeek(inp({
+      current: wk({ phase: 'accumulation', nspiVolume: 100, nspiLoad: 80, avgRpe: 7 }),
+      musclesAboveCap: 3,
+    }));
+    expect(r.decision).toBe('deload_early');
+    expect(r.nextPhase).toBe('deload');
+  });
+});
+
 describe('phase alignment', () => {
   it('intensification: load rising matters, volume dip is fine', () => {
     const r = decideNextWeek(inp({

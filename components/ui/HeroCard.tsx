@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, withSequence, Easing } from 'react-native-reanimated';
 import { useEffect } from 'react';
 import { useRouter } from 'expo-router';
@@ -8,6 +8,7 @@ import { formatTime } from '@/utils/format';
 import { formatMinutes } from '@/utils/workoutTime';
 import { hapticSelect } from '@/utils/haptics';
 import type { TodayWorkoutStatus } from '@/hooks/useTodayWorkoutStatus';
+import { plannedWorkoutRouteParams } from '@/utils/plannedWorkout';
 
 /** Small filled circle that pulses — the only place in this card that
  *  moves, and only for the one state (a session genuinely running right
@@ -18,7 +19,7 @@ function LiveDot({ color }: { color: string }) {
     opacity.value = withRepeat(withSequence(withTiming(0.35, { duration: 700, easing: Easing.inOut(Easing.ease) }), withTiming(1, { duration: 700, easing: Easing.inOut(Easing.ease) })), -1, false);
   }, [opacity]);
   const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
-  return <Animated.View style={[styles.liveDot, { backgroundColor: color }, style]} />;
+  return <Animated.View className="h-2 w-2 rounded-full" style={[{ backgroundColor: color }, style]} />;
 }
 
 /** Fixed-height placeholder shown while useTodayWorkoutStatus resolves, so
@@ -26,12 +27,20 @@ function LiveDot({ color }: { color: string }) {
  *  same footprint as the real card regardless of which of the 4 states
  *  eventually renders. */
 export function HeroCardSkeleton() {
-  const { colors } = useTheme();
-  return <View style={[styles.card, styles.skeleton, { backgroundColor: colors.surfaceVariant, borderColor: colors.border }]} />;
+  const { colors, isOled } = useTheme();
+  return (
+    <View
+      className="min-h-[150px] gap-1.5 rounded-[18px] border p-[18px]"
+      style={{
+        backgroundColor: colors.surfaceVariant,
+        borderColor: isOled ? colors.primary + '33' : colors.border,
+      }}
+    />
+  );
 }
 
 export function HeroCard({ status }: { status: TodayWorkoutStatus }) {
-  const { colors } = useTheme();
+  const { colors, isOled } = useTheme();
   const router = useRouter();
 
   if (!status.loaded) return <HeroCardSkeleton />;
@@ -40,7 +49,8 @@ export function HeroCard({ status }: { status: TodayWorkoutStatus }) {
     const a = status.active;
     return (
       <TouchableOpacity
-        style={[styles.card, { backgroundColor: colors.accentContainer, borderColor: colors.accentContainer }]}
+        className="min-h-[150px] gap-1.5 rounded-[18px] border p-[18px]"
+        style={{ backgroundColor: colors.accentContainer, borderColor: colors.accentContainer }}
         activeOpacity={0.85}
         onPress={() => {
           hapticSelect();
@@ -55,17 +65,17 @@ export function HeroCard({ status }: { status: TodayWorkoutStatus }) {
             applied to onSecondary/secondaryContainer in constants/colors.ts;
             colors.accent itself stays reserved for icon-level content,
             which only needs the 3:1 non-text threshold. */}
-        <View style={styles.headerRow}>
+        <View className="flex-row items-center gap-[7px]">
           <LiveDot color={colors.accent} />
-          <Text style={[styles.eyebrow, { color: colors.text }]}>EM CURSO</Text>
+          <Text className="font-sans-bold text-[11px] tracking-widest" style={{ color: colors.text }}>EM CURSO</Text>
         </View>
-        <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{a.name}</Text>
-        <Text style={[styles.subtitle, { color: colors.text }]} numberOfLines={1}>
+        <Text className="mt-0.5 font-sans-extrabold text-xl" style={{ color: colors.text }} numberOfLines={1}>{a.name}</Text>
+        <Text className="font-sans text-[13px] leading-[18px]" style={{ color: colors.text }} numberOfLines={1}>
           {formatTime(a.elapsedSeconds)}{a.currentExerciseName ? ` · ${a.currentExerciseName}` : ''} · {a.completedSets} série{a.completedSets === 1 ? '' : 's'}
         </Text>
-        <View style={[styles.ctaBtn, { backgroundColor: colors.accent }]}>
+        <View className="mt-2.5 flex-row items-center justify-center gap-2 rounded-xl py-3" style={{ backgroundColor: colors.accent }}>
           <Play size={16} color={colors.onAccent} />
-          <Text style={[styles.ctaText, { color: colors.onAccent }]}>Retomar Treino</Text>
+          <Text className="font-sans-bold text-[15px]" style={{ color: colors.onAccent }}>Retomar Treino</Text>
         </View>
       </TouchableOpacity>
     );
@@ -75,38 +85,39 @@ export function HeroCard({ status }: { status: TodayWorkoutStatus }) {
     const s = status.scheduled;
     return (
       <TouchableOpacity
-        style={[styles.card, { backgroundColor: colors.errorContainer, borderColor: colors.errorContainer }]}
+        className="min-h-[150px] gap-1.5 rounded-[18px] border p-[18px]"
+        style={{ backgroundColor: colors.errorContainer, borderColor: colors.errorContainer }}
         activeOpacity={0.85}
         onPress={() => {
           hapticSelect();
-          router.push({ pathname: '/workout/active', params: { planId: String(s.planId), planName: `${s.planName} · ${s.dayLabel}`, dayIndex: String(s.dayIndex) } });
+          router.push({
+            pathname: '/workout/active',
+            params: plannedWorkoutRouteParams({
+              planId: s.planId,
+              planName: `${s.planName} · ${s.dayLabel}`,
+              dayIndex: s.dayIndex,
+              weekId: s.weekId,
+              weekIndex: s.weekIndex,
+              phase: s.phase,
+            }),
+          });
         }}
         accessibilityRole="button"
         accessibilityLabel={`Treino em atraso: ${s.dayLabel}, ${s.muscles.join(', ')}. Toca para recuperar.`}
       >
-        {/* BUGFIX (WCAG AA audit): colors.error itself measures only
-            ~2.97:1 against errorContainer — under even the 3:1 icon
-            threshold, let alone 4.5:1 for text. The icon gets its own
-            small solid-error badge instead (white-on-solid-error clears
-            3:1), and all text here uses colors.text, not colors.error or
-            colors.textSecondary (textSecondary measures ~2.7:1 on this
-            background — also a fail). */}
-        <View style={styles.headerRow}>
-          <View style={[styles.iconBadge, { backgroundColor: colors.error }]}>
+        <View className="flex-row items-center gap-[7px]">
+          <View className="h-[22px] w-[22px] items-center justify-center rounded-full" style={{ backgroundColor: colors.error }}>
             <AlertTriangle size={13} color={colors.onError} />
           </View>
-          <Text style={[styles.eyebrow, { color: colors.text }]}>TREINO EM ATRASO</Text>
+          <Text className="font-sans-bold text-[11px] tracking-widest" style={{ color: colors.text }}>TREINO EM ATRASO</Text>
         </View>
-        <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{s.dayLabel}</Text>
-        <Text style={[styles.subtitle, { color: colors.text }]} numberOfLines={1}>
+        <Text className="mt-0.5 font-sans-extrabold text-xl" style={{ color: colors.text }} numberOfLines={1}>{s.dayLabel}</Text>
+        <Text className="font-sans text-[13px] leading-[18px]" style={{ color: colors.text }} numberOfLines={1}>
           {s.muscles.join(', ')}
         </Text>
-        {/* onError-on-solid-error is ~3.5:1 — fails 4.5:1 for normal text,
-            but clears 3:1 for "large text" (≥18.66dp bold per WCAG 1.4.3),
-            which is why this label alone is sized up from the other CTAs. */}
-        <View style={[styles.ctaBtn, { backgroundColor: colors.error }]}>
+        <View className="mt-2.5 flex-row items-center justify-center gap-2 rounded-xl py-3" style={{ backgroundColor: colors.error }}>
           <Play size={18} color={colors.onError} />
-          <Text style={[styles.ctaText, styles.ctaTextLarge, { color: colors.onError }]}>Recuperar Treino</Text>
+          <Text className="font-sans-bold text-[19px]" style={{ color: colors.onError }}>Recuperar Treino</Text>
         </View>
       </TouchableOpacity>
     );
@@ -116,29 +127,40 @@ export function HeroCard({ status }: { status: TodayWorkoutStatus }) {
     const s = status.scheduled;
     return (
       <TouchableOpacity
-        style={[styles.card, { backgroundColor: colors.primary, borderColor: colors.primary }]}
+        className="min-h-[150px] gap-1.5 rounded-[18px] border p-[18px]"
+        style={{ backgroundColor: colors.primary, borderColor: colors.primary }}
         activeOpacity={0.85}
         onPress={() => {
           hapticSelect();
-          router.push({ pathname: '/workout/active', params: { planId: String(s.planId), planName: `${s.planName} · ${s.dayLabel}`, dayIndex: String(s.dayIndex) } });
+          router.push({
+            pathname: '/workout/active',
+            params: plannedWorkoutRouteParams({
+              planId: s.planId,
+              planName: `${s.planName} · ${s.dayLabel}`,
+              dayIndex: s.dayIndex,
+              weekId: s.weekId,
+              weekIndex: s.weekIndex,
+              phase: s.phase,
+            }),
+          });
         }}
         accessibilityRole="button"
         accessibilityLabel={`Treino de hoje: ${s.dayLabel}, ${s.exerciseCount} exercícios, cerca de ${s.estimatedMinutes} minutos. Toca para iniciar.`}
       >
-        <View style={styles.headerRow}>
+        <View className="flex-row items-center gap-[7px]">
           <Sparkles size={16} color={colors.onPrimary} />
-          <Text style={[styles.eyebrow, { color: colors.onPrimary }]}>TREINO DE HOJE</Text>
+          <Text className="font-sans-bold text-[11px] tracking-widest" style={{ color: colors.onPrimary }}>TREINO DE HOJE</Text>
         </View>
-        <Text style={[styles.title, { color: colors.onPrimary }]} numberOfLines={1}>{s.dayLabel}</Text>
-        <View style={styles.metaRow}>
+        <Text className="mt-0.5 font-sans-extrabold text-xl" style={{ color: colors.onPrimary }} numberOfLines={1}>{s.dayLabel}</Text>
+        <View className="mt-0.5 flex-row items-center gap-[5px]">
           <Clock size={13} color={colors.onPrimary} />
-          <Text style={[styles.metaText, { color: colors.onPrimary }]}>~{formatMinutes(s.estimatedMinutes)}</Text>
+          <Text className="font-sans-semibold text-xs" style={{ color: colors.onPrimary }}>~{formatMinutes(s.estimatedMinutes)}</Text>
           <ListChecks size={13} color={colors.onPrimary} style={{ marginLeft: 10 }} />
-          <Text style={[styles.metaText, { color: colors.onPrimary }]}>{s.exerciseCount} exercícios</Text>
+          <Text className="font-sans-semibold text-xs" style={{ color: colors.onPrimary }}>{s.exerciseCount} exercícios</Text>
         </View>
-        <View style={[styles.ctaBtn, { backgroundColor: colors.onPrimary }]}>
+        <View className="mt-2.5 flex-row items-center justify-center gap-2 rounded-xl py-3" style={{ backgroundColor: colors.onPrimary }}>
           <Play size={16} color={colors.primary} />
-          <Text style={[styles.ctaText, { color: colors.primary }]}>Iniciar Treino de Hoje</Text>
+          <Text className="font-sans-bold text-[15px]" style={{ color: colors.primary }}>Iniciar Treino de Hoje</Text>
         </View>
       </TouchableOpacity>
     );
@@ -148,22 +170,24 @@ export function HeroCard({ status }: { status: TodayWorkoutStatus }) {
     const c = status.completed;
     return (
       <View
-        style={[styles.card, { backgroundColor: colors.secondaryContainer, borderColor: colors.secondaryContainer }]}
+        className="min-h-[150px] gap-1.5 rounded-[18px] border p-[18px]"
+        style={{ backgroundColor: colors.secondaryContainer, borderColor: colors.secondaryContainer }}
         accessibilityLabel={`Treino concluído: ${c.name}`}
       >
-        <View style={styles.headerRow}>
-          <View style={[styles.iconBadge, { backgroundColor: colors.secondary }]}>
+        <View className="flex-row items-center gap-[7px]">
+          <View className="h-[22px] w-[22px] items-center justify-center rounded-full" style={{ backgroundColor: colors.secondary }}>
             <Check size={13} color={colors.onSecondary} />
           </View>
-          <Text style={[styles.eyebrow, { color: colors.text }]}>CONCLUÍDO</Text>
+          <Text className="font-sans-bold text-[11px] tracking-widest" style={{ color: colors.text }}>CONCLUÍDO</Text>
         </View>
-        <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{c.name}</Text>
-        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+        <Text className="mt-0.5 font-sans-extrabold text-xl" style={{ color: colors.text }} numberOfLines={1}>{c.name}</Text>
+        <Text className="font-sans text-[13px] leading-[18px]" style={{ color: colors.textSecondary }}>
           {c.totalSets} série{c.totalSets === 1 ? '' : 's'}
           {c.totalVolume > 0 ? ` · ${Math.round(c.totalVolume)} kg` : ''}
         </Text>
         <TouchableOpacity
-          style={[styles.ctaBtn, { backgroundColor: colors.primary }]}
+          className="mt-2.5 flex-row items-center justify-center gap-2 rounded-xl py-3"
+          style={{ backgroundColor: colors.primary }}
           onPress={() => {
             hapticSelect();
             router.push({ pathname: '/workout/active', params: { planId: 0, planName: 'Treino Livre' } });
@@ -172,7 +196,7 @@ export function HeroCard({ status }: { status: TodayWorkoutStatus }) {
           accessibilityLabel="Iniciar treino livre adicional"
         >
           <Dumbbell size={16} color={colors.onPrimary} />
-          <Text style={[styles.ctaText, { color: colors.onPrimary }]}>Treino Livre</Text>
+          <Text className="font-sans-bold text-[15px]" style={{ color: colors.onPrimary }}>Treino Livre</Text>
         </TouchableOpacity>
       </View>
     );
@@ -180,13 +204,20 @@ export function HeroCard({ status }: { status: TodayWorkoutStatus }) {
 
   // Rest day / no active plan.
   return (
-    <View style={[styles.card, { backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}>
-      <Text style={[styles.title, { color: colors.text }]}>Dia de descanso</Text>
-      <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+    <View
+      className="min-h-[150px] gap-1.5 rounded-[18px] border p-[18px]"
+      style={{
+        backgroundColor: colors.surfaceVariant,
+        borderColor: isOled ? colors.primary + '33' : colors.border,
+      }}
+    >
+      <Text className="mt-0.5 font-sans-extrabold text-xl" style={{ color: colors.text }}>Dia de descanso</Text>
+      <Text className="font-sans text-[13px] leading-[18px]" style={{ color: colors.textSecondary }}>
         Nada agendado para hoje. Aproveita para recuperar, ou treina na mesma.
       </Text>
       <TouchableOpacity
-        style={[styles.ctaBtn, { backgroundColor: colors.primary }]}
+        className="mt-2.5 flex-row items-center justify-center gap-2 rounded-xl py-3"
+        style={{ backgroundColor: colors.primary }}
         onPress={() => {
           hapticSelect();
           router.push({ pathname: '/workout/active', params: { planId: 0, planName: 'Treino Livre' } });
@@ -195,24 +226,8 @@ export function HeroCard({ status }: { status: TodayWorkoutStatus }) {
         accessibilityLabel="Iniciar treino livre"
       >
         <Dumbbell size={16} color={colors.onPrimary} />
-        <Text style={[styles.ctaText, { color: colors.onPrimary }]}>Iniciar Treino Livre</Text>
+        <Text className="font-sans-bold text-[15px]" style={{ color: colors.onPrimary }}>Iniciar Treino Livre</Text>
       </TouchableOpacity>
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  card: { borderRadius: 18, padding: 18, borderWidth: 1, gap: 6, minHeight: 150 },
-  skeleton: { minHeight: 150 },
-  headerRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  liveDot: { width: 8, height: 8, borderRadius: 4 },
-  iconBadge: { width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
-  eyebrow: { fontFamily: 'Inter-Bold', fontSize: 11, letterSpacing: 1 },
-  title: { fontFamily: 'Inter-ExtraBold', fontSize: 20, marginTop: 2 },
-  subtitle: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 18 },
-  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
-  metaText: { fontFamily: 'Inter-SemiBold', fontSize: 12 },
-  ctaBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12, marginTop: 10 },
-  ctaText: { fontFamily: 'Inter-Bold', fontSize: 15 },
-  ctaTextLarge: { fontSize: 19 },
-});

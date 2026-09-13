@@ -198,9 +198,9 @@ describe('fresh install (no pre-existing schema)', () => {
     // still proves the statement is valid SQL and the table is queryable.
     expect(columnsOf(mockRawDb, 'exercises')).toEqual(expect.arrayContaining([
       'user_notes', 'media_uri', 'alt_names', 'image_url', 'api_id', 'api_source', 'video_url', 'video_cached_path',
-      'gif_url', 'thumbnail_url',
+      'gif_url', 'thumbnail_url', 'movement_type',
     ]));
-    expect(columnsOf(mockRawDb, 'plan_exercises')).toEqual(expect.arrayContaining(['day_label', 'day_index', 'tempo']));
+    expect(columnsOf(mockRawDb, 'plan_exercises')).toEqual(expect.arrayContaining(['day_label', 'day_index', 'tempo', 'target_rir']));
     expect(columnsOf(mockRawDb, 'workout_plans')).toEqual(expect.arrayContaining(['is_auto_generated']));
     expect(columnsOf(mockRawDb, 'body_metrics')).toEqual(expect.arrayContaining(['photo_uri', 'back']));
 
@@ -263,8 +263,9 @@ describe('upgrade from a real old install', () => {
 
     expect(columnsOf(mockRawDb, 'exercises')).toEqual(expect.arrayContaining([
       'user_notes', 'media_uri', 'alt_names', 'image_url', 'api_id', 'api_source', 'video_url', 'video_cached_path',
+      'movement_type',
     ]));
-    expect(columnsOf(mockRawDb, 'plan_exercises')).toEqual(expect.arrayContaining(['day_label', 'day_index', 'tempo']));
+    expect(columnsOf(mockRawDb, 'plan_exercises')).toEqual(expect.arrayContaining(['day_label', 'day_index', 'tempo', 'target_rir']));
     expect(columnsOf(mockRawDb, 'workout_plans')).toEqual(expect.arrayContaining(['is_auto_generated']));
     expect(columnsOf(mockRawDb, 'body_metrics')).toEqual(expect.arrayContaining(['photo_uri', 'back']));
     for (const t of ['adaptive_plan', 'adaptive_cycle', 'adaptive_week', 'adaptive_exercise_state']) {
@@ -317,5 +318,48 @@ describe('upgrade from a real old install', () => {
     const manual = mockRawDb.prepare('SELECT is_auto_generated FROM workout_plans WHERE id = 2').get() as { is_auto_generated: number };
     expect(auto.is_auto_generated).toBe(1);
     expect(manual.is_auto_generated).toBe(0);
+  });
+
+  it('merges EN/PT duplicates, backfills movement_type, and prunes a stacked auto-plan day', async () => {
+    seedLegacyInstall();
+    mockRawDb.exec(`
+      INSERT INTO exercises (id, name, primary_muscle, equipment, is_custom) VALUES
+        (3, 'Crossover no Cabo', 'chest', 'cable', 0),
+        (4, 'Cable Crossover', 'chest', 'cable', 0);
+    `);
+    const stmt = mockRawDb.prepare(
+      `INSERT INTO plan_exercises (plan_id, exercise_id, order_index, sets, notes) VALUES (?, ?, ?, ?, ?)`
+    );
+    stmt.run(1, 1, 0, 3, '');
+    stmt.run(1, 1, 1, 3, '');
+    stmt.run(1, 3, 2, 3, '');
+    stmt.run(1, 4, 3, 3, '');
+
+    const { initDatabase, getFailedMigrations } = require('../database');
+    await initDatabase();
+    expect(getFailedMigrations()).toEqual([]);
+
+    const cable = mockRawDb.prepare(`SELECT id FROM exercises WHERE name = 'Cable Crossover'`).get();
+    expect(cable).toBeUndefined();
+
+    const crossover = mockRawDb.prepare(
+      `SELECT movement_type FROM exercises WHERE name = 'Crossover no Cabo'`
+    ).get() as { movement_type: string };
+    expect(crossover.movement_type).toBe('chest_isolation');
+
+    const bench = mockRawDb.prepare(
+      `SELECT movement_type FROM exercises WHERE id = 1`
+    ).get() as { movement_type: string };
+    expect(bench.movement_type).toBe('chest_compound');
+
+    const day = mockRawDb.prepare(
+      `SELECT pe.exercise_id, e.name
+       FROM plan_exercises pe
+       JOIN exercises e ON e.id = pe.exercise_id
+       WHERE pe.plan_id = 1
+       ORDER BY pe.order_index, pe.id`
+    ).all() as { exercise_id: number; name: string }[];
+    expect(day.filter(r => r.exercise_id === 1)).toHaveLength(1);
+    expect(day.filter(r => /crossover|crucifixo/i.test(r.name))).toHaveLength(1);
   });
 });

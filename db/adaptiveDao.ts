@@ -97,6 +97,12 @@ export async function updateAdaptivePlanExperience(id: number, experience: strin
   await db.runAsync('UPDATE adaptive_plan SET experience = ? WHERE id = ?', [experience, id]);
 }
 
+/** Changes the training goal — takes effect from the next phase change onward. */
+export async function updateAdaptivePlanGoal(id: number, goal: AdaptiveGoal): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync('UPDATE adaptive_plan SET goal = ? WHERE id = ?', [goal, id]);
+}
+
 // ---------------------------------------------------------------------------
 // adaptive_cycle
 // ---------------------------------------------------------------------------
@@ -178,7 +184,7 @@ export interface AdaptiveWeekRow {
   recap_json: string | null;
   week_start: number;
   week_end: number;
-  status: 'active' | 'done';
+  status: 'active' | 'done' | 'planned';
 }
 
 export interface NewAdaptiveWeek {
@@ -189,6 +195,8 @@ export interface NewAdaptiveWeek {
   planned: unknown;
   weekStart: number;
   weekEnd: number;
+  /** Week 1 of a new cycle is 'active'; pre-materialized future weeks are 'planned'. */
+  status?: 'active' | 'planned';
   /** Set only for the very first week of a plan, so the Weekly Recap screen
    *  has something to show ("porquê começamos aqui") before any week has
    *  actually closed. Every later week's recap comes from closeWeekRow. */
@@ -197,16 +205,78 @@ export interface NewAdaptiveWeek {
 
 export async function insertWeek(w: NewAdaptiveWeek): Promise<number> {
   const db = await getDatabase();
+  const status = w.status ?? 'active';
   const res = await db.runAsync(
     `INSERT INTO adaptive_week
        (cycle_id, week_index, phase, is_bridge, planned_json, week_start, week_end, status, recap_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       w.cycleId, w.weekIndex, w.phase, w.isBridge ? 1 : 0, JSON.stringify(w.planned ?? {}), w.weekStart, w.weekEnd,
+      status,
       w.recap !== undefined ? JSON.stringify(w.recap) : null,
     ],
   );
   return res.lastInsertRowId as number;
+}
+
+/** The week row (if any) already covering this plan's `weekStart`. */
+export async function getWeekForPlanAtStart(
+  adaptivePlanId: number,
+  weekStart: number,
+): Promise<AdaptiveWeekRow | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<AdaptiveWeekRow>(
+    `SELECT w.* FROM adaptive_week w
+     JOIN adaptive_cycle c ON w.cycle_id = c.id
+     WHERE c.adaptive_plan_id = ? AND w.week_start = ?
+     ORDER BY w.id DESC LIMIT 1`,
+    [adaptivePlanId, weekStart],
+  );
+  return row ?? null;
+}
+
+export async function promotePlannedWeek(
+  weekId: number,
+  patch: { planned: unknown; phase: AdaptivePhase; isBridge: boolean },
+): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE adaptive_week
+     SET planned_json = ?, phase = ?, is_bridge = ?, status = 'active'
+     WHERE id = ?`,
+    [JSON.stringify(patch.planned ?? {}), patch.phase, patch.isBridge ? 1 : 0, weekId],
+  );
+}
+
+/** Slide leftover planned weeks forward when an extra hold/bridge week is inserted. */
+export async function shiftWeeksOnOrAfter(
+  cycleId: number,
+  fromStart: number,
+  deltaSec: number,
+): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `UPDATE adaptive_week
+     SET week_start = week_start + ?, week_end = week_end + ?, week_index = week_index + 1
+     WHERE cycle_id = ? AND week_start >= ? AND status = 'planned'`,
+    [deltaSec, deltaSec, cycleId, fromStart],
+  );
+}
+
+export async function updateWeekPlannedJson(weekId: number, planned: unknown): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    'UPDATE adaptive_week SET planned_json = ? WHERE id = ?',
+    [JSON.stringify(planned ?? {}), weekId],
+  );
+}
+
+export async function deletePlannedWeeksForCycle(cycleId: number): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    `DELETE FROM adaptive_week WHERE cycle_id = ? AND status = 'planned'`,
+    [cycleId],
+  );
 }
 
 export interface WeekClose {
@@ -227,6 +297,15 @@ export async function closeWeekRow(weekId: number, c: WeekClose): Promise<void> 
      WHERE id = ?`,
     [c.nspiLoad, c.nspiVolume, c.nspiBalance, c.nspiScore, c.decision, JSON.stringify(c.recap ?? {}), weekId],
   );
+}
+
+export async function getWeekById(weekId: number): Promise<AdaptiveWeekRow | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<AdaptiveWeekRow>(
+    'SELECT * FROM adaptive_week WHERE id = ?',
+    [weekId],
+  );
+  return row ?? null;
 }
 
 export async function getActiveWeek(cycleId: number): Promise<AdaptiveWeekRow | null> {
@@ -403,6 +482,22 @@ export async function upsertExerciseState(
 
 /** Wipe everything for a plan — used when the user turns the engine off and
  *  starts fresh, so a stale cycle can't resurface. */
+export async function getAdaptivePlansForWorkoutPlan(planId: number): Promise<AdaptivePlanRow[]> {
+  const db = await getDatabase();
+  return db.getAllAsync<AdaptivePlanRow>(
+    'SELECT * FROM adaptive_plan WHERE plan_id = ? ORDER BY id DESC',
+    [planId],
+  );
+}
+
+/** Drops NSPI/mesocycle rows for a workout_plans.id. Sessions stay. */
+export async function deleteAdaptiveDataForWorkoutPlan(workoutPlanId: number): Promise<void> {
+  const rows = await getAdaptivePlansForWorkoutPlan(workoutPlanId);
+  for (const row of rows) {
+    await deleteAdaptivePlanData(row.id);
+  }
+}
+
 export async function deleteAdaptivePlanData(adaptivePlanId: number): Promise<void> {
   const db = await getDatabase();
   await db.withTransactionAsync(async () => {

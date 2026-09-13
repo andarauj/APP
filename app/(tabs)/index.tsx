@@ -1,835 +1,610 @@
-import { useCallback, useState, useEffect } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, RefreshControl, Modal } from 'react-native';
-import Animated, { useSharedValue, useAnimatedStyle, withTiming, Easing, FadeIn, FadeOut, FadeInDown, ZoomIn } from 'react-native-reanimated';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, RefreshControl,
+} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
-import { useAppMode } from '@/hooks/useAppMode';
 import { useDatabase } from '@/hooks/useDatabase';
-import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
+import { useWorkoutHub } from '@/hooks/useWorkoutHub';
+import { useUpcomingSchedule } from '@/hooks/useUpcomingSchedule';
 import { useTodayWorkoutStatus } from '@/hooks/useTodayWorkoutStatus';
-import { useActiveWorkout } from '@/hooks/useActiveWorkout';
+import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
+import { ScreenHeader } from '@/components/ui/ScreenHeader';
+import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
-import { Badge } from '@/components/ui/Badge';
-import { ExerciseTile , muscleColor } from '@/components/ui/ExerciseTile';
-import { AnimatedNumber } from '@/components/ui/AnimatedNumber';
-import { BodyMetricsInput } from '@/components/ui/BodyMetricsInput';
-import { HeroCard } from '@/components/ui/HeroCard';
-import { hapticSelect, hapticSuccess } from '@/utils/haptics';
-import { getLatestBodyMetric, getWeightChange } from '@/db/bodyMetricsDao';
-import {
-  getStreakData, getAllSessions, getMostTrainedExercises, getMostUsedPlans,
-  getTrainingTips, getProgressIndexData, getWeeklyVolumeByMuscle, getAchievementStats, getTrainingHeatmapData, getThisWeekCompletedDays,
-  type MostTrainedExercise, type MostUsedPlan, type TrainingTip,
-} from '@/db/workoutDao';
-import { getWeeklyPlanner } from '@/db/plannerDao';
-import { getAllPlans } from '@/db/planDao';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { PlanSettingsSheet } from '@/components/workout/PlanSettingsSheet';
 import { getSetting, setSetting } from '@/db/settingsDao';
-import { computeProgressIndex, type ProgressIndexResult } from '@/utils/progressIndex';
-import { PHASE_LABEL_PT } from '@/utils/adaptivePlan';
-import { getNewlyUnlocked, getUnlockedAchievementIds, type Achievement } from '@/utils/achievements';
-import { DonutChart } from '@/components/ui/DonutChart';
-import { TrainingConsistencyChart } from '@/components/ui/TrainingConsistencyChart';
-import { WeeklyCommitmentStrip } from '@/components/ui/WeeklyCommitmentStrip';
-import { aggregateWeeklyConsistency, type WeeklyConsistency } from '@/utils/trainingHeatmap';
-import { computeWeeklyCommitment, type WeeklyCommitment } from '@/utils/weeklyCommitment';
-import type { WorkoutSession, MuscleGroup, Equipment } from '@/types';
-import { MUSCLE_GROUPS_PT } from '@/types';
-import { formatDateTime, formatTime, formatVolume } from '@/utils/format';
+import { getStreakData, getAllSessions, getUnfinishedSessionWithProgress } from '@/db/workoutDao';
+import { deletePlan, deletePlanDay, getPlanById } from '@/db/planDao';
+import { clearPlannerForPlan } from '@/db/plannerDao';
 import {
-  Flame, TrendingUp, TrendingDown, Minus, Play, ChevronRight, AlertTriangle, Info, CheckCircle2,
-  Dumbbell, Repeat, ListChecks, Sparkles, Calendar, Trophy, Activity, Settings as SettingsIcon,
-  Ruler, Camera, Radar, Star, Zap, History as HistoryIcon,
+  addNextPlanDay,
+  buildDayForMe,
+  createBlankWeeklyPlan,
+  PlanMissingError,
+  WEEKDAY_SHORT,
+} from '@/utils/workoutHub';
+import { getScheduledDayExercises, type ScheduledExerciseRow } from '@/utils/scheduledWorkout';
+import { pushPlannedWorkout } from '@/utils/startScheduledWorkout';
+import { resolveWeekStartDow } from '@/utils/weekStart';
+import { hapticSelect, hapticSuccess, hapticWarning } from '@/utils/haptics';
+import { formatMinutes } from '@/utils/workoutTime';
+import { RADIUS, TOUCH_TARGET_MIN } from '@/constants/tokens';
+import {
+  Compass, Dumbbell, Sparkles, MoreHorizontal, Plus, Play, Zap, Home, ListChecks, ChevronRight, Settings,
 } from 'lucide-react-native';
 
-const TIP_ICON = { warning: AlertTriangle, info: Info, positive: CheckCircle2 };
+type HubMode = 'find' | 'planned' | 'instant';
 
-/** Green for a healthy score, amber in the middle, red only when several
- *  components are genuinely low — deliberately not harsh, since this index
- *  reflects a pattern to notice, not a grade to be punished for. */
-function progressColor(score: number, colors: any): string {
-  if (score >= 70) return colors.success;
-  if (score >= 40) return colors.warning;
-  return colors.error;
-}
-
-/** Its own small component (not inlined in a .map()) so each bar can safely
- *  own its animated shared value — hooks can't be called conditionally or
- *  inside a loop, which a shared value per array item would otherwise be. */
-function ProgressBarFill({ ratio, color }: { ratio: number; color: string }) {
-  const width = useSharedValue(0);
-  useEffect(() => {
-    width.value = withTiming(ratio * 100, { duration: 600, easing: Easing.out(Easing.cubic) });
-    // `width` is a shared value with a stable identity; listing it satisfies
-    // the rule without causing the effect to re-run.
-  }, [ratio, width]);
-  const animatedStyle = useAnimatedStyle(() => ({ width: `${width.value}%` }));
-  return <Animated.View style={[styles.progressBarFill, { backgroundColor: color }, animatedStyle]} />;
-}
-
-export default function HomeScreen() {
+export default function WorkoutHubScreen() {
   const { colors } = useTheme();
-  const { isSimple } = useAppMode();
+  const insets = useSafeAreaInsets();
   const { isReady } = useDatabase();
-  const { status: adaptiveStatus } = useAdaptiveStatus();
   const router = useRouter();
-
-  const [streak, setStreak] = useState({ currentStreak: 0, longestStreak: 0, totalWorkouts: 0 });
-  const [recentSessions, setRecentSessions] = useState<WorkoutSession[]>([]);
-  const [topExercises, setTopExercises] = useState<MostTrainedExercise[]>([]);
-  const [muscleDistribution, setMuscleDistribution] = useState<{ muscle: string; sets: number }[]>([]);
-  const [weeklyConsistency, setWeeklyConsistency] = useState<WeeklyConsistency[]>([]);
-  const [weeklyCommitment, setWeeklyCommitment] = useState<WeeklyCommitment | null>(null);
-  const [newAchievement, setNewAchievement] = useState<Achievement | null>(null);
-  const [topPlans, setTopPlans] = useState<MostUsedPlan[]>([]);
-  const [tips, setTips] = useState<TrainingTip[]>([]);
-  const [progressIndex, setProgressIndex] = useState<ProgressIndexResult | null>(null);
-  const [progressExpanded, setProgressExpanded] = useState(false);
-  const chevronRotation = useSharedValue(0);
-  useEffect(() => {
-    chevronRotation.value = withTiming(progressExpanded ? 90 : 0, { duration: 200 });
-  }, [progressExpanded, chevronRotation]);
-  const chevronAnimatedStyle = useAnimatedStyle(() => ({ transform: [{ rotate: `${chevronRotation.value}deg` }] }));
-  const [loaded, setLoaded] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  // Progress sub-tabs: Resumo is the main dashboard; Corpo and Atividade
-  // gather what used to live in the Perfil › Corpo tab and the /progress hub.
-  const [progTab, setProgTab] = useState<'resumo' | 'corpo' | 'atividade'>('resumo');
-  const [bodyMetricsModalVisible, setBodyMetricsModalVisible] = useState(false);
-  const [latestBodyMetric, setLatestBodyMetric] = useState<any>(null);
-  const [weightChange, setWeightChange] = useState<any>(null);
-  // Quick Metrics Grid: this week's total working volume (warmup excluded,
-  // matching every other volume figure in the app) and PRs in the last 30
-  // days — prCountRecent already comes bundled in getProgressIndexData, so
-  // only the weekly-volume sum needed its own query.
-  const [weeklyVolume, setWeeklyVolume] = useState<number | null>(null);
-  const [prCountRecent, setPrCountRecent] = useState<number | null>(null);
+  const hub = useWorkoutHub();
+  const upcoming = useUpcomingSchedule(5);
   const todayStatus = useTodayWorkoutStatus();
-  const { minimized } = useActiveWorkout();
+  const { status: adaptiveStatus } = useAdaptiveStatus();
 
-  const loadDashboard = useCallback(async () => {
-    try {
-      const [s, sessions, exs, plans, t, progressData, previousScoreRaw, muscleVol, weeklyVol, achievementStats, achievementsSeenRaw, heatmapRaw, planner, allPlans, completedWeekdays, latestMetric, weightDelta] = await Promise.all([
-        getStreakData(),
-        getAllSessions(4, 0),
-        getMostTrainedExercises(5, 60),
-        getMostUsedPlans(3),
-        getTrainingTips(),
-        getProgressIndexData(),
-        getSetting('progressIndexLastScore'),
-        getWeeklyVolumeByMuscle(30), // named "weekly" but takes any window — 30 days gives a representative picture, not just the current week
-        getWeeklyVolumeByMuscle(7), // the actual trailing-7-days figure for the Quick Metrics Grid
-        getAchievementStats(),
-        getSetting('achievementsSeen'),
-        getTrainingHeatmapData(91), // 13 weeks — a full GitHub-style year would be too wide for a phone screen
-        getWeeklyPlanner(),
-        getAllPlans(),
-        getThisWeekCompletedDays(),
-        getLatestBodyMetric(),
-        getWeightChange(7),
-      ]);
-      setStreak(s);
-      setRecentSessions(sessions);
-      setTopExercises(exs);
-      setTopPlans(plans);
-      setTips(t);
-      setMuscleDistribution(muscleVol);
-      setWeeklyVolume(weeklyVol.reduce((sum, m) => sum + m.volume, 0));
-      setPrCountRecent(progressData.prCountRecent);
-      setLatestBodyMetric(latestMetric);
-      setWeightChange(weightDelta);
-      setWeeklyConsistency(aggregateWeeklyConsistency(heatmapRaw));
+  const [mode, setMode] = useState<HubMode>('planned');
+  const [selectedOffset, setSelectedOffset] = useState(0);
+  const [dayExercises, setDayExercises] = useState<ScheduledExerciseRow[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [weekStartDow, setWeekStartDow] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastSession, setLastSession] = useState<{ id: number; name: string } | null>(null);
 
-      const planLabels = Object.fromEntries(allPlans.map(p => [p.id, p.name]));
-      setWeeklyCommitment(computeWeeklyCommitment(planner, planLabels, completedWeekdays, new Date().getDay()));
+  const onboardingRedirected = useRef(false);
+  useEffect(() => {
+    if (!isReady || onboardingRedirected.current) return;
+    Promise.all([getSetting('onboardingComplete'), getStreakData()])
+      .then(([value, streak]) => {
+        if (value === '1') return;
+        if (streak.totalWorkouts > 0) {
+          setSetting('onboardingComplete', '1').catch(() => {});
+          return;
+        }
+        onboardingRedirected.current = true;
+        router.replace('/onboarding');
+      })
+      .catch(() => {});
+  }, [isReady, router]);
 
-      // Celebrate newly-crossed achievement thresholds since the last time
-      // this screen loaded — same "compare against last seen" pattern as
-      // the Progress Index trend above, so a fresh install doesn't need a
-      // separate first-run migration to seed a baseline.
-      const previouslySeen: string[] = achievementsSeenRaw ? JSON.parse(achievementsSeenRaw) : [];
-      const freshlyUnlocked = getNewlyUnlocked(previouslySeen, achievementStats);
-      if (freshlyUnlocked.length > 0) {
-        setNewAchievement(freshlyUnlocked[0]);
-        hapticSuccess();
-      }
-      setSetting('achievementsSeen', JSON.stringify(getUnlockedAchievementIds(achievementStats))).catch(() => {});
+  const selectedUpcoming = upcoming.days[selectedOffset] ?? upcoming.days[0];
+  const selectedScheduled = selectedUpcoming?.scheduled ?? null;
+  const headerTitle = selectedScheduled?.dayLabel || hub.plan?.name || 'Workout';
 
-      // The trend arrow compares against whatever score was last computed
-      // (i.e. the last time this screen loaded), not a rigid calendar week —
-      // simpler than reconstructing a full historical score, and arguably
-      // more honest: it answers "since I last checked" rather than pretending
-      // to know exactly what last Monday-to-Sunday looked like.
-      const previousScore = previousScoreRaw ? parseInt(previousScoreRaw, 10) : null;
-      const result = computeProgressIndex({ ...progressData, previousScore });
-      setProgressIndex(result);
-      setSetting('progressIndexLastScore', String(result.score)).catch(() => {});
+  useEffect(() => {
+    resolveWeekStartDow(adaptiveStatus?.weekStart ?? null).then(setWeekStartDow).catch(() => {});
+  }, [adaptiveStatus?.weekStart]);
 
-      setLoaded(true);
-    } catch (err) {
-      console.error('Failed to load home dashboard:', err);
-      setLoaded(true);
+  useEffect(() => {
+    if (!selectedScheduled) {
+      setDayExercises([]);
+      return;
     }
+    getScheduledDayExercises(selectedScheduled.planId, selectedScheduled.dayIndex, selectedScheduled.weekId)
+      .then(setDayExercises)
+      .catch(() => setDayExercises([]));
+  }, [selectedScheduled?.planId, selectedScheduled?.dayIndex, selectedScheduled?.weekId]);
+
+  const loadInstantMeta = useCallback(async () => {
+    const [last] = await getAllSessions(1, 0).catch(() => []);
+    setLastSession(last ? { id: last.id, name: last.name } : null);
   }, []);
 
-  useFocusEffect(useCallback(() => {
-    if (!isReady) return;
-    loadDashboard();
-  }, [isReady, loadDashboard]));
-
-  // Runs once per app launch (not on every focus, unlike the effect above)
-  // — checks whether the first-run intro has been completed. Only
-  // redirects there if BOTH the flag is unset AND the person has no
-  // existing workout history: without that second check, everyone who was
-  // already using the app before this setting existed (its key simply
-  // never existed in their settings table) would get sent to a "welcome"
-  // screen despite having trained dozens of times already.
-  useEffect(() => {
-    if (!isReady || !loaded) return;
-    getSetting('onboardingComplete').then(value => {
-      if (value === '1') return;
-      if (streak.totalWorkouts > 0) {
-        // Grandfather them in silently — no point showing "welcome" to
-        // someone who's already a real user.
-        setSetting('onboardingComplete', '1').catch(() => {});
-        return;
-      }
-      router.replace('/onboarding');
-    }).catch(() => {});
-  }, [isReady, loaded, streak.totalWorkouts, router]);
-
-  const handleRefresh = async () => {
+  const onRefresh = async () => {
     setRefreshing(true);
-    await loadDashboard();
+    await Promise.all([hub.reload(), upcoming.refresh(), todayStatus.refresh(), loadInstantMeta()]);
     setRefreshing(false);
   };
 
-  const isNewUser = loaded && streak.totalWorkouts === 0;
+  const setHubMode = (next: HubMode) => {
+    hapticSelect();
+    setMode(next);
+    if (next === 'instant') loadInstantMeta();
+  };
+
+  const startPlannedDay = async (scheduled = selectedScheduled) => {
+    if (!scheduled) return;
+    const unfinished = await getUnfinishedSessionWithProgress().catch(() => null);
+    if (unfinished && unfinished.completedSets > 0) {
+      Alert.alert('Treino em curso', 'Já tens um treino a decorrer. Queres continuá-lo?', [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Continuar',
+          onPress: () => router.push({
+            pathname: '/workout/active',
+            params: {
+              planId: String(unfinished.session.plan_id ?? 0),
+              planName: unfinished.session.name,
+              resumeSessionId: String(unfinished.session.id),
+            },
+          }),
+        },
+      ]);
+      return;
+    }
+    pushPlannedWorkout(router, scheduled);
+  };
+
+  const startInstant = (repeatId?: number) => {
+    if (repeatId) {
+      router.push({
+        pathname: '/workout/active',
+        params: { planId: '0', planName: lastSession?.name ?? 'Treino Livre', repeatSessionId: String(repeatId) },
+      });
+      return;
+    }
+    router.push({
+      pathname: '/workout/active',
+      params: { planId: '0', planName: 'Treino Livre' },
+    });
+  };
+
+  const openAddExercise = () => {
+    const planId = selectedScheduled?.planId ?? hub.plan?.id;
+    const dayIndex = selectedScheduled?.dayIndex ?? hub.days[0]?.day_index;
+    const dayLabel = selectedScheduled?.dayLabel ?? hub.days[0]?.day_label;
+    if (planId == null || dayIndex == null) return;
+    router.push({
+      pathname: '/(tabs)/exercises',
+      params: {
+        pick: '1',
+        planId: String(planId),
+        dayIndex: String(dayIndex),
+        dayLabel: dayLabel ?? '',
+      },
+    });
+  };
+
+  const onBuildForMe = async () => {
+    const candidate = selectedScheduled?.planId ?? hub.plan?.id;
+    const dayIndex = selectedScheduled?.dayIndex ?? hub.days[0]?.day_index;
+    const dayLabel = selectedScheduled?.dayLabel ?? hub.days[0]?.day_label ?? 'Treino';
+    const weekId = selectedScheduled?.weekId;
+
+    const live = candidate != null ? await getPlanById(candidate).catch(() => null) : null;
+    if (!live || dayIndex == null) {
+      // Deleted / missing plan — recreate via the adaptive wizard (4-week mesocycle).
+      router.push('/adaptive/start');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const n = await buildDayForMe(live.id, dayIndex, dayLabel);
+      hapticSuccess();
+      if (n === 0) Alert.alert('Sem exercícios', 'Não encontrei exercícios para este dia no catálogo.');
+      await Promise.all([hub.reload(), upcoming.refresh(), todayStatus.refresh()]);
+      // Keys (planId/dayIndex/weekId) often stay the same after a fill — force
+      // the detail list to reload so the UI does not stay on "0 exercícios".
+      const rows = await getScheduledDayExercises(live.id, dayIndex, weekId).catch(() => [] as ScheduledExerciseRow[]);
+      setDayExercises(rows);
+    } catch (err) {
+      console.error('Build for Me failed:', err);
+      if (err instanceof PlanMissingError) {
+        router.push('/adaptive/start');
+        return;
+      }
+      Alert.alert('Erro', 'Não foi possível gerar o treino. Tenta novamente.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onCreatePlan = async () => {
+    setBusy(true);
+    try {
+      await createBlankWeeklyPlan();
+      hapticSuccess();
+      setMode('planned');
+      await hub.reload();
+    } catch (err) {
+      console.error('Create plan failed:', err);
+      Alert.alert('Erro', 'Não foi possível criar o plano.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onAddDay = async () => {
+    if (!hub.plan) return;
+    if (hub.days.length >= hub.dayLimit) {
+      Alert.alert('Day Limit', `Este plano admite no máximo ${hub.dayLimit} dias.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      await addNextPlanDay(hub.plan.id);
+      await Promise.all([hub.reload(), upcoming.refresh()]);
+    } catch (err) {
+      console.error('Add day failed:', err);
+      Alert.alert('Erro', 'Não foi possível adicionar o dia.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmDeleteDay = () => {
+    if (!hub.plan || !selectedScheduled) return;
+    Alert.alert(
+      'Eliminar workout',
+      `Eliminar "${selectedScheduled.dayLabel}" do plano?\nO histórico de sessões e PRs mantém-se.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: async () => {
+            hapticWarning();
+            await deletePlanDay(hub.plan!.id, selectedScheduled.dayIndex);
+            await Promise.all([hub.reload(), upcoming.refresh()]);
+          },
+        },
+      ],
+    );
+  };
+
+  const confirmDeletePlan = () => {
+    if (!hub.plan) return;
+    Alert.alert(
+      'Eliminar plano',
+      `Eliminar "${hub.plan.name}"?\nIsto não elimina o histórico de treinos.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: async () => {
+            hapticWarning();
+            const id = hub.plan!.id;
+            await deletePlan(id);
+            await clearPlannerForPlan(id);
+            setDayExercises([]);
+            await Promise.all([hub.reload(), upcoming.refresh(), todayStatus.refresh()]);
+          },
+        },
+      ],
+    );
+  };
+
+  const openMenu = () => {
+    if (!hub.plan) return;
+    Alert.alert(headerTitle, undefined, [
+      { text: 'Edit', onPress: () => router.push({ pathname: '/plan/[id]', params: { id: hub.plan!.id } }) },
+      { text: 'Delete workout', style: 'destructive', onPress: confirmDeleteDay },
+      { text: 'Delete plan', style: 'destructive', onPress: confirmDeletePlan },
+      { text: 'Cancelar', style: 'cancel' },
+    ]);
+  };
+
+  const modeSwitcher = (
+    <View style={[styles.modeRow, { backgroundColor: colors.surfaceVariant }]}>
+      {([
+        ['find', 'Geral', Compass],
+        ['planned', 'Planeador', ListChecks],
+        ['instant', 'Treino Rápido', Sparkles],
+      ] as const).map(([key, label, Icon]) => {
+        const on = mode === key;
+        return (
+          <TouchableOpacity
+            key={key}
+            style={[styles.modeBtn, on && { backgroundColor: colors.surface }]}
+            onPress={() => setHubMode(key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: on }}
+            accessibilityLabel={label}
+          >
+            <Icon size={14} color={on ? colors.primary : colors.textSecondary} />
+            <Text
+              style={[styles.modeLabel, { color: on ? colors.text : colors.textSecondary }]}
+              numberOfLines={2}
+              adjustsFontSizeToFit
+              minimumFontScale={0.85}
+            >
+              {label}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+
+  const renderEmptyHub = () => (
+    <View style={styles.emptyWrap}>
+      <EmptyState
+        icon={<Dumbbell size={40} color={colors.primary} />}
+        title="Ainda sem plano"
+        description="Cria um plano, pede ao motor para construir um, ou começa já um Treino Rápido."
+      />
+      <View style={styles.emptyActions}>
+        <Button title="Criar plano" onPress={onCreatePlan} loading={busy} />
+        <Button title="Build for Me" variant="secondary" onPress={() => router.push('/adaptive/start')} icon={<Sparkles size={18} color={colors.onSecondary} />} />
+        <Button title="Encontrar treino" variant="outline" onPress={() => setHubMode('find')} />
+        <Button title="Treino Rápido" variant="ghost" onPress={() => setHubMode('instant')} />
+      </View>
+    </View>
+  );
+
+  const renderPlanned = () => {
+    const today = upcoming.days[0];
+    const todayScheduled = today?.scheduled ?? todayStatus.scheduled;
+
+    return (
+      <View style={styles.section}>
+        <Card>
+          {todayStatus.priority === 'active' && todayStatus.active ? (
+            <>
+              <Text style={[styles.sectionEyebrow, { color: colors.textSecondary }]}>Em curso</Text>
+              <Text style={[styles.detailsTitle, { color: colors.text }]}>{todayStatus.active.name}</Text>
+              <Button
+                title="Retomar Treino"
+                onPress={() => router.push({
+                  pathname: '/workout/active',
+                  params: {
+                    planId: String(todayStatus.active!.planId ?? 0),
+                    planName: todayStatus.active!.name,
+                    resumeSessionId: String(todayStatus.active!.sessionId),
+                  },
+                })}
+                icon={<Play size={18} color={colors.onPrimary} />}
+              />
+            </>
+          ) : todayScheduled ? (
+            <>
+              <Text style={[styles.sectionEyebrow, { color: colors.textSecondary }]}>Treino de hoje</Text>
+              <Text style={[styles.detailsTitle, { color: colors.text }]}>{todayScheduled.dayLabel}</Text>
+              <Text style={[styles.dayMeta, { color: colors.textSecondary, marginBottom: 12 }]}>
+                Est. {formatMinutes(todayScheduled.estimatedMinutes)} · {todayScheduled.exerciseCount} exercícios
+                {todayScheduled.muscles.length ? ` · ${todayScheduled.muscles.join(', ')}` : ''}
+              </Text>
+              {today?.completed || todayStatus.priority === 'completed' ? (
+                <Text style={[styles.dayState, { color: colors.secondary }]}>Concluído</Text>
+              ) : (
+                <Button title="Iniciar Treino" onPress={() => startPlannedDay(todayScheduled)} icon={<Play size={18} color={colors.onPrimary} />} />
+              )}
+            </>
+          ) : (
+            <>
+              <Text style={[styles.sectionEyebrow, { color: colors.textSecondary }]}>Hoje</Text>
+              <Text style={[styles.detailsTitle, { color: colors.text }]}>Dia de descanso</Text>
+              <Text style={[styles.dayMeta, { color: colors.textSecondary }]}>Nada programado para hoje.</Text>
+            </>
+          )}
+        </Card>
+
+        <Text style={[styles.sectionEyebrow, { color: colors.textSecondary }]}>Próximos 5 dias</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.weekChips}>
+          {upcoming.days.map((day, i) => {
+            const on = selectedOffset === i;
+            return (
+              <TouchableOpacity
+                key={`${day.date.toISOString()}-${i}`}
+                style={[
+                  styles.fiveDayChip,
+                  { borderColor: on ? colors.primary : colors.border, backgroundColor: on ? colors.primaryContainer : colors.surface },
+                ]}
+                onPress={() => { hapticSelect(); setSelectedOffset(i); }}
+                accessibilityRole="button"
+                accessibilityState={{ selected: on }}
+                accessibilityLabel={`${WEEKDAY_SHORT[day.weekday]} ${day.dayOfMonth}`}
+              >
+                <Text style={[styles.dowText, { color: colors.primary }]}>{WEEKDAY_SHORT[day.weekday]}</Text>
+                <Text style={[styles.fiveDayNum, { color: colors.text }]}>{day.dayOfMonth}</Text>
+                <Text style={[styles.fiveDaySub, { color: colors.textSecondary }]} numberOfLines={1}>
+                  {day.completed ? 'Feito' : day.scheduled ? day.scheduled.dayLabel : 'Descanso'}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        {selectedUpcoming && (
+          <View style={styles.section}>
+            <Text style={[styles.dowLarge, { color: colors.primary }]}>
+              {WEEKDAY_SHORT[selectedUpcoming.weekday]} · {selectedUpcoming.dayOfMonth}
+            </Text>
+            {selectedScheduled ? (
+              <>
+                <Text style={[styles.detailsTitle, { color: colors.text }]}>{selectedScheduled.dayLabel}</Text>
+                <Text style={[styles.dayMeta, { color: colors.textSecondary }]}>
+                  Est. {formatMinutes(selectedScheduled.estimatedMinutes)} · {dayExercises.length} exercícios
+                </Text>
+                {dayExercises.length === 0 ? (
+                  <View style={styles.emptyDay}>
+                    <TouchableOpacity
+                      style={[styles.emptyCta, { borderColor: colors.primary, backgroundColor: colors.surface }]}
+                      onPress={openAddExercise}
+                      accessibilityRole="button"
+                      accessibilityLabel="Add Exercise"
+                    >
+                      <Plus size={28} color={colors.primary} />
+                      <Text style={[styles.emptyCtaTitle, { color: colors.text }]}>Add Exercise</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.emptyCta, { borderColor: colors.border, backgroundColor: colors.surface }]}
+                      onPress={onBuildForMe}
+                      disabled={busy}
+                      accessibilityRole="button"
+                      accessibilityLabel="Build for Me"
+                    >
+                      <Sparkles size={28} color={colors.primary} />
+                      <Text style={[styles.emptyCtaTitle, { color: colors.text }]}>Build for Me</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <>
+                    {dayExercises.map(ex => (
+                      <View key={ex.id} style={[styles.exRow, { borderBottomColor: colors.border }]}>
+                        <View style={styles.exBody}>
+                          <Text style={[styles.exName, { color: colors.text }]}>{ex.exercise_name}</Text>
+                          <Text style={[styles.exMeta, { color: colors.textSecondary }]}>
+                            {ex.sets} × {ex.reps_target}
+                            {ex.weight_target > 0 ? ` · ${ex.weight_target} kg` : ''}
+                            {ex.target_rir != null ? ` · RIR ${ex.target_rir}` : ''}
+                            {ex.rest_seconds ? ` · ${ex.rest_seconds}s` : ''}
+                          </Text>
+                        </View>
+                      </View>
+                    ))}
+                    <View style={styles.detailActions}>
+                      <Button title="Add Exercise" variant="outline" onPress={openAddExercise} icon={<Plus size={18} color={colors.primary} />} />
+                      {!selectedUpcoming.isToday && (
+                        <Button title="Iniciar Treino" onPress={() => startPlannedDay(selectedScheduled)} icon={<Play size={18} color={colors.onPrimary} />} />
+                      )}
+                    </View>
+                  </>
+                )}
+              </>
+            ) : (
+              <Text style={[styles.dayMeta, { color: colors.textSecondary }]}>Dia de descanso — sem treino programado.</Text>
+            )}
+          </View>
+        )}
+
+        {hub.plan && (
+          <View style={styles.dayLimitRow}>
+            <Text style={[styles.dayLimit, { color: colors.textSecondary }]}>
+              Day Limit · {hub.days.length}/{hub.dayLimit} days
+            </Text>
+            <TouchableOpacity
+              onPress={onAddDay}
+              disabled={hub.days.length >= hub.dayLimit || busy}
+              style={[styles.addDayBtn, { backgroundColor: colors.primary }]}
+              accessibilityRole="button"
+              accessibilityLabel="Add a day"
+            >
+              <Plus size={16} color={colors.onPrimary} />
+              <Text style={[styles.addDayText, { color: colors.onPrimary }]}>Add a day</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
+    );
+  };
+
+  const renderFind = () => (
+    <View style={styles.section}>
+      <Text style={[styles.sectionEyebrow, { color: colors.textSecondary }]}>Encontrar um treino</Text>
+      {[
+        { title: 'Build for Me', sub: 'Motor principal — adapts week by week', route: '/adaptive/start', icon: Sparkles },
+        { title: 'Gerar plano', sub: 'Dias, duração e objetivo', route: '/plan/auto', icon: ListChecks },
+        { title: 'Treino em casa', sub: 'Halteres e peso corporal', route: '/plan/home', icon: Home },
+        { title: '5/3/1', sub: 'Força nos lifts principais', route: '/plan/531', icon: Dumbbell },
+      ].map(item => (
+        <TouchableOpacity
+          key={item.route}
+          style={[styles.findRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
+          onPress={() => router.push(item.route as never)}
+          accessibilityRole="button"
+          accessibilityLabel={item.title}
+        >
+          <item.icon size={22} color={colors.primary} />
+          <View style={styles.findBody}>
+            <Text style={[styles.dayTitle, { color: colors.text }]}>{item.title}</Text>
+            <Text style={[styles.dayMeta, { color: colors.textSecondary }]}>{item.sub}</Text>
+          </View>
+          <ChevronRight size={18} color={colors.textTertiary} />
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+
+  const renderInstant = () => (
+    <View style={styles.section}>
+      <Card>
+        <Text style={[styles.detailsTitle, { color: colors.text }]}>Treino Rápido</Text>
+        <Text style={[styles.dayMeta, { color: colors.textSecondary, marginBottom: 16 }]}>
+          Começa agora sem alterar o plano. A sessão entra no histórico quando a terminares.
+        </Text>
+        <Button title="Começar Treino Livre" onPress={() => startInstant()} icon={<Zap size={18} color={colors.onPrimary} />} />
+        {lastSession && (
+          <View style={{ marginTop: 12 }}>
+            <Button
+              title={`Repetir ${lastSession.name}`}
+              variant="outline"
+              onPress={() => startInstant(lastSession.id)}
+            />
+          </View>
+        )}
+      </Card>
+    </View>
+  );
 
   return (
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Progresso</Text>
-        {/* Settings live behind a gear in the Progress header, pointing at the
-            Perfil tab's "Definições" sub-tab. */}
-        <TouchableOpacity
-          onPress={() => router.push('/(tabs)/profile')}
-          hitSlop={10}
-          accessibilityRole="button"
-          accessibilityLabel="Definições e perfil"
-        >
-          <SettingsIcon size={22} color={colors.textSecondary} />
-        </TouchableOpacity>
-      </View>
-
-      {/* Sub-tabs: Resumo · Corpo · Atividade */}
-      <View style={[styles.progTabs, { borderBottomColor: colors.border }]}>
-        {([
-          ['resumo', 'Resumo'],
-          ['corpo', 'Corpo'],
-          ['atividade', 'Atividade'],
-        ] as const).map(([key, label]) => (
-          <TouchableOpacity
-            key={key}
-            onPress={() => setProgTab(key)}
-            style={[styles.progTab, progTab === key && { borderBottomColor: colors.primary, borderBottomWidth: 2 }]}
-          >
-            <Text style={[styles.progTabLabel, { color: progTab === key ? colors.primary : colors.textSecondary }]}>{label}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+      <ScreenHeader
+        title={mode === 'planned' ? headerTitle : 'Workout'}
+        subtitle={mode === 'planned' && hub.plan ? hub.plan.name : undefined}
+        right={
+          mode === 'planned' && hub.plan ? (
+            <View style={styles.headerRight}>
+              <TouchableOpacity
+                style={[styles.planBtn, { backgroundColor: colors.surfaceVariant }]}
+                onPress={() => router.push({ pathname: '/plan/[id]', params: { id: hub.plan!.id } })}
+                accessibilityRole="button"
+                accessibilityLabel="Editar plano"
+              >
+                <Text style={[styles.planBtnText, { color: colors.text }]}>Editar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.planBtn, { backgroundColor: colors.primary }]}
+                onPress={() => router.push({ pathname: '/plan/[id]', params: { id: hub.plan!.id } })}
+                accessibilityRole="button"
+                accessibilityLabel="Plan"
+              >
+                <Text style={[styles.planBtnText, { color: colors.onPrimary }]}>Plan</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setSettingsOpen(true)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Definições do plano"
+                style={styles.menuBtn}
+              >
+                <Settings size={22} color={colors.text} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={openMenu}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Menu do workout"
+                style={styles.menuBtn}
+              >
+                <MoreHorizontal size={22} color={colors.text} />
+              </TouchableOpacity>
+            </View>
+          ) : undefined
+        }
+      />
 
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.scroll, { paddingBottom: 88 + Math.max(insets.bottom, 16) + 56 }]}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} colors={[colors.primary]} />}
       >
-        {progTab === 'corpo' && (
-          <>
-            <TouchableOpacity
-              style={[styles.smartCard, { backgroundColor: colors.primary, borderColor: colors.primary }]}
-              onPress={() => setBodyMetricsModalVisible(true)}
-              activeOpacity={0.85}
-            >
-              <View style={[styles.statIcon, { backgroundColor: colors.onPrimary + '33' }]}>
-                <Ruler size={22} color={colors.onPrimary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.smartTitle, { color: colors.onPrimary }]}>Registar medidas</Text>
-                {/* BUGFIX (WCAG AA audit): onPrimary at reduced opacity drops
-                    below 4.5:1 against colors.primary (the pairing is
-                    already only ~4.5:1 at full opacity) — hierarchy comes
-                    from font size/weight here instead of alpha. */}
-                <Text style={[styles.smartDesc, { color: colors.onPrimary }]}>
-                  {latestBodyMetric?.date ? `Último: ${formatDateTime(latestBodyMetric.date)}` : 'Peso, gordura, perímetros'}
-                </Text>
-              </View>
-            </TouchableOpacity>
-            {([
-              ['Medidas e fotos', 'Histórico completo do corpo', '/(tabs)/profile', Ruler],
-              ['Comparar fotos', 'Antes e depois lado a lado', '/photo-compare', Camera],
-              ['Equilíbrio muscular', 'Distribuição do volume por grupo', '/progress/balance', Radar],
-            ] as const).map(([label, sub, route, Icon]) => (
-              <TouchableOpacity
-                key={route}
-                style={[styles.linkRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                onPress={() => router.push(route as never)}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.linkIcon, { backgroundColor: colors.primaryContainer }]}><Icon size={18} color={colors.primary} /></View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.linkTitle, { color: colors.text }]}>{label}</Text>
-                  <Text style={[styles.linkDesc, { color: colors.textSecondary }]} numberOfLines={1}>{sub}</Text>
-                </View>
-                <ChevronRight size={18} color={colors.textTertiary} />
-              </TouchableOpacity>
-            ))}
-          </>
-        )}
+        {modeSwitcher}
 
-        {progTab === 'atividade' && (
-          <>
-            <TouchableOpacity
-              style={[styles.smartCard, { backgroundColor: colors.primary, borderColor: colors.primary }]}
-              onPress={() => router.push('/(tabs)/history')}
-              activeOpacity={0.85}
-            >
-              <View style={[styles.statIcon, { backgroundColor: colors.onPrimary + '33' }]}>
-                <HistoryIcon size={22} color={colors.onPrimary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.smartTitle, { color: colors.onPrimary }]}>Histórico completo</Text>
-                <Text style={[styles.smartDesc, { color: colors.onPrimary }]}>Calendário, estatísticas e sessões</Text>
-              </View>
-            </TouchableOpacity>
-            {recentSessions.length > 0 && (
-              <View style={{ gap: 8 }}>
-                <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>ÚLTIMOS TREINOS</Text>
-                {recentSessions.map(session => (
-                  <TouchableOpacity
-                    key={session.id}
-                    style={[styles.sessionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                    onPress={() => router.push({ pathname: '/workout/summary', params: { sessionId: session.id } })}
-                    activeOpacity={0.7}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.sessionName, { color: colors.text }]} numberOfLines={1}>{session.name}</Text>
-                      <Text style={[styles.sessionDate, { color: colors.textTertiary }]}>{formatDateTime(session.started_at)}</Text>
-                    </View>
-                    <View style={styles.sessionStats}>
-                      <Text style={[styles.sessionStat, { color: colors.textSecondary }]}>⏱ {formatTime(session.total_duration)}</Text>
-                      <Text style={[styles.sessionStat, { color: colors.textSecondary }]}>{formatVolume(session.total_volume)}</Text>
-                    </View>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-            <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>ANÁLISE</Text>
-            {([
-              ['Máximo estimado (1RM)', 'Progressão de força por exercício', '/progress/onerm', Zap],
-              ['Sinais de fadiga', 'Indicadores de acumulação de fadiga', '/fatigue-radar', Activity],
-              ['O teu mês', 'Resumo mensal com comparação', '/monthly-recap', Calendar],
-              ['Conquistas', 'Marcos atingidos', '/achievements', Trophy],
-              ['Exercícios favoritos', 'Os que marcaste com estrela', '/progress/favorites', Star],
-            ] as const).map(([label, sub, route, Icon]) => (
-              <TouchableOpacity
-                key={route}
-                style={[styles.linkRow, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                onPress={() => router.push(route as never)}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.linkIcon, { backgroundColor: colors.primaryContainer }]}><Icon size={18} color={colors.primary} /></View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.linkTitle, { color: colors.text }]}>{label}</Text>
-                  <Text style={[styles.linkDesc, { color: colors.textSecondary }]} numberOfLines={1}>{sub}</Text>
-                </View>
-                <ChevronRight size={18} color={colors.textTertiary} />
-              </TouchableOpacity>
-            ))}
-          </>
-        )}
-
-        {progTab === 'resumo' && (<>
-        {/* Hero card — strict 4-priority fallback (active session in
-            progress > overdue/backlog day > today's scheduled day > rest
-            day), computed by useTodayWorkoutStatus from the exact same
-            underlying signals app/(tabs)/start.tsx already uses, so the two
-            screens can't disagree about what "today" means. Suppressed
-            while a session is minimized: the global mini-player (mounted in
-            (tabs)/_layout.tsx, visible on every tab) already is the
-            "resume" affordance in that case — showing both would mean two
-            competing primary actions, which the priority system this card
-            itself enforces is specifically meant to avoid. Also suppressed
-            for a brand-new account: the welcome card below already offers
-            the same "start training" action. */}
-        {!isNewUser && !minimized && <HeroCard status={todayStatus} />}
-
-        {/* Weekly commitment — "what are we doing this week, and how's it
-            gone" — distinct from Progress Index (which compares to your
-            own rolling average, not an explicit plan you set). Only shows
-            once the weekly planner has been used at least once; an empty
-            strip with nothing ever assigned isn't useful to show by
-            default. */}
-        {weeklyCommitment && weeklyCommitment.plannedCount > 0 && (
-          <Card>
-            <WeeklyCommitmentStrip commitment={weeklyCommitment} />
-          </Card>
-        )}
-
-        {/* Quick Metrics Grid — recent-activity signals (streak, this
-            week's volume, recent PRs), not lifetime totals; those live one
-            tap away in Conquistas/Recordes. Fixed-height cards regardless
-            of loading state (a skeleton bar in place of the number) so
-            these three cards never shift the rest of the page as the
-            SQLite queries resolve. */}
-        <View style={styles.statsRow}>
-          <Card style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: colors.accentContainer }]}>
-              <Flame size={20} color={colors.accent} />
-            </View>
-            {loaded ? (
-              <Text style={[styles.statValue, { color: colors.text }]}>{streak.currentStreak}</Text>
-            ) : (
-              <View style={[styles.statSkeleton, { backgroundColor: colors.surfaceVariant }]} />
-            )}
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Dias seguidos</Text>
-          </Card>
-          <Card style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: colors.primaryContainer }]}>
-              <Dumbbell size={20} color={colors.primary} />
-            </View>
-            {loaded && weeklyVolume !== null ? (
-              <Text style={[styles.statValue, styles.statValueCompact, { color: colors.text }]} numberOfLines={1} adjustsFontSizeToFit>
-                {formatVolume(weeklyVolume)}
-              </Text>
-            ) : (
-              <View style={[styles.statSkeleton, { backgroundColor: colors.surfaceVariant }]} />
-            )}
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Volume semanal</Text>
-          </Card>
-          <Card style={styles.statCard}>
-            <View style={[styles.statIcon, { backgroundColor: colors.secondaryContainer }]}>
-              <Trophy size={20} color={colors.secondary} />
-            </View>
-            {loaded && prCountRecent !== null ? (
-              <Text style={[styles.statValue, { color: colors.text }]}>{prCountRecent}</Text>
-            ) : (
-              <View style={[styles.statSkeleton, { backgroundColor: colors.surfaceVariant }]} />
-            )}
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>PRs (30 dias)</Text>
-          </Card>
-        </View>
-
-        {isNewUser && (
-          <Card style={{ alignItems: 'center', gap: 10, paddingVertical: 28 }}>
-            <Dumbbell size={40} color={colors.textTertiary} />
-            <Text style={{ color: colors.text, fontFamily: 'Inter-Bold', fontSize: 18 }}>Bem-vindo à Changes</Text>
-            <Text style={{ color: colors.textSecondary, fontFamily: 'Inter-Regular', fontSize: 14, textAlign: 'center' }}>
-              Faz o teu primeiro treino para começares a ver o teu resumo, histórico e dicas aqui.
-            </Text>
-            <TouchableOpacity
-              style={[styles.ctaBtn, { backgroundColor: colors.primary }]}
-              onPress={() => router.push('/(tabs)/start')}
-              accessibilityRole="button"
-              accessibilityLabel="Ir para Treinar"
-            >
-              <Play size={16} color={colors.onPrimary} />
-              <Text style={[styles.ctaBtnText, { color: colors.onPrimary }]}>Começar a treinar</Text>
-            </TouchableOpacity>
-          </Card>
-        )}
-
-        {/* Body Weight Tracking */}
-        {!isNewUser && latestBodyMetric && (
-          <TouchableOpacity
-            style={[styles.weightCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={() => setBodyMetricsModalVisible(true)}
-            activeOpacity={0.7}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.weightLabel, { color: colors.textSecondary }]}>Peso Atual</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 4 }}>
-                <Text style={[styles.weightValue, { color: colors.text }]}>
-                  {latestBodyMetric.weight?.toFixed(1) || '—'}
-                </Text>
-                <Text style={[styles.weightUnit, { color: colors.textSecondary }]}>kg</Text>
-              </View>
-              {weightChange?.delta !== null && (
-                <Text
-                  style={[
-                    styles.weightDelta,
-                    { color: weightChange.delta > 0 ? colors.error : colors.success },
-                  ]}
-                >
-                  {weightChange.delta > 0 ? '+' : ''}{weightChange.delta?.toFixed(1)} vs semana passada
-                </Text>
-              )}
-            </View>
-            <View style={[styles.weightIcon, { backgroundColor: colors.secondaryContainer }]}>
-            <TrendingUp size={18} color={colors.secondary} />
-            </View>
-          </TouchableOpacity>
-        )}
-
-        {/* Doorway to the progress hub, which lists every analysis screen.
-            Without it these were scattered across three different places and
-            most of them were only findable by digging through the history
-            tab. The two shortcuts beside it are the ones worth one tap. */}
-        {!isNewUser && (
-          <TouchableOpacity
-            style={[styles.recapBanner, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={() => router.push('/progress')}
-            activeOpacity={0.8}
-            accessibilityRole="button"
-            accessibilityLabel="Ver progresso"
-            accessibilityHint="Histórico, força, equilíbrio muscular, fadiga, fotos e conquistas"
-          >
-            <View style={[styles.recapBannerIcon, { backgroundColor: colors.primaryContainer }]}>
-              <TrendingUp size={18} color={colors.primary} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.recapBannerText, { color: colors.text }]} numberOfLines={1}>Progresso</Text>
-              <Text style={[styles.recapBannerSub, { color: colors.textSecondary }]} numberOfLines={1}>
-                Força, equilíbrio, fadiga e fotos
-              </Text>
-            </View>
-            <ChevronRight size={18} color={colors.textTertiary} />
-          </TouchableOpacity>
-        )}
-
-        {!isNewUser && (
-          <View style={{ flexDirection: 'row', gap: 10 }}>
-            <TouchableOpacity
-              style={[styles.recapBanner, { backgroundColor: colors.surface, borderColor: colors.border, flex: 1 }]}
-              onPress={() => router.push('/monthly-recap')}
-              activeOpacity={0.8}
-            >
-              <View style={[styles.recapBannerIcon, { backgroundColor: colors.secondaryContainer }]}>
-                <Calendar size={18} color={colors.secondary} />
-              </View>
-              <Text style={[styles.recapBannerText, { color: colors.text }]} numberOfLines={1}>O Teu Mês</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.recapBanner, { backgroundColor: colors.surface, borderColor: colors.border, flex: 1 }]}
-              onPress={() => router.push('/achievements')}
-              activeOpacity={0.8}
-            >
-              <View style={[styles.recapBannerIcon, { backgroundColor: colors.accentContainer }]}>
-                <Trophy size={18} color={colors.accent} />
-              </View>
-              <Text style={[styles.recapBannerText, { color: colors.text }]} numberOfLines={1}>Conquistas</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* Fatigue signals — deliberately its own full-width banner, not
-            squeezed into a third slot alongside the two above. This one
-            touches on injury-adjacent territory, so it earns a bit more
-            visual weight than a routine stats shortcut. */}
-        {!isNewUser && !isSimple && (
-          <TouchableOpacity
-            style={[styles.recapBanner, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={() => router.push('/fatigue-radar')}
-            activeOpacity={0.8}
-          >
-            <View style={[styles.recapBannerIcon, { backgroundColor: colors.accentContainer }]}>
-              <Activity size={18} color={colors.accent} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.recapBannerText, { color: colors.text }]} numberOfLines={1}>Sinais de Fadiga</Text>
-              <Text style={[styles.recapBannerSub, { color: colors.textSecondary }]} numberOfLines={1}>Padrões de sobrecarga nos teus próprios números</Text>
-            </View>
-          </TouchableOpacity>
-        )}
-
-        {/* Progress Index — one weekly number combining consistency, volume,
-            muscle balance and progression, computed transparently from data
-            already tracked here, with every point explained below instead
-            of an opaque black-box score. */}
-        {/* NSPI — the adaptive engine's own score, shown instead of the
-            generic Índice de Progresso once a plano adaptativo is active
-            (NSPI_ENGINE.md §7). Same visual language (ring + trend arrow)
-            so switching between the two doesn't feel like a different app. */}
-        {adaptiveStatus?.latestNspi && (
-          <Card>
-            <TouchableOpacity
-              style={styles.progressHeader}
-              onPress={() => { hapticSelect(); router.push('/adaptive/recap'); }}
-              accessibilityRole="button"
-              accessibilityLabel={`NSPI: ${Math.round(adaptiveStatus.latestNspi.score)} de 100. Toca para ver o Weekly Recap`}
-            >
-              <View style={[styles.progressRing, { borderColor: progressColor(adaptiveStatus.latestNspi.score, colors) }]}>
-                <AnimatedNumber value={adaptiveStatus.latestNspi.score} style={[styles.progressRingText, { color: progressColor(adaptiveStatus.latestNspi.score, colors) }]} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Sparkles size={16} color={colors.accent} />
-                  <Text style={[styles.sectionTitle, { color: colors.text }]}>NSPI</Text>
-                  {adaptiveStatus.latestNspi.trend === 'up' && <TrendingUp size={16} color={colors.success} />}
-                  {adaptiveStatus.latestNspi.trend === 'down' && <TrendingDown size={16} color={colors.warning} />}
-                  {adaptiveStatus.latestNspi.trend === 'stable' && <Minus size={16} color={colors.textTertiary} />}
-                </View>
-                <Text style={[styles.progressSub, { color: colors.textSecondary }]} numberOfLines={1}>
-                  Ciclo {adaptiveStatus.cycleIndex} · {PHASE_LABEL_PT[adaptiveStatus.phase]} · ver Weekly Recap
-                </Text>
-              </View>
-              <ChevronRight size={18} color={colors.textTertiary} />
-            </TouchableOpacity>
-          </Card>
-        )}
-
-        {!adaptiveStatus?.latestNspi && !isNewUser && progressIndex && (
-          <Card>
-            <TouchableOpacity
-              style={styles.progressHeader}
-              onPress={() => { hapticSelect(); setProgressExpanded(e => !e); }}
-              accessibilityRole="button"
-              accessibilityLabel={`Índice de Progresso: ${progressIndex.score} de 100. Toca para ${progressExpanded ? 'esconder' : 'ver'} detalhe`}
-            >
-              <View style={[styles.progressRing, { borderColor: progressColor(progressIndex.score, colors) }]}>
-                <AnimatedNumber value={progressIndex.score} style={[styles.progressRingText, { color: progressColor(progressIndex.score, colors) }]} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Sparkles size={16} color={colors.accent} />
-                  <Text style={[styles.sectionTitle, { color: colors.text }]}>Índice de Progresso</Text>
-                  {progressIndex.trend === 'up' && <TrendingUp size={16} color={colors.success} />}
-                  {progressIndex.trend === 'down' && <TrendingDown size={16} color={colors.warning} />}
-                  {progressIndex.trend === 'stable' && <Minus size={16} color={colors.textTertiary} />}
-                </View>
-                <Text style={[styles.progressSub, { color: colors.textSecondary }]}>
-                  {progressExpanded ? 'Toca para esconder o detalhe' : 'Toca para ver o detalhe'}
-                </Text>
-              </View>
-              <Animated.View style={chevronAnimatedStyle}>
-                <ChevronRight size={18} color={colors.textTertiary} />
-              </Animated.View>
-            </TouchableOpacity>
-
-            {progressExpanded && (
-              <Animated.View entering={FadeIn.duration(200)} exiting={FadeOut.duration(150)} style={{ marginTop: 12, gap: 10 }}>
-                {progressIndex.components.map(c => (
-                  <View key={c.key}>
-                    <View style={styles.progressCompRow}>
-                      <Text style={[styles.progressCompLabel, { color: colors.text }]}>{c.label}</Text>
-                      <Text style={[styles.progressCompScore, { color: colors.textSecondary }]}>{c.score}/{c.maxScore}</Text>
-                    </View>
-                    <View style={[styles.progressBarTrack, { backgroundColor: colors.surfaceVariant }]}>
-                      <ProgressBarFill ratio={c.score / c.maxScore} color={progressColor(c.score * 4, colors)} />
-                    </View>
-                    <Text style={[styles.progressCompExplain, { color: colors.textTertiary }]}>{c.explanation}</Text>
-                  </View>
-                ))}
-                <Text style={[styles.progressFootnote, { color: colors.textTertiary }]}>
-                  Reflete o teu padrão de treino — não sabe nada sobre sono, alimentação ou recuperação.
-                </Text>
-              </Animated.View>
-            )}
-          </Card>
-        )}
-
-        {/* Training tips — rule-based insights from recent history, not a
-            network/AI call (the app is fully offline). */}
-        {tips.length > 0 && (
-          <View style={{ gap: 8 }}>
-            <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>DICAS DE TREINO</Text>
-            {tips.map((tip, i) => {
-              const Icon = TIP_ICON[tip.type];
-              const tint = tip.type === 'warning' ? colors.warning : tip.type === 'positive' ? colors.success : colors.primary;
-              return (
-                <Card key={i} style={[styles.tipCard, { borderLeftWidth: 3, borderLeftColor: tint }]}>
-                  <View style={styles.tipHeader}>
-                    <Icon size={16} color={tint} />
-                    <Text style={[styles.tipTitle, { color: colors.text }]}>{tip.title}</Text>
-                  </View>
-                  <Text style={[styles.tipDetail, { color: colors.textSecondary }]}>{tip.detail}</Text>
-                </Card>
-              );
-            })}
-          </View>
-        )}
-
-        {/* Recent history */}
-        {recentSessions.length > 0 && (
-          <View style={{ gap: 8 }}>
-            <View style={styles.sectionHeaderRow}>
-              <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>ÚLTIMOS TREINOS</Text>
-              <TouchableOpacity onPress={() => router.push('/(tabs)/history')} accessibilityRole="button" accessibilityLabel="Ver histórico completo">
-                <View style={styles.seeAllRow}>
-                  <Text style={[styles.seeAllText, { color: colors.primary }]}>Ver tudo</Text>
-                  <ChevronRight size={14} color={colors.primary} />
-                </View>
-              </TouchableOpacity>
-            </View>
-            {recentSessions.map((session, index) => (
-              <Animated.View key={session.id} entering={FadeInDown.delay(index * 60).duration(300)}>
-                <TouchableOpacity
-                  style={[styles.sessionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-                  onPress={() => router.push({ pathname: '/workout/summary', params: { sessionId: session.id } })}
-                  activeOpacity={0.7}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.sessionName, { color: colors.text }]} numberOfLines={1}>{session.name}</Text>
-                    <Text style={[styles.sessionDate, { color: colors.textTertiary }]}>{formatDateTime(session.started_at)}</Text>
-                  </View>
-                  <View style={styles.sessionStats}>
-                    <Text style={[styles.sessionStat, { color: colors.textSecondary }]}>⏱ {formatTime(session.total_duration)}</Text>
-                    <Text style={[styles.sessionStat, { color: colors.textSecondary }]}>{formatVolume(session.total_volume)}</Text>
-                  </View>
-                </TouchableOpacity>
-              </Animated.View>
-            ))}
-          </View>
-        )}
-
-        {/* Most trained exercises */}
-        {topExercises.length > 0 && (
-          <View style={{ gap: 8 }}>
-            <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>MAIS TREINADOS (60 DIAS)</Text>
-            <Card style={{ gap: 2 }}>
-              {topExercises.map((ex, i) => {
-                const maxCount = topExercises[0].set_count || 1;
-                return (
-                  <TouchableOpacity
-                    key={ex.exercise_id}
-                    style={[styles.rankRow, i > 0 && { borderTopWidth: 1, borderTopColor: colors.border }]}
-                    onPress={() => router.push({ pathname: '/exercise/[id]', params: { id: ex.exercise_id } })}
-                    activeOpacity={0.7}
-                  >
-                    <ExerciseTile muscle={ex.primary_muscle as MuscleGroup} equipment={ex.equipment as Equipment} size={38} />
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.rankName, { color: colors.text }]} numberOfLines={1}>{ex.name}</Text>
-                      <View style={[styles.rankBarTrack, { backgroundColor: colors.surfaceVariant }]}>
-                        <View style={[styles.rankBarFill, { width: `${(ex.set_count / maxCount) * 100}%`, backgroundColor: muscleColor(ex.primary_muscle as MuscleGroup) }]} />
-                      </View>
-                    </View>
-                    <Badge label={`${ex.set_count}×`} color={colors.surfaceVariant} textColor={colors.textSecondary} />
-                  </TouchableOpacity>
-                );
-              })}
-            </Card>
-          </View>
-        )}
-
-        {/* Training consistency — a bar per week, height scaled to the
-            person's OWN typical volume (see aggregateWeeklyConsistency),
-            not a fixed number that wouldn't fit everyone's training style
-            equally. Replaced the old day-by-day square grid, which read as
-            an unexplained wall of squares. */}
-        {weeklyConsistency.length > 0 && (
-          <View style={{ gap: 8 }}>
-            <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>CONSISTÊNCIA (13 SEMANAS)</Text>
-            <Card>
-              <TrainingConsistencyChart weeks={weeklyConsistency} />
-            </Card>
-          </View>
-        )}
-
-        {/* Muscle group distribution — the "what do I train most" picture
-            many other tracking apps show, built from the same per-muscle
-            set counts already used elsewhere (Progress Index, Records tab)
-            rather than a new query. */}
-        {muscleDistribution.length > 0 && (
-          <View style={{ gap: 8 }}>
-            <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>DISTRIBUIÇÃO MUSCULAR (30 DIAS)</Text>
-            <Card style={{ alignItems: 'center', gap: 14 }}>
-              <DonutChart
-                slices={muscleDistribution.map(m => ({
-                  label: MUSCLE_GROUPS_PT[m.muscle as MuscleGroup] || m.muscle,
-                  value: m.sets,
-                  color: muscleColor(m.muscle as MuscleGroup),
-                }))}
-                centerValue={String(muscleDistribution.reduce((sum, m) => sum + m.sets, 0))}
-                centerLabel="séries"
-              />
-              <View style={styles.legendGrid}>
-                {muscleDistribution.map(m => {
-                  const total = muscleDistribution.reduce((sum, x) => sum + x.sets, 0);
-                  const pct = total > 0 ? Math.round((m.sets / total) * 100) : 0;
-                  return (
-                    <View key={m.muscle} style={styles.legendItem}>
-                      <View style={[styles.legendDot, { backgroundColor: muscleColor(m.muscle as MuscleGroup) }]} />
-                      <Text style={[styles.legendText, { color: colors.textSecondary }]} numberOfLines={1}>
-                        {MUSCLE_GROUPS_PT[m.muscle as MuscleGroup] || m.muscle} · {pct}%
-                      </Text>
-                    </View>
-                  );
-                })}
-              </View>
-            </Card>
-          </View>
-        )}
-
-        {/* Most used plans */}
-        {topPlans.length > 0 && (
-          <View style={{ gap: 8 }}>
-            <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>PLANOS MAIS USADOS</Text>
-            <Card style={{ gap: 2 }}>
-              {topPlans.map((p, i) => (
-                <TouchableOpacity
-                  key={p.plan_id}
-                  style={[styles.rankRow, i > 0 && { borderTopWidth: 1, borderTopColor: colors.border }]}
-                  onPress={() => router.push({ pathname: '/plan/[id]', params: { id: p.plan_id } })}
-                  activeOpacity={0.7}
-                >
-                  <View style={[styles.planIcon, { backgroundColor: colors.primaryContainer }]}>
-                    <ListChecks size={18} color={colors.primary} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.rankName, { color: colors.text }]} numberOfLines={1}>{p.name}</Text>
-                  </View>
-                  <Badge label={`${p.session_count}× feito`} color={colors.surfaceVariant} textColor={colors.textSecondary} />
-                </TouchableOpacity>
-              ))}
-            </Card>
-          </View>
-        )}
-
-        {/* Repeat last workout shortcut, when there's history but nothing
-            urgent to show above (keeps the screen useful even once tips run
-            dry). */}
-        {recentSessions.length > 0 && (
-          <TouchableOpacity
-            style={[styles.repeatCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-            onPress={() => router.push({
-              pathname: '/workout/active',
-              params: { planId: 0, planName: recentSessions[0].name, repeatSessionId: String(recentSessions[0].id) },
-            })}
-            activeOpacity={0.85}
-            accessibilityRole="button"
-            accessibilityLabel="Repetir o último treino"
-          >
-            <View style={[styles.repeatIcon, { backgroundColor: colors.secondaryContainer }]}>
-              <Repeat size={20} color={colors.secondary} />
-            </View>
-            <Text style={[styles.repeatText, { color: colors.text }]}>Repetir último treino</Text>
-            <Play size={20} color={colors.secondary} />
-          </TouchableOpacity>
-        )}
-        </>)}
+        {!hub.loaded ? (
+          <ActivityIndicator style={{ marginTop: 32 }} color={colors.primary} />
+        ) : mode === 'find' ? renderFind()
+          : mode === 'instant' ? renderInstant()
+            : !hub.plan ? renderEmptyHub()
+              : renderPlanned()}
       </ScrollView>
-
-      {/* Achievement celebration — only for genuinely NEW unlocks since last
-          time (see getNewlyUnlocked), never re-shown for ones already seen. */}
-      <Modal visible={newAchievement !== null} animationType="fade" transparent onRequestClose={() => setNewAchievement(null)}>
-        <TouchableOpacity style={styles.achievementOverlay} activeOpacity={1} onPress={() => setNewAchievement(null)}>
-          <Animated.View entering={ZoomIn.springify().damping(12)} style={[styles.achievementCard, { backgroundColor: colors.surface }]}>
-            <View style={[styles.achievementIconRing, { backgroundColor: colors.accentContainer }]}>
-              <Trophy size={36} color={colors.accent} />
-            </View>
-            <Text style={[styles.achievementUnlockedLabel, { color: colors.accent }]}>CONQUISTA DESBLOQUEADA</Text>
-            <Text style={[styles.achievementTitle, { color: colors.text }]}>{newAchievement?.title}</Text>
-            <Text style={[styles.achievementDesc, { color: colors.textSecondary }]}>{newAchievement?.description}</Text>
-          </Animated.View>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Body Metrics Input Modal */}
-      <BodyMetricsInput
-        visible={bodyMetricsModalVisible}
-        onClose={() => setBodyMetricsModalVisible(false)}
-        onSave={() => {
-          loadDashboard();
+      <PlanSettingsSheet
+        visible={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        plan={hub.plan}
+        weekStartDow={weekStartDow}
+        onChanged={() => {
+          resolveWeekStartDow(adaptiveStatus?.weekStart ?? null).then(setWeekStartDow).catch(() => {});
+          upcoming.refresh();
+          hub.reload();
         }}
       />
     </SafeAreaView>
@@ -838,81 +613,58 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
-  headerTitle: { fontFamily: 'Inter-ExtraBold', fontSize: 28 },
-  content: { padding: 16, gap: 16, paddingBottom: 32 },
-  progTabs: { flexDirection: 'row', paddingHorizontal: 16, borderBottomWidth: 1 },
-  progTab: { flex: 1, paddingVertical: 12, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  progTabLabel: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
-  smartCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 18, padding: 16, gap: 14, borderWidth: 1 },
-  smartTitle: { fontFamily: 'Inter-Bold', fontSize: 17 },
-  smartDesc: { fontFamily: 'Inter-Regular', fontSize: 13, marginTop: 2 },
-  linkRow: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, padding: 14 },
-  linkIcon: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  linkTitle: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
-  linkDesc: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
-  recapBanner: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, padding: 14 },
-  recapBannerIcon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  recapBannerText: { flex: 1, fontFamily: 'Inter-Bold', fontSize: 15 },
-  recapBannerSub: { fontFamily: 'Inter-Regular', fontSize: 12, marginTop: 2 },
-  achievementOverlay: { flex: 1, backgroundColor: '#000000aa', alignItems: 'center', justifyContent: 'center', padding: 32 },
-  achievementCard: { width: '100%', borderRadius: 20, padding: 28, alignItems: 'center', gap: 8 },
-  achievementIconRing: { width: 80, height: 80, borderRadius: 40, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
-  achievementUnlockedLabel: { fontFamily: 'Inter-Bold', fontSize: 12, letterSpacing: 1.5 },
-  achievementTitle: { fontFamily: 'Inter-Bold', fontSize: 20, textAlign: 'center' },
-  achievementDesc: { fontFamily: 'Inter-Regular', fontSize: 14, textAlign: 'center', lineHeight: 20 },
-  statsRow: { flexDirection: 'row', gap: 10 },
-  statCard: { flex: 1, alignItems: 'center', gap: 6, paddingVertical: 14 },
-  statIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-  statValue: { fontFamily: 'Inter-Black', fontSize: 26 },
-  statValueCompact: { fontSize: 20 },
-  statLabel: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16 },
-  // Same box as the real 26px value it stands in for, so nothing reflows
-  // once the SQLite query resolves and the skeleton is replaced.
-  statSkeleton: { width: 40, height: 26, borderRadius: 6 },
-  weightCard: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, padding: 14, marginVertical: 8 },
-  weightLabel: { fontFamily: 'Inter-Regular', fontSize: 12 },
-  weightValue: { fontFamily: 'Inter-Bold', fontSize: 28 },
-  weightUnit: { fontFamily: 'Inter-Regular', fontSize: 14 },
-  weightDelta: { fontFamily: 'Inter-Regular', fontSize: 12, marginTop: 4 },
-  weightIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-  ctaBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12, marginTop: 4 },
-  progressHeader: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  progressRing: { width: 48, height: 48, borderRadius: 24, borderWidth: 3, alignItems: 'center', justifyContent: 'center' },
-  progressRingText: { fontFamily: 'Inter-Black', fontSize: 17 },
-  progressSub: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
-  progressCompRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  progressCompLabel: { fontFamily: 'Inter-SemiBold', fontSize: 13, lineHeight: 17 },
-  progressCompScore: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16 },
-  progressBarTrack: { height: 6, borderRadius: 3, marginTop: 4, overflow: 'hidden' },
-  progressBarFill: { height: 6, borderRadius: 3 },
-  progressCompExplain: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 14, marginTop: 3 },
-  progressFootnote: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 14, fontStyle: 'italic', marginTop: 4 },
-  ctaBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
-  sectionTitle: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, letterSpacing: 1 },
-  sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  seeAllRow: { flexDirection: 'row', alignItems: 'center', gap: 2 },
-  seeAllText: { fontFamily: 'Inter-SemiBold', fontSize: 13, lineHeight: 17 },
-  tipCard: { gap: 4, paddingVertical: 12 },
-  tipHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  tipTitle: { fontFamily: 'Inter-SemiBold', fontSize: 14, flex: 1 },
-  tipDetail: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 18 },
-  sessionCard: { flexDirection: 'row', alignItems: 'center', borderRadius: 14, borderWidth: 1, padding: 14, gap: 10 },
-  sessionName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
-  sessionDate: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
-  sessionStats: { alignItems: 'flex-end', gap: 2 },
-  sessionStat: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16 },
-  rankRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
-  rankName: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
-  rankSub: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 1 },
-  rankBarTrack: { height: 5, borderRadius: 3, marginTop: 6, overflow: 'hidden' },
-  rankBarFill: { height: 5, borderRadius: 3 },
-  legendGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, justifyContent: 'center' },
-  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: '40%' },
-  legendDot: { width: 10, height: 10, borderRadius: 5 },
-  legendText: { fontFamily: 'Inter-Regular', fontSize: 12, flexShrink: 1 },
-  planIcon: { width: 38, height: 38, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  repeatCard: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, borderWidth: 1, padding: 14 },
-  repeatIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-  repeatText: { flex: 1, fontFamily: 'Inter-SemiBold', fontSize: 15 },
+  scroll: { paddingHorizontal: 16 },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  planBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: RADIUS.pill },
+  planBtnText: { fontFamily: 'Inter-Bold', fontSize: 13 },
+  menuBtn: { minWidth: TOUCH_TARGET_MIN, minHeight: TOUCH_TARGET_MIN, alignItems: 'center', justifyContent: 'center' },
+  modeRow: { flexDirection: 'row', borderRadius: RADIUS.pill, padding: 4, marginBottom: 16, gap: 4 },
+  modeBtn: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderRadius: RADIUS.pill,
+  },
+  modeLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, textAlign: 'center', lineHeight: 14 },
+  subTabs: { flexDirection: 'row', borderBottomWidth: StyleSheet.hairlineWidth, marginBottom: 16 },
+  subTab: { flex: 1, paddingVertical: 12, borderBottomWidth: 2, borderBottomColor: 'transparent', alignItems: 'center' },
+  subTabText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
+  section: { gap: 10 },
+  sectionEyebrow: { fontFamily: 'Inter-SemiBold', fontSize: 12, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 4 },
+  weekChips: { gap: 8, paddingBottom: 4 },
+  weekChip: { borderWidth: 1, borderRadius: RADIUS.pill, paddingHorizontal: 12, paddingVertical: 6 },
+  weekChipText: { fontFamily: 'Inter-SemiBold', fontSize: 12 },
+  fiveDayChip: { width: 88, borderWidth: 1, borderRadius: RADIUS.card, paddingHorizontal: 10, paddingVertical: 10, gap: 2 },
+  fiveDayNum: { fontFamily: 'Inter-Bold', fontSize: 20 },
+  fiveDaySub: { fontFamily: 'Inter-Regular', fontSize: 11 },
+  dayCard: { flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 1, borderRadius: RADIUS.card, padding: 14 },
+  dowBadge: { width: 48, height: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  dowText: { fontFamily: 'Inter-Bold', fontSize: 12 },
+  dayBody: { flex: 1, gap: 2 },
+  dayTitle: { fontFamily: 'Inter-Bold', fontSize: 16 },
+  dayMeta: { fontFamily: 'Inter-Regular', fontSize: 13 },
+  dayState: { fontFamily: 'Inter-SemiBold', fontSize: 12, marginTop: 2 },
+  dayLimitRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
+  dayLimit: { fontFamily: 'Inter-Medium', fontSize: 13 },
+  addDayBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: RADIUS.pill },
+  addDayText: { fontFamily: 'Inter-Bold', fontSize: 13 },
+  dowLarge: { fontFamily: 'Inter-Bold', fontSize: 13, letterSpacing: 1 },
+  detailsTitle: { fontFamily: 'Inter-Bold', fontSize: 24 },
+  emptyDay: { gap: 12, marginTop: 16 },
+  emptyCta: { borderWidth: 1, borderRadius: RADIUS.card, padding: 22, alignItems: 'center', gap: 6 },
+  emptyCtaTitle: { fontFamily: 'Inter-Bold', fontSize: 18 },
+  emptyCtaSub: { fontFamily: 'Inter-Regular', fontSize: 13 },
+  exRow: { paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth },
+  exBody: { gap: 4 },
+  exName: { fontFamily: 'Inter-SemiBold', fontSize: 16 },
+  exMeta: { fontFamily: 'Inter-Regular', fontSize: 13 },
+  detailActions: { gap: 10, marginTop: 16 },
+  findRow: { flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 1, borderRadius: RADIUS.card, padding: 16 },
+  findBody: { flex: 1 },
+  emptyWrap: { paddingBottom: 24 },
+  emptyActions: { gap: 10, paddingHorizontal: 8 },
 });

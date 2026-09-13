@@ -14,7 +14,8 @@
     "audit:full": "node scripts/audit_gymforge.cjs --full",
     "audit:media": "node scripts/audit_gymforge.cjs --media",
     "enrich:media": "node scripts/enrich_exercise_media.cjs --dry-run",
-    "enrich:media:write": "node scripts/enrich_exercise_media.cjs --write-matches --validate-urls"
+    "enrich:media:write": "node scripts/enrich_exercise_media.cjs --write-matches --validate-urls",
+    "ios": "expo run:ios"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
@@ -42,6 +43,7 @@
     "expo-video": "~3.0.11",
     "jszip": "^3.10.1",
     "lucide-react-native": "^0.544.0",
+    "nativewind": "^4.2.6",
     "react": "19.1.0",
     "react-native": "0.81.4",
     "react-native-gesture-handler": "~2.28.0",
@@ -60,6 +62,8 @@
     "eslint-config-expo": "~10.0.0",
     "jest": "^29.7.0",
     "jest-expo": "~54.0.12",
+    "prettier-plugin-tailwindcss": "^0.5.11",
+    "tailwindcss": "^3.4.17",
     "typescript": "~5.9.2"
   },
   "jest": {
@@ -68,7 +72,7 @@
       "**/__tests__/**/*.test.ts"
     ],
     "transformIgnorePatterns": [
-      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg)"
+      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|nativewind|react-native-css-interop|css-to-react-native)"
     ]
   }
 }

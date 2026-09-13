@@ -1,13 +1,33 @@
 import { getAllExercises } from '@/db/exerciseDao';
 import { createPlan, addExerciseToPlan } from '@/db/planDao';
 import { getDatabase } from '@/db/database';
-import { getMuscleRecency, getFatigueRadarExerciseData, getExerciseUsageCounts, getLastSetForExercise, getProgressionSuggestion } from '@/db/workoutDao';
+import { getExerciseUsageCounts, getLastSetForExercise, getProgressionSuggestion } from '@/db/workoutDao';
 import type { Exercise, MuscleGroup, PlanType, SplitType, SetType, Equipment } from '@/types';
 import { MUSCLE_GROUPS_PT } from '@/types';
 import type { BodyAnalysis } from './bodyAnalysis';
-import { selectTodaysMuscles, muscleGroupCountForMinutes, pickMuscleNeedingMoreVolume } from './dailyWorkoutGenerator';
-import { detectPerformanceRegression, detectRpeCreep } from './fatigueSignals';
-import { isCompoundMovement, isOlympicLiftSpecialty } from './movementClassify';
+import { pickMuscleNeedingMoreVolume } from './dailyWorkoutGenerator';
+import {
+  equipmentClass,
+  pickNextSlotted,
+  poolHasMixedClasses,
+} from './equipmentProgramming';
+import {
+  isCompoundMovement,
+  isOlympicLiftSpecialty,
+  movementSubcategory,
+  muscleForSubcategory,
+  slotsForDay,
+  subcategoryCap,
+  type MovementSubcategory,
+} from './movementClassify';
+import type { AdaptiveExperience } from './nspi';
+import {
+  allocateWorkingSets,
+  targetRirFor,
+  usesDoseEngine,
+  type AllocatableExercise,
+} from './trainingDose';
+import { estimateDayMinutes } from './workoutTime';
 
 interface DaySplit {
   label: string;
@@ -19,7 +39,14 @@ interface SplitTemplate {
   days: DaySplit[];
 }
 
-const PER_SET_MINUTES = 4;
+/** How close a generated day must land to the minutes the person picked. */
+export const SESSION_TIME_TOLERANCE = 0.1;
+/** Strength work yields this many minutes when a cardio finisher is also booked. */
+export const FINISHER_MINUTES = 12;
+const MAX_DAY_EXERCISES = 10;
+const MIN_DAY_EXERCISES = 2;
+const MIN_WORKING_SETS = 2;
+const MAX_WORKING_SETS = 6;
 // Caps how much a well-worn exercise's session count can dominate the
 // ranking — proven exercises should win, but not so absolutely that a
 // 40-session staple makes every other candidate for that muscle
@@ -30,10 +57,8 @@ const MAX_USAGE_SESSIONS_COUNTED = 10;
 const CONDITIONING_MIN_MINUTES = 60;
 
 /**
- * Whether a session should get a general conditioning finisher — both
- * generatePlan and generateTodaysWorkout defer to this instead of each
- * having their own copy of the same >60min gate, so the rule can never
- * drift between the two generators.
+ * Whether a session should get a general conditioning finisher — generatePlan
+ * and generateHomeWorkout share this >60min gate so the rule cannot drift.
  */
 export function shouldAddConditioningFinisher(suggestConditioning: boolean, minutesAvailable: number): boolean {
   return suggestConditioning && minutesAvailable > CONDITIONING_MIN_MINUTES;
@@ -58,13 +83,17 @@ const SPLIT_TEMPLATES: Record<number, SplitTemplate> = {
     ],
   },
   5: {
-    splitType: 'bro',
+    // Frequency-friendly default (~2x per large muscle) instead of a bro
+    // split. 2x is a scheduling default so weekly set budgets fit — not a
+    // claim that frequency itself beats volume-equated 1x (see
+    // HYPERTROPHY_PROGRAMMING.md).
+    splitType: 'ul_ppl',
     days: [
-      { label: 'Peito', focus: ['chest'] },
-      { label: 'Costas', focus: ['back', 'lats'] },
+      { label: 'Upper', focus: ['chest', 'back', 'shoulders', 'biceps', 'triceps'] },
+      { label: 'Lower', focus: ['quads', 'hamstrings', 'glutes', 'calves'] },
+      { label: 'Push', focus: ['chest', 'shoulders', 'triceps'] },
+      { label: 'Pull', focus: ['back', 'biceps', 'forearms'] },
       { label: 'Pernas', focus: ['quads', 'hamstrings', 'glutes', 'calves'] },
-      { label: 'Ombros', focus: ['shoulders', 'traps'] },
-      { label: 'Bracos', focus: ['biceps', 'triceps', 'forearms'] },
     ],
   },
   6: {
@@ -93,13 +122,35 @@ const SPLIT_TEMPLATES: Record<number, SplitTemplate> = {
   },
 };
 
+function typicalHypertrophySlots(count: number): { sets: number; restSeconds: number }[] {
+  return Array.from({ length: count }, (_, i) => {
+    const name = i % 2 === 0 ? 'Barbell Bench Press' : 'Cable Crossover';
+    const t = setsRepsForPlanType('hypertrophy', i, name);
+    return { sets: t.sets, restSeconds: t.rest };
+  });
+}
+
 /**
- * How many exercises a session of `minutesAvailable` gets — same formula
- * pickExercisesForDay() actually uses, kept in sync here for
- * suggestedDaysPerWeek() below.
+ * How many typical hypertrophy exercises fit in `minutesAvailable` (±10%).
+ * Used by suggestedDaysPerWeek, the auto-plan summary, and as the
+ * candidate-pool size for picking.
  */
-function targetExerciseCountFor(minutesAvailable: number): number {
-  return Math.max(4, Math.min(8, Math.floor(minutesAvailable / PER_SET_MINUTES / 3)));
+export function targetExerciseCountFor(minutesAvailable: number): number {
+  let best = MIN_DAY_EXERCISES;
+  for (let n = 1; n <= MAX_DAY_EXERCISES; n++) {
+    if (estimateDayMinutes(typicalHypertrophySlots(n)) <= minutesAvailable * (1 + SESSION_TIME_TOLERANCE)) {
+      best = n;
+    } else {
+      break;
+    }
+  }
+  return best;
+}
+
+export function isWithinSessionMinutes(actual: number, target: number): boolean {
+  if (target <= 0) return actual === 0;
+  return actual >= target * (1 - SESSION_TIME_TOLERANCE)
+    && actual <= target * (1 + SESSION_TIME_TOLERANCE);
 }
 
 /**
@@ -108,7 +159,7 @@ function targetExerciseCountFor(minutesAvailable: number): number {
  * per session — and if not, the smallest days/week that would fix it.
  *
  * Fewer days means a broader per-day focus (a 2-day Full Body split covers
- * 4 muscle groups in one session; a 5-day Bro Split covers 1). The number
+ * 4 muscle groups in one session; a 5-day Upper day covers 5). The number
  * of exercises a session gets is driven only by minutesAvailable (see
  * targetExerciseCountFor), not by how many muscle groups that day needs to
  * cover — so a short session on a broad-focus day risks some of that day's
@@ -179,12 +230,26 @@ function extraSetsForFocus(muscle: MuscleGroup, focusAreas: MuscleGroup[]): numb
 // movements. A chest day ended up with three separate fly/crossover-pattern
 // exercises and zero real bench press in its working sets — only a
 // close-grip specialty variant, demoted to warmup.
-const BRAND_PREFIXES = ['gymleco'];
+const SKIP_NAME_PREFIXES = [
+  'gymleco', 'cable', 'barbell', 'dumbbell', 'machine', 'smith',
+  'kettlebell', 'ez', 'trap',
+];
+
+/** Fly / pec-deck / cable-crossover are the same isolation pattern. */
+const FAMILY_ALIASES: Record<string, string> = {
+  crucifixo: 'crossover',
+  fly: 'crossover',
+  flye: 'crossover',
+  flyes: 'crossover',
+  pec: 'crossover',
+};
 
 export function movementFamily(name: string): string {
-  const words = name.toLowerCase().split(' ');
-  const first = BRAND_PREFIXES.includes(words[0]) ? words[1] : words[0];
-  return first || words[0];
+  const words = name.toLowerCase().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < words.length - 1 && SKIP_NAME_PREFIXES.includes(words[i])) i += 1;
+  const raw = words[i] || words[0] || '';
+  return FAMILY_ALIASES[raw] || raw;
 }
 
 // Real usage history outranks everything else: an exercise the person has
@@ -232,6 +297,9 @@ export function pickExercisesForDay(
   usageHistory?: Map<number, number>,
   allowedEquipment?: Equipment[],
   excludedMuscles?: MuscleGroup[],
+  planType: PlanType = 'hypertrophy',
+  experience: AdaptiveExperience = 'intermediate',
+  dayLabel?: string,
 ): Exercise[] {
   const focusWithoutInjuries = excludedMuscles && excludedMuscles.length > 0
     ? focus.filter(m => !excludedMuscles.includes(m))
@@ -240,9 +308,11 @@ export function pickExercisesForDay(
     ? [...new Set([...focusAreas.filter(m => focusWithoutInjuries.includes(m)), ...focusWithoutInjuries])]
     : focusWithoutInjuries;
 
-  const targetExerciseCount = Math.max(
-    4,
-    Math.min(8, Math.floor(minutesAvailable / PER_SET_MINUTES / 3)),
+  // Headroom above the time-fitted count so fitDayToMinutes can add
+  // exercises instead of being stuck at a too-short pool.
+  const targetExerciseCount = Math.min(
+    MAX_DAY_EXERCISES,
+    Math.max(4, targetExerciseCountFor(minutesAvailable) + 3),
   );
 
   const byMuscle = new Map<MuscleGroup, Exercise[]>();
@@ -254,12 +324,10 @@ export function pickExercisesForDay(
     // otherwise stricter than the coarse EquipmentPreference buckets — no
     // loosening, since the person told us exactly what they have, and
     // showing something outside that list is worse than training that
-    // muscle less this session. One deliberate exception, mirroring
-    // matchesEquipment's own 'gymleco' handling above: the seed exercise
-    // database has zero exercises actually tagged 'gymleco' (it's one gym
-    // chain's own branded machines, not a distinct movement), so selecting
-    // only Gymleco would otherwise silently return nothing. Generic
-    // 'machine' exercises are the closest real substitute.
+    // muscle less this session. One deliberate exception: Gymleco and
+    // generic `machine` are the same guided class, so a Gymleco-only
+    // checklist still accepts `machine` substitutes when a muscle has no
+    // branded row (not because the seed is empty — it is not).
     if (allowedEquipment && allowedEquipment.length > 0) {
       const allowed = allowedEquipment.includes('gymleco')
         ? [...allowedEquipment, 'machine' as Equipment]
@@ -270,15 +338,13 @@ export function pickExercisesForDay(
     }
 
     const prefMatches = matches.filter(e => matchesEquipment(e, equipmentPref));
-    if (prefMatches.length >= 2) {
-      matches = prefMatches;
-    } else if (equipmentPref === 'gymleco') {
-      matches = [...prefMatches, ...matches.filter(e => e.equipment === 'machine')];
-    } else if (equipmentPref === 'home_dumbbell') {
-      // Stay strictly within home equipment even when a muscle has fewer
-      // than 2 dumbbell/bodyweight options — unlike the other preferences,
-      // never fall back to gym-only equipment (barbell, machine, cable)
-      // the person doesn't actually have at home.
+    if (equipmentPref === 'gymleco') {
+      matches = prefMatches.length >= 2
+        ? prefMatches
+        : [...prefMatches, ...matches.filter(e => e.equipment === 'machine')];
+    } else if (equipmentPref !== 'any') {
+      // free_weights and home_dumbbell stay exclusive — never leak
+      // machines into a "livres" / home plan when the preferred pool is thin.
       matches = prefMatches;
     }
 
@@ -295,47 +361,106 @@ export function pickExercisesForDay(
   // the person as "very similar exercises" or "wrong names" repeating.
   // Tracking which movement family is already used per muscle and preferring
   // a fresh one keeps the day varied (press + fly + machine, not three bench
-  // press angles).
+  // press angles). Mixed pools then overlay complementary slots
+  // (EQUIPMENT_PROGRAMMING.md) so the second pick is not another barbell
+  // variant of the same family. Subcategory caps then block a second fly
+  // (Crossover no Cabo + Cable Crossover) even when their first words differ.
   const usedFamilyPerMuscle = new Map<MuscleGroup, Set<string>>();
+  const pickedPerMuscle = new Map<MuscleGroup, Exercise[]>();
+  const usedSubcatCount = new Map<MovementSubcategory, number>();
+
+  const subcatOf = (ex: Exercise) => movementSubcategory(ex.name, ex.primary_muscle, ex.type);
+  const canTakeSubcat = (ex: Exercise) =>
+    (usedSubcatCount.get(subcatOf(ex)) ?? 0) < subcategoryCap(subcatOf(ex));
+
+  const rankAmong = (muscle: MuscleGroup, remaining: Exercise[]): Exercise | undefined => {
+    if (remaining.length === 0) return undefined;
+    const pool = byMuscle.get(muscle) || remaining;
+    if (!poolHasMixedClasses(pool)) {
+      return sortCandidates(remaining, usageHistory)[0];
+    }
+    const already = pickedPerMuscle.get(muscle) ?? [];
+    const primaryClass = already[0] ? equipmentClass(already[0].equipment) : null;
+    return pickNextSlotted(remaining, primaryClass, planType, experience);
+  };
+
+  const chooseNext = (muscle: MuscleGroup, requireFreshFamily: boolean): Exercise | undefined => {
+    const candidates = byMuscle.get(muscle) || [];
+    const usedFamilies = usedFamilyPerMuscle.get(muscle) ?? new Set<string>();
+    let remaining = candidates.filter(c => !usedIds.has(c.id) && canTakeSubcat(c));
+    if (requireFreshFamily) {
+      remaining = remaining.filter(c => !usedFamilies.has(movementFamily(c.name)));
+    }
+    return rankAmong(muscle, remaining);
+  };
+
+  const commit = (next: Exercise): void => {
+    picked.push(next);
+    usedIds.add(next.id);
+    const families = usedFamilyPerMuscle.get(next.primary_muscle) ?? new Set<string>();
+    families.add(movementFamily(next.name));
+    usedFamilyPerMuscle.set(next.primary_muscle, families);
+    const list = pickedPerMuscle.get(next.primary_muscle) ?? [];
+    list.push(next);
+    pickedPerMuscle.set(next.primary_muscle, list);
+    const sub = subcatOf(next);
+    usedSubcatCount.set(sub, (usedSubcatCount.get(sub) ?? 0) + 1);
+  };
+
+  const take = (muscle: MuscleGroup, requireFreshFamily: boolean): boolean => {
+    const next = chooseNext(muscle, requireFreshFamily);
+    if (!next) return false;
+    commit(next);
+    return true;
+  };
+
+  const takeSlot = (allowed: MovementSubcategory[]): boolean => {
+    const muscles = [...new Set(
+      allowed.map(muscleForSubcategory).filter((m): m is MuscleGroup => !!m && focusMuscles.includes(m as MuscleGroup)),
+    )];
+    const remaining: Exercise[] = [];
+    for (const muscle of muscles) {
+      for (const ex of byMuscle.get(muscle) || []) {
+        if (usedIds.has(ex.id) || !canTakeSubcat(ex)) continue;
+        if (!allowed.includes(subcatOf(ex))) continue;
+        remaining.push(ex);
+      }
+    }
+    if (remaining.length === 0) return false;
+    const muscle = remaining[0].primary_muscle;
+    const next = rankAmong(muscle, remaining);
+    if (!next) return false;
+    commit(next);
+    return true;
+  };
+
+  const daySlots = slotsForDay(focusMuscles, dayLabel);
+  if (daySlots) {
+    for (const slot of daySlots) {
+      if (picked.length >= targetExerciseCount) break;
+      takeSlot(slot);
+    }
+  }
 
   for (const muscle of focusMuscles) {
-    const candidates = byMuscle.get(muscle) || [];
-    const top = candidates[0];
-    if (top && !usedIds.has(top.id)) {
-      picked.push(top);
-      usedIds.add(top.id);
-      usedFamilyPerMuscle.set(muscle, new Set([movementFamily(top.name)]));
-    }
+    if (picked.some(p => p.primary_muscle === muscle)) continue;
+    take(muscle, false);
   }
 
   // Pass 1: for muscles still needing more volume, prefer a candidate whose
   // movement family hasn't been used yet for that muscle.
   for (const muscle of focusMuscles) {
-    if (picked.length >= targetExerciseCount) break;
-    const candidates = byMuscle.get(muscle) || [];
-    const usedFamilies = usedFamilyPerMuscle.get(muscle) ?? new Set<string>();
-    for (const c of candidates) {
-      if (picked.length >= targetExerciseCount) break;
-      if (usedIds.has(c.id)) continue;
-      if (usedFamilies.has(movementFamily(c.name))) continue;
-      picked.push(c);
-      usedIds.add(c.id);
-      usedFamilies.add(movementFamily(c.name));
+    while (picked.length < targetExerciseCount) {
+      if (!take(muscle, true)) break;
     }
-    usedFamilyPerMuscle.set(muscle, usedFamilies);
   }
 
   // Pass 2: only now allow repeating a movement family, for muscles that
-  // genuinely don't have enough distinct variants to fill the target count.
+  // genuinely don't have enough distinct variants to fill the target count
+  // — still never above the subcategory cap.
   for (const muscle of focusMuscles) {
-    if (picked.length >= targetExerciseCount) break;
-    const candidates = byMuscle.get(muscle) || [];
-    for (const c of candidates) {
-      if (picked.length >= targetExerciseCount) break;
-      if (!usedIds.has(c.id)) {
-        picked.push(c);
-        usedIds.add(c.id);
-      }
+    while (picked.length < targetExerciseCount) {
+      if (!take(muscle, false)) break;
     }
   }
 
@@ -345,8 +470,8 @@ export function pickExercisesForDay(
 /**
  * Groups a day's exercises by muscle, following the focus order of the split
  * (e.g. on a Push day: all chest first, then shoulders, then triceps). Within a
- * muscle the compound movements stay first, since pickExercisesForDay already
- * sorted candidates by equipment priority.
+ * muscle compounds stay first (Nunes 2020: the lift done first gains more
+ * strength) — not barbell-over-machine equipment rank.
  */
 export function orderByMuscleGroup(exercises: Exercise[], focusOrder: MuscleGroup[]): Exercise[] {
   const rank = new Map<MuscleGroup, number>();
@@ -355,6 +480,9 @@ export function orderByMuscleGroup(exercises: Exercise[], focusOrder: MuscleGrou
     const ra = rank.get(a.primary_muscle) ?? 99;
     const rb = rank.get(b.primary_muscle) ?? 99;
     if (ra !== rb) return ra - rb;
+    const aCompound = isCompoundMovement(a.name);
+    const bCompound = isCompoundMovement(b.name);
+    if (aCompound !== bCompound) return aCompound ? -1 : 1;
     return (COMPOUND_PRIORITY[a.equipment] ?? 99) - (COMPOUND_PRIORITY[b.equipment] ?? 99);
   });
 }
@@ -388,19 +516,16 @@ async function suggestWeightForExercise(exerciseId: number, reps: string): Promi
  *
  * strength:    ACSM 2009 — 3-5min core lifts / 1-2min assistance work,
  *              advanced strength phase (its own compound/isolation split).
- * hypertrophy: ACSM's 1-2min baseline, weighted toward the top of that
- *              range per Schoenfeld et al. 2016 (JSCR) — a controlled trial
- *              found 3min rest produced significantly more strength AND
- *              hypertrophy than 1min — and Singer et al. 2024's Bayesian
- *              meta-analysis, which found no extra benefit past ~90s. The
- *              previous flat 30s was below every source reviewed.
+ * hypertrophy: ACSM's 1-2min baseline vs Schoenfeld et al. 2016 (JSCR)
+ *              3min > 1min in trained men. Compounds use 150s (midpoint);
+ *              isolation stays 75s. Not a single settled constant.
  * endurance:   ACSM — <90s for >15 reps at 40-60%1RM.
  * cardio/mobility: unchanged — these goals aren't about compound/isolation
  *              strength work.
  */
 const REST_SECONDS_TABLE: Record<PlanType, { compound: number; isolation: number }> = {
   strength: { compound: 240, isolation: 90 },
-  hypertrophy: { compound: 120, isolation: 75 },
+  hypertrophy: { compound: 150, isolation: 75 },
   endurance: { compound: 45, isolation: 30 },
   cardio: { compound: 30, isolation: 30 },
   mobility: { compound: 30, isolation: 30 },
@@ -445,6 +570,80 @@ function setsRepsForPlanType(
   }
 }
 
+export interface FittedDayExercise {
+  exercise: Exercise;
+  sets: number;
+  reps: string;
+  rest: number;
+  setType: SetType;
+}
+
+/**
+ * Packs a ranked candidate list into a session whose estimated duration
+ * (same estimateDayMinutes the rest of the app shows) lands within ±10% of
+ * `minutesTarget`. Adds exercises, then sets; if still long, drops sets
+ * then trailing exercises. Does not invent exercises that were not passed in.
+ */
+export function fitDayToMinutes(
+  candidates: Exercise[],
+  minutesTarget: number,
+  planType: PlanType,
+  extraSetsFor: (ex: Exercise) => number = () => 0,
+  initialSetsFor?: (ex: Exercise, index: number) => number | undefined,
+): FittedDayExercise[] {
+  if (candidates.length === 0 || minutesTarget <= 0) return [];
+
+  const makeRow = (ex: Exercise, index: number, sets?: number): FittedDayExercise => {
+    const base = setsRepsForPlanType(planType, index, ex.name, extraSetsFor(ex));
+    const seeded = initialSetsFor?.(ex, index);
+    return {
+      exercise: ex,
+      sets: sets ?? seeded ?? base.sets,
+      reps: base.reps,
+      rest: base.rest,
+      setType: base.setType,
+    };
+  };
+
+  const duration = (rows: FittedDayExercise[]) =>
+    estimateDayMinutes(rows.map(r => ({ sets: r.sets, restSeconds: r.rest })));
+
+  const lo = minutesTarget * (1 - SESSION_TIME_TOLERANCE);
+  const hi = minutesTarget * (1 + SESSION_TIME_TOLERANCE);
+  const minEx = Math.min(candidates.length, MIN_DAY_EXERCISES);
+
+  let rows = candidates.slice(0, minEx).map((ex, i) => makeRow(ex, i));
+  let next = minEx;
+
+  while (duration(rows) < lo && next < candidates.length && rows.length < MAX_DAY_EXERCISES) {
+    rows.push(makeRow(candidates[next], rows.length));
+    next += 1;
+  }
+
+  while (duration(rows) < lo) {
+    const idx = [...rows.keys()].reverse().find(i => rows[i].sets < MAX_WORKING_SETS);
+    if (idx == null) break;
+    rows[idx] = { ...rows[idx], sets: rows[idx].sets + 1 };
+  }
+
+  while (duration(rows) > hi) {
+    const last = rows.length - 1;
+    if (rows[last].sets > MIN_WORKING_SETS) {
+      rows[last] = { ...rows[last], sets: rows[last].sets - 1 };
+      continue;
+    }
+    if (rows.length > minEx) {
+      rows = rows.slice(0, -1);
+      continue;
+    }
+    const idx = [...rows.keys()].reverse().find(i => rows[i].sets > MIN_WORKING_SETS);
+    if (idx == null) break;
+    rows[idx] = { ...rows[idx], sets: rows[idx].sets - 1 };
+  }
+
+  return rows;
+}
+
 export interface GeneratedDay {
   label: string;
   exercises: Exercise[];
@@ -471,7 +670,9 @@ export function generatePreview(
     days: template.days.map(d => ({
       label: d.label,
       exercises: [],
-      estimatedMinutes: minutesPerDay,
+      estimatedMinutes: estimateDayMinutes(
+        typicalHypertrophySlots(targetExerciseCountFor(minutesPerDay)),
+      ),
     })),
   };
 }
@@ -503,6 +704,8 @@ export async function generatePlan(
      *  slate" promises. Manual/plain generation paths keep the bias, where
      *  favoring an already-proven exercise is still the right default. */
     ignoreUsageHistory?: boolean;
+    /** Weekly set landmarks scale by training age. Default intermediate. */
+    experience?: AdaptiveExperience;
   },
 ): Promise<number> {
   const template = SPLIT_TEMPLATES[daysPerWeek] || SPLIT_TEMPLATES[3];
@@ -514,6 +717,7 @@ export async function generatePlan(
   const focusAreas = [...new Set([...(options?.bodyAnalysis?.focusAreas ?? []), ...(options?.focusAreas ?? [])])]
     .filter(m => !excludedMuscles.includes(m));
   const suggestConditioning = options?.bodyAnalysis?.suggestConditioning ?? false;
+  const experience = options?.experience ?? 'intermediate';
 
   const eqLabel = equipmentPref === 'gymleco' ? ' · Gymleco' : equipmentPref === 'free_weights' ? ' · Pesos Livres' : '';
   const focusLabel = focusAreas.length > 0 ? ' · Foco personalizado' : '';
@@ -544,46 +748,75 @@ export async function generatePlan(
       true,
     );
 
-    // BUGFIX: the day label used to be passed as the `notes` argument, so plans
-    // had no real day structure and rendered as one long undivided list. Days are
-    // now stored in day_label/day_index, and order_index restarts within each day.
+    // Pick every day first so weekly set budgets can be allocated across
+    // the whole week (volume-first), not 3–4 fixed sets per exercise.
+    const daysPicked: { label: string; focus: MuscleGroup[]; ordered: Exercise[] }[] = [];
     for (let dayIndex = 0; dayIndex < template.days.length; dayIndex++) {
       const day = template.days[dayIndex];
-      const dayExercises = pickExercisesForDay(allExercises, day.focus, minutesPerDay, equipmentPref, focusAreas, usageHistory, allowedEquipment, excludedMuscles);
-      // Group the day's exercises by muscle so each day reads muscle-by-muscle
-      // (all chest work together, then shoulders, then triceps) instead of
-      // jumping between muscle groups.
-      const ordered = orderByMuscleGroup(dayExercises, day.focus);
+      const dayExercises = pickExercisesForDay(allExercises, day.focus, minutesPerDay, equipmentPref, focusAreas, usageHistory, allowedEquipment, excludedMuscles, planType, experience, day.label);
+      daysPicked.push({
+        label: day.label,
+        focus: day.focus,
+        ordered: orderByMuscleGroup(dayExercises, day.focus),
+      });
+    }
+
+    const allocatable: AllocatableExercise[] = [];
+    daysPicked.forEach((day, dayIndex) => {
+      for (const ex of day.ordered) {
+        if (ex.type !== 'strength') continue;
+        allocatable.push({
+          key: `${dayIndex}-${ex.id}`,
+          muscle: ex.primary_muscle,
+          compound: isCompoundMovement(ex.name),
+        });
+      }
+    });
+    const setMap = usesDoseEngine(planType)
+      ? allocateWorkingSets(allocatable, planType, experience, focusAreas, {
+        days: template.days.length,
+        minutesPerDay,
+      })
+      : null;
+
+    for (let dayIndex = 0; dayIndex < daysPicked.length; dayIndex++) {
+      const day = daysPicked[dayIndex];
+      const addFinisher = shouldAddConditioningFinisher(suggestConditioning, minutesPerDay)
+        && day.focus.some(f => f !== 'mobility');
+      const fitted = fitDayToMinutes(
+        day.ordered,
+        Math.max(MIN_DAY_EXERCISES, minutesPerDay - (addFinisher ? FINISHER_MINUTES : 0)),
+        planType,
+        ex => extraSetsForFocus(ex.primary_muscle, focusAreas),
+        ex => setMap?.get(`${dayIndex}-${ex.id}`),
+      );
       let orderIndex = 0;
-      for (let i = 0; i < ordered.length; i++) {
-        const ex = ordered[i];
-        const extra = extraSetsForFocus(ex.primary_muscle, focusAreas);
-        const { sets, reps, rest, setType } = setsRepsForPlanType(planType, i, ex.name, extra);
-        const weightTarget = await suggestWeightForExercise(ex.id, reps);
+      for (const row of fitted) {
+        const targetRir = usesDoseEngine(planType)
+          ? targetRirFor(planType, { compound: isCompoundMovement(row.exercise.name) })
+          : null;
+        const weightTarget = await suggestWeightForExercise(row.exercise.id, row.reps);
         await addExerciseToPlan(
           planId,
-          ex.id,
-          sets,
-          reps,
+          row.exercise.id,
+          row.sets,
+          row.reps,
           weightTarget,
-          rest,
-          setType,
+          row.rest,
+          setMap ? 'normal' : row.setType,
           null,
           '',
           orderIndex++,
           day.label,
           dayIndex,
+          '',
+          targetRir,
         );
       }
 
-      // Conditioning finisher: added per training day (not for pure mobility
-      // days) when the body analysis flagged it as worth supporting a general
-      // calorie deficit. This is *general* conditioning, not exercise aimed at
-      // a specific body part — spot reduction isn't something training can do.
-      // Only for longer sessions (>60min) — on a shorter session, every
-      // minute is more valuable spent on strength work than on a cardio
-      // finisher.
-      if (shouldAddConditioningFinisher(suggestConditioning, minutesPerDay) && day.focus.some(f => f !== 'mobility')) {
+      // Cardio is booked into the reserved FINISHER_MINUTES so strength +
+      // finisher still match the session length the person picked.
+      if (addFinisher) {
         const pool = cardioOptions.length > 0 ? cardioOptions : fallbackCardio;
         if (pool.length > 0) {
           const finisher = pool[dayIndex % pool.length];
@@ -610,107 +843,12 @@ export async function generatePlan(
 }
 
 /**
- * Generates a single day's workout right now, choosing which muscles to
- * train based on actual recent training history (see selectTodaysMuscles)
- * instead of a fixed weekly split — every session is naturally different
- * from the last, because whatever was just trained becomes the LEAST
- * overdue thing by the next time this runs. Still respects body-analysis
- * focus areas and the conditioning-finisher logic, same as generatePlan.
- *
- * Creates a small one-day plan (so the existing workout screen, rest
- * timers, and history all work completely unchanged) rather than
- * inventing a separate "session without a plan" concept.
- */
-export async function generateTodaysWorkout(
-  minutesAvailable: number,
-  options?: {
-    equipmentPref?: EquipmentPreference;
-    bodyAnalysis?: BodyAnalysis | null;
-  },
-): Promise<number> {
-  const allExercises = await getAllExercises();
-  const usageHistory = await getExerciseUsageCounts();
-  const muscleRecency = await getMuscleRecency();
-  const equipmentPref = options?.equipmentPref ?? 'any';
-  const focusAreas = options?.bodyAnalysis?.focusAreas ?? [];
-  const suggestConditioning = options?.bodyAnalysis?.suggestConditioning ?? false;
-
-  // Muscles with an active fatigue signal (see utils/fatigueSignals.ts)
-  // get excluded from today's rotation — this is what turns the Fatigue
-  // Radar from a screen you have to remember to check into something the
-  // generator actually acts on by itself.
-  const fatigueExerciseData = await getFatigueRadarExerciseData();
-  const fatiguedMuscles = Array.from(new Set(
-    fatigueExerciseData
-      .filter(ex => detectPerformanceRegression(ex.points) !== null || detectRpeCreep(ex.rpeSets) !== null)
-      .map(ex => ex.primaryMuscle as MuscleGroup)
-  ));
-
-  const muscleCount = muscleGroupCountForMinutes(minutesAvailable);
-  const todaysMuscles = selectTodaysMuscles(
-    muscleRecency.map(r => ({ muscle: r.muscle as MuscleGroup, daysSinceLastTrained: r.daysSinceLastTrained })),
-    muscleCount,
-    focusAreas,
-    fatiguedMuscles,
-  );
-
-  const dateLabel = new Intl.DateTimeFormat('pt-PT', { day: '2-digit', month: '2-digit' }).format(new Date());
-  const muscleLabels = todaysMuscles.map(m => MUSCLE_GROUPS_PT[m] || m).join(', ');
-  const planName = `Treino de Hoje — ${dateLabel}`;
-
-  const cardioOptions = allExercises.filter(e => e.type === 'cardio' && e.equipment === 'bodyweight');
-  const fallbackCardio = allExercises.filter(e => e.type === 'cardio');
-
-  const db = await getDatabase();
-  let planId!: number;
-
-  await db.withTransactionAsync(async () => {
-    planId = await createPlan(
-      planName,
-      `Gerado automaticamente com base no teu histórico recente. Foco de hoje: ${muscleLabels}.`,
-      'hypertrophy',
-      'custom',
-      true,
-    );
-
-    const dayExercises = pickExercisesForDay(allExercises, todaysMuscles, minutesAvailable, equipmentPref, focusAreas, usageHistory);
-    const ordered = orderByMuscleGroup(dayExercises, todaysMuscles);
-    let orderIndex = 0;
-    for (let i = 0; i < ordered.length; i++) {
-      const ex = ordered[i];
-      const extra = extraSetsForFocus(ex.primary_muscle, focusAreas);
-      const { sets, reps, rest, setType } = setsRepsForPlanType('hypertrophy', i, ex.name, extra);
-      const weightTarget = await suggestWeightForExercise(ex.id, reps);
-      await addExerciseToPlan(planId, ex.id, sets, reps, weightTarget, rest, setType, null, '', orderIndex++, 'Hoje', 0);
-    }
-
-    // Same >60min gate as generatePlan — on a shorter session, every
-    // minute is worth more spent on strength work than a cardio finisher.
-    if (shouldAddConditioningFinisher(suggestConditioning, minutesAvailable)) {
-      const pool = cardioOptions.length > 0 ? cardioOptions : fallbackCardio;
-      if (pool.length > 0) {
-        // Date-based rather than random — cycles through the pool day by
-        // day (same reasoning as the motivational quote picker) instead of
-        // an untestable random pick.
-        const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
-        const finisher = pool[dayOfYear % pool.length];
-        await addExerciseToPlan(planId, finisher.id, 1, '10-15 min', 0, 60, 'normal', null, 'Finisher de condicionamento geral', orderIndex++, 'Hoje', 0);
-      }
-    }
-  });
-
-  return planId;
-}
-
-/**
  * A single-day workout using only dumbbells and bodyweight/mat exercises —
  * for training at home with an inclined bench, a pair of dumbbells, and a
- * mat, rather than a full gym. Same one-day-plan shape as
- * generateTodaysWorkout (so the workout screen, rest timers and history all
- * work unchanged), but the muscle focus is chosen directly by the person
- * (not auto-picked from recency) and equipment is strictly home_dumbbell —
- * see matchesEquipment's home_dumbbell case, which never falls back to
- * gym-only equipment.
+ * mat, rather than a full gym. Same one-day-plan shape as generatePlan
+ * (so the workout screen, rest timers and history all work unchanged),
+ * but the muscle focus is chosen directly by the person and equipment is
+ * strictly home_dumbbell — see matchesEquipment's home_dumbbell case.
  */
 export async function generateHomeWorkout(
   focusMuscles: MuscleGroup[],
@@ -736,14 +874,34 @@ export async function generateHomeWorkout(
       true,
     );
 
-    const dayExercises = pickExercisesForDay(allExercises, focusMuscles, minutesAvailable, 'home_dumbbell', [], usageHistory);
+    const dayExercises = pickExercisesForDay(allExercises, focusMuscles, minutesAvailable, 'home_dumbbell', [], usageHistory, undefined, undefined, 'hypertrophy', 'intermediate');
     const ordered = orderByMuscleGroup(dayExercises, focusMuscles);
+    const allocatable: AllocatableExercise[] = ordered
+      .filter(ex => ex.type === 'strength')
+      .map(ex => ({
+        key: `0-${ex.id}`,
+        muscle: ex.primary_muscle,
+        compound: isCompoundMovement(ex.name),
+      }));
+    const setMap = allocateWorkingSets(allocatable, 'hypertrophy', 'intermediate', focusMuscles, {
+      days: 1,
+      minutesPerDay: minutesAvailable,
+    });
+    const fitted = fitDayToMinutes(
+      ordered,
+      Math.max(MIN_DAY_EXERCISES, minutesAvailable - (includeCardio ? FINISHER_MINUTES : 0)),
+      'hypertrophy',
+      () => 0,
+      ex => setMap.get(`0-${ex.id}`),
+    );
     let orderIndex = 0;
-    for (let i = 0; i < ordered.length; i++) {
-      const ex = ordered[i];
-      const { sets, reps, rest, setType } = setsRepsForPlanType('hypertrophy', i, ex.name);
-      const weightTarget = await suggestWeightForExercise(ex.id, reps);
-      await addExerciseToPlan(planId, ex.id, sets, reps, weightTarget, rest, setType, null, '', orderIndex++, 'Treino em Casa', 0);
+    for (const row of fitted) {
+      const weightTarget = await suggestWeightForExercise(row.exercise.id, row.reps);
+      await addExerciseToPlan(
+        planId, row.exercise.id, row.sets, row.reps, weightTarget, row.rest, 'normal',
+        null, '', orderIndex++, 'Treino em Casa', 0, '',
+        targetRirFor('hypertrophy', { compound: isCompoundMovement(row.exercise.name) }),
+      );
     }
 
     if (includeCardio) {
@@ -755,6 +913,70 @@ export async function generateHomeWorkout(
         const finisher = cardioOptions[dayOfYear % cardioOptions.length];
         await addExerciseToPlan(planId, finisher.id, 1, '10-15 min', 0, 60, 'normal', null, 'Finisher de cardio', orderIndex++, 'Treino em Casa', 0);
       }
+    }
+  });
+
+  return planId;
+}
+
+const FULL_BODY_MUSCLES: MuscleGroup[] = ['chest', 'back', 'quads', 'shoulders', 'abs'];
+
+/**
+ * One-day gym Full Body preset — same one-day-plan shape as generateHomeWorkout
+ * but without the home_dumbbell equipment filter.
+ */
+export async function generateFullBodyWorkout(
+  minutesAvailable = 45,
+  planType: PlanType = 'hypertrophy',
+): Promise<number> {
+  const allExercises = await getAllExercises();
+  const usageHistory = await getExerciseUsageCounts();
+  const dateLabel = new Intl.DateTimeFormat('pt-PT', { day: '2-digit', month: '2-digit' }).format(new Date());
+  const planName = `Full Body — ${dateLabel}`;
+
+  const db = await getDatabase();
+  let planId!: number;
+
+  await db.withTransactionAsync(async () => {
+    planId = await createPlan(
+      planName,
+      'Treino de corpo inteiro — ginásio.',
+      planType,
+      'fullbody',
+      true,
+    );
+
+    const dayExercises = pickExercisesForDay(
+      allExercises, FULL_BODY_MUSCLES, minutesAvailable, 'any', [], usageHistory,
+      undefined, undefined, planType, 'intermediate',
+    );
+    const ordered = orderByMuscleGroup(dayExercises, FULL_BODY_MUSCLES);
+    const allocatable: AllocatableExercise[] = ordered
+      .filter(ex => ex.type === 'strength')
+      .map(ex => ({
+        key: `0-${ex.id}`,
+        muscle: ex.primary_muscle,
+        compound: isCompoundMovement(ex.name),
+      }));
+    const setMap = allocateWorkingSets(allocatable, planType, 'intermediate', FULL_BODY_MUSCLES, {
+      days: 1,
+      minutesPerDay: minutesAvailable,
+    });
+    const fitted = fitDayToMinutes(
+      ordered,
+      Math.max(MIN_DAY_EXERCISES, minutesAvailable),
+      planType,
+      () => 0,
+      ex => setMap.get(`0-${ex.id}`),
+    );
+    let orderIndex = 0;
+    for (const row of fitted) {
+      const weightTarget = await suggestWeightForExercise(row.exercise.id, row.reps);
+      await addExerciseToPlan(
+        planId, row.exercise.id, row.sets, row.reps, weightTarget, row.rest, 'normal',
+        null, '', orderIndex++, 'Full Body', 0, '',
+        targetRirFor(planType, { compound: isCompoundMovement(row.exercise.name) }),
+      );
     }
   });
 
@@ -776,10 +998,8 @@ export async function generateHomeWorkout(
  * an exercise to a running session only touches the screen's own local
  * state; the actual save happens per-set, when each one is completed.
  *
- * pickExercisesForDay always returns at least 4 exercises (its own
- * internal minimum), which would be far too many for "just one more" — so
- * this only ever takes its FIRST (best-ranked) result rather than calling
- * it with some contrived tiny time budget to try to coax out fewer.
+ * pickExercisesForDay returns a ranked pool; only the first (best-ranked)
+ * result is used here — one extra exercise, not another full day.
  */
 export async function pickExtraExercise(
   currentExercises: { exerciseId: number; primaryMuscle: MuscleGroup }[],
@@ -801,11 +1021,7 @@ export async function pickExtraExercise(
   const alreadyUsedIds = new Set(currentExercises.map(e => e.exerciseId));
   const pool = allExercises.filter(e => !alreadyUsedIds.has(e.id));
 
-  // minutesAvailable=12 here isn't a real time budget — pickExercisesForDay
-  // always returns 4+ candidates regardless (its own internal floor), this
-  // just needs to be a plausible value; only the first (best-ranked)
-  // result actually gets used.
-  const candidates = pickExercisesForDay(pool, [targetMuscle], 12, equipmentPref, focusAreas, usageHistory);
+  const candidates = pickExercisesForDay(pool, [targetMuscle], 45, equipmentPref, focusAreas, usageHistory, undefined, undefined, 'hypertrophy', 'intermediate');
   return candidates[0] ?? null;
 }
 

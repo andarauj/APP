@@ -39,6 +39,10 @@ export interface DecisionInput {
    *  progression really is close to "every week you can add a bit more",
    *  unlike an intermediate/advanced lifter who has to earn it. */
   experience?: AdaptiveExperience;
+  /** Muscles whose planned weekly hard sets sit below the dose floor. */
+  musclesBelowFloor?: number;
+  /** Muscles whose planned weekly hard sets sit above the planning cap. */
+  musclesAboveCap?: number;
 }
 
 export interface DecisionResult {
@@ -83,6 +87,18 @@ export function decideNextWeek(input: DecisionInput): DecisionResult {
 
   const reasons: string[] = [];
 
+  const musclesAboveCap = input.musclesAboveCap ?? 0;
+  if (musclesAboveCap >= 2 && current.phase !== 'deload') {
+    reasons.push(`${musclesAboveCap} grupos musculares acima do teto habitual de volume.`);
+    return {
+      decision: 'deload_early',
+      nextPhase: 'deload',
+      wrapsCycle: false,
+      reasons,
+      expect: phaseSpec('deload', goal, experience).expect,
+    };
+  }
+
   if (highFatigue) {
     if (fatigueFlag) reasons.push('Sinais de fadiga acumulada.');
     if (current.avgRpe != null && current.avgRpe >= 9) reasons.push(`RPE médio da semana em ${current.avgRpe.toFixed(1)} — muito alto.`);
@@ -124,6 +140,25 @@ export function decideNextWeek(input: DecisionInput): DecisionResult {
   // A beginner's near-linear progression earns a lower bar to advance —
   // see the DecisionInput.experience doc comment. Everything else
   // (intermediate and advanced) keeps today's threshold of 3.
+  const musclesBelowFloor = input.musclesBelowFloor ?? 0;
+  if (
+    current.phase === 'accumulation'
+    && !current.isBridge
+    && musclesBelowFloor > 0
+    && didWork
+  ) {
+    reasons.push(
+      `${musclesBelowFloor} grupo${musclesBelowFloor > 1 ? 's' : ''} ainda abaixo do piso habitual de séries — mais uma semana de acumulação.`,
+    );
+    return {
+      decision: 'bridge',
+      nextPhase: current.phase,
+      wrapsCycle: false,
+      reasons,
+      expect: `Semana de consolidação: repetimos a fase ${labelOf(current.phase)} e subimos um pouco o volume.`,
+    };
+  }
+
   const strongThreshold = experience === 'beginner' ? 2 : 3;
   const strong = score4 >= strongThreshold && stallCount === 0;
   const weak = score4 <= 1 || stallCount >= 2 || !didWork;

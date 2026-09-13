@@ -1,9 +1,11 @@
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import Animated, { ZoomIn } from 'react-native-reanimated';
+import { useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { Check, Flame } from 'lucide-react-native';
 import { WEEKDAY_LABELS, WEEKDAY_FULL_LABELS } from '@/utils/reminders';
 import type { WeeklyCommitment, WeekDayStatus } from '@/utils/weeklyCommitment';
+import { hapticSelect } from '@/utils/haptics';
 
 const AnimatedCheckWrap = Animated.createAnimatedComponent(View);
 
@@ -24,18 +26,21 @@ function dayStatusMessage(day: WeekDayStatus): string {
   return 'Nada agendado para este dia.';
 }
 
-/** The weekly commitment strip — 7 days, each showing what was planned (if
- *  anything) and whether it actually happened, plus the adherence
- *  percentage. Answers "what are we doing this week, and how's it gone" in
- *  one glance, distinct from Progress Index (which compares to your own
- *  rolling average, not an explicit plan you set for yourself).
- *
- *  Four visual states, matching the language used elsewhere in the app:
- *  completed (solid fill + check), skipped (dashed outline, muted, no
- *  celebration), empty/future (plain outline), and today (a primary ring,
- *  which can sit on top of any of the other three). */
 export function WeeklyCommitmentStrip({ commitment }: { commitment: WeeklyCommitment }) {
   const { colors } = useTheme();
+  const router = useRouter();
+
+  const onDayPress = (day: WeekDayStatus) => {
+    hapticSelect();
+    if (day.isToday || (day.planned && !day.completed)) {
+      router.push('/(tabs)');
+      return;
+    }
+    Alert.alert(WEEKDAY_FULL_LABELS[day.weekday], dayStatusMessage(day), [
+      { text: 'OK', style: 'cancel' },
+      { text: 'Abrir Hoje', onPress: () => router.push('/(tabs)') },
+    ]);
+  };
 
   return (
     <View style={styles.container}>
@@ -65,7 +70,7 @@ export function WeeklyCommitmentStrip({ commitment }: { commitment: WeeklyCommit
             <TouchableOpacity
               key={day.weekday}
               style={styles.dayColumn}
-              onPress={() => Alert.alert(WEEKDAY_FULL_LABELS[day.weekday], dayStatusMessage(day))}
+              onPress={() => onDayPress(day)}
               hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
               accessibilityRole="button"
               accessibilityLabel={dayAccessibilityLabel(day)}
@@ -116,10 +121,6 @@ const styles = StyleSheet.create({
   container: { gap: 12 },
   headline: { fontFamily: 'Inter-Bold', fontSize: 15 },
   daysRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  // 44dp minimum touch target (WCAG 2.5.5 / Material): the visual dot stays
-  // compact so seven columns fit a phone width without crowding, hitSlop
-  // above extends the actual touchable bounds, and this wrapper's own
-  // min size covers the rest.
   dayColumn: { flex: 1, minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
   dayCellContent: { alignItems: 'center', gap: 5 },
   skippedContent: { opacity: 0.45 },

@@ -118,7 +118,7 @@ future, more targeted change if warranted.
 | Goal | Compound | Isolation | Source |
 |---|---|---|---|
 | strength | 240s (4 min) | 90s | ACSM 2009: 3-5min core / 1-2min assistance, advanced strength phase |
-| hypertrophy | 120s (2 min) | 75s | ACSM 1-2min baseline + Schoenfeld 2016 RCT/Singer 2024 meta-analysis favoring the upper half of that range, esp. for compound/lower-body work |
+| hypertrophy | 150s (2.5 min) | 75s | Midpoint between ACSM's 1–2 min band and Schoenfeld 2016's 3 min > 1 min finding for trained lifters. Isolation stays 75s. |
 | endurance | 45s | 30s | ACSM <90s for >15 reps; de Salles 2009 acute-metabolic rationale |
 | cardio / mobility | 30s | 30s | Unchanged — these goals aren't about compound/isolation strength work |
 

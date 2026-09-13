@@ -24,14 +24,22 @@ jest.mock('@/db/workoutDao', () => ({
 }));
 jest.mock('@/db/adaptiveDao', () => ({
   getActiveAdaptivePlan: jest.fn(),
+  getAdaptivePlanById: jest.fn(),
   getOpenCycle: jest.fn(),
   getActiveWeek: jest.fn(),
+  getWeekForPlanAtStart: jest.fn(),
   planWeekExistsForStart: jest.fn(),
   getRecentWeeksForPlan: jest.fn().mockResolvedValue([]),
+  getAllWeeksForPlan: jest.fn().mockResolvedValue([]),
   getExerciseStates: jest.fn().mockResolvedValue([]),
+  upsertExerciseState: jest.fn().mockResolvedValue(undefined),
   parseBaseline: jest.fn().mockReturnValue({}),
   closeWeekRow: jest.fn().mockResolvedValue(undefined),
   insertWeek: jest.fn().mockResolvedValue(999),
+  promotePlannedWeek: jest.fn().mockResolvedValue(undefined),
+  shiftWeeksOnOrAfter: jest.fn().mockResolvedValue(undefined),
+  deletePlannedWeeksForCycle: jest.fn().mockResolvedValue(undefined),
+  updateWeekPlannedJson: jest.fn().mockResolvedValue(undefined),
   endCycle: jest.fn().mockResolvedValue(undefined),
   createCycle: jest.fn().mockResolvedValue(2),
 }));
@@ -39,11 +47,12 @@ jest.mock('@/db/adaptiveDao', () => ({
 /* eslint-disable import/first -- these must follow the jest.mock() calls
    above so each mock factory is registered before adaptiveService (and the
    modules it pulls in) is first required. */
-import { closeWeekIfDue, goalFromOnboarding, distributeDaysAcrossWeek, computeRollingSchedule, getRollingScheduleForPlan, pastWeekdaysWithoutTracking, isWeekdayPast } from '../adaptiveService';
+import { closeWeekIfDue, ensureMesocycleWeeks, refreshPlannedWeeksFromTemplate, goalFromOnboarding, distributeDaysAcrossWeek, computeRollingSchedule, getRollingScheduleForPlan, pastWeekdaysWithoutTracking, isWeekdayPast } from '../adaptiveService';
+import { updatePlanExercise } from '@/db/planDao';
 import * as dao from '@/db/adaptiveDao';
 import { getWeeklyPlanner } from '@/db/plannerDao';
 import { getCompletedSessionCountForPlan } from '@/db/workoutDao';
-import { getPlanDays } from '@/db/planDao';
+import { getPlanDays, getPlanExercisesWithDetails } from '@/db/planDao';
 /* eslint-enable import/first */
 
 const asMock = (fn: unknown) => fn as jest.Mock;
@@ -93,12 +102,13 @@ describe('closeWeekIfDue — guard clauses', () => {
     asMock(dao.getActiveAdaptivePlan).mockResolvedValue(plan);
     asMock(dao.getOpenCycle).mockResolvedValue(cycle);
     asMock(dao.getActiveWeek).mockResolvedValue(week());
-    asMock(dao.planWeekExistsForStart).mockResolvedValue(true);
+    asMock(dao.getWeekForPlanAtStart).mockResolvedValue({ ...week(), status: 'active', week_start: week().week_end });
     const now = new Date((week().week_end + 3 * 86400) * 1000);
     expect(await closeWeekIfDue(now)).toBeNull();
-    expect(dao.planWeekExistsForStart).toHaveBeenCalledWith(1, week().week_end);
+    expect(dao.getWeekForPlanAtStart).toHaveBeenCalledWith(1, week().week_end);
     expect(dao.closeWeekRow).not.toHaveBeenCalled();
     expect(dao.insertWeek).not.toHaveBeenCalled();
+    expect(dao.promotePlannedWeek).not.toHaveBeenCalled();
   });
 
   it('swallows errors from the DAO and returns null', async () => {
@@ -405,5 +415,85 @@ describe('getRollingScheduleForPlan', () => {
     asMock(getWeeklyPlanner).mockResolvedValue({ 1: { planId: 99, dayIndex: 0 } });
     asMock(getPlanDays).mockResolvedValue([{ day_index: 0, day_label: 'Push', exercise_count: 4 }]);
     expect(await getRollingScheduleForPlan(42, 1)).toBeNull();
+  });
+});
+
+describe('ensureMesocycleWeeks', () => {
+  const template = [
+    {
+      exercise_id: 1, exercise_name: 'Supino', primary_muscle: 'chest', equipment: 'barbell',
+      day_index: 0, day_label: 'Push', order_index: 0, sets: 3, reps_target: '8-12',
+      weight_target: 50, rest_seconds: 90,
+    },
+    {
+      exercise_id: 2, exercise_name: 'Remada', primary_muscle: 'back', equipment: 'barbell',
+      day_index: 1, day_label: 'Pull', order_index: 0, sets: 3, reps_target: '8-12',
+      weight_target: 40, rest_seconds: 90,
+    },
+    {
+      exercise_id: 3, exercise_name: 'Agachamento', primary_muscle: 'quads', equipment: 'barbell',
+      day_index: 2, day_label: 'Legs', order_index: 0, sets: 3, reps_target: '8-12',
+      weight_target: 60, rest_seconds: 120,
+    },
+  ];
+
+  beforeEach(() => {
+    asMock(dao.getAdaptivePlanById).mockResolvedValue(plan);
+    asMock(dao.getOpenCycle).mockResolvedValue(cycle);
+    asMock(getPlanExercisesWithDetails).mockResolvedValue(template);
+    asMock(dao.getExerciseStates).mockResolvedValue([
+      { exercise_id: 1, base_sets: 3, current_weight: 50 },
+      { exercise_id: 2, base_sets: 3, current_weight: 40 },
+      { exercise_id: 3, base_sets: 3, current_weight: 60 },
+    ]);
+    asMock(dao.insertWeek).mockResolvedValue(100);
+  });
+
+  it('inserts the missing PHASE_ORDER weeks as planned when only week 1 exists', async () => {
+    asMock(dao.getAllWeeksForPlan).mockResolvedValue([
+      {
+        id: 1, cycle_id: 1, week_index: 1, phase: 'on_ramp', status: 'active',
+        planned_json: '{}', week_start: 1000, week_end: 1000 + 7 * 86400, is_bridge: 0,
+      },
+    ]);
+    expect(await ensureMesocycleWeeks(1)).toBe(4);
+    expect(dao.insertWeek).toHaveBeenCalledTimes(4);
+    const phases = asMock(dao.insertWeek).mock.calls.map(c => c[0].phase);
+    expect(phases).toEqual(['accumulation', 'accumulation', 'intensification', 'deload']);
+    expect(asMock(dao.insertWeek).mock.calls[1][0].isBridge).toBe(true);
+    expect(asMock(dao.insertWeek).mock.calls.every(c => c[0].status === 'planned')).toBe(true);
+    expect(asMock(dao.insertWeek).mock.calls.every(c => c[0].planned.days.length === 3)).toBe(true);
+    expect(asMock(dao.insertWeek).mock.calls.every(c => c[0].planned.days.every((d: { exercises: unknown[] }) => d.exercises.length > 0))).toBe(true);
+  });
+
+  it('refreshPlannedWeeksFromTemplate updates planned/active only — done weeks stay frozen', async () => {
+    const daysJson = JSON.stringify({
+      days: [{ dayIndex: 0, dayLabel: 'Push', exercises: [{ exerciseId: 1, name: 'S', muscle: '', order: 0, sets: 9, reps: '1-1', weight: 1, rest: 1 }] }],
+    });
+    asMock(dao.getActiveAdaptivePlan).mockResolvedValue(plan);
+    asMock(dao.getAllWeeksForPlan).mockResolvedValue([
+      { id: 1, cycle_id: 1, week_index: 1, phase: 'on_ramp', status: 'done', planned_json: daysJson, week_start: 1, week_end: 2, is_bridge: 0 },
+      { id: 2, cycle_id: 1, week_index: 2, phase: 'accumulation', status: 'active', planned_json: daysJson, week_start: 2, week_end: 3, is_bridge: 0 },
+      { id: 3, cycle_id: 1, week_index: 3, phase: 'intensification', status: 'planned', planned_json: daysJson, week_start: 3, week_end: 4, is_bridge: 0 },
+    ]);
+    expect(await refreshPlannedWeeksFromTemplate(10)).toBe(2);
+    expect(dao.updateWeekPlannedJson).toHaveBeenCalledTimes(2);
+    expect(asMock(dao.updateWeekPlannedJson).mock.calls.map(c => c[0])).toEqual([2, 3]);
+    expect(updatePlanExercise).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op once the four phases are already persisted', async () => {
+    const daysJson = JSON.stringify({
+      days: [{ dayIndex: 0, dayLabel: 'Push', exercises: [{ exerciseId: 1, name: 'S', muscle: '', order: 0, sets: 3, reps: '8-10', weight: 40, rest: 60 }] }],
+    });
+    asMock(dao.getAllWeeksForPlan).mockResolvedValue([
+      { id: 1, cycle_id: 1, week_index: 1, phase: 'on_ramp', status: 'done', planned_json: daysJson, week_start: 1, week_end: 2, is_bridge: 0 },
+      { id: 2, cycle_id: 1, week_index: 2, phase: 'accumulation', status: 'active', planned_json: daysJson, week_start: 2, week_end: 3, is_bridge: 0 },
+      { id: 3, cycle_id: 1, week_index: 3, phase: 'intensification', status: 'planned', planned_json: daysJson, week_start: 3, week_end: 4, is_bridge: 0 },
+      { id: 4, cycle_id: 1, week_index: 4, phase: 'deload', status: 'planned', planned_json: daysJson, week_start: 4, week_end: 5, is_bridge: 0 },
+    ]);
+    expect(await ensureMesocycleWeeks(1)).toBe(0);
+    expect(dao.insertWeek).not.toHaveBeenCalled();
+    expect(dao.updateWeekPlannedJson).not.toHaveBeenCalled();
   });
 });

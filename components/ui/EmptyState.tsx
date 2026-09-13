@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text } from 'react-native';
 import { useTheme } from '@/hooks/useTheme';
 
 interface EmptyStateProps {
@@ -6,24 +6,21 @@ interface EmptyStateProps {
   title: string;
   description?: string;
   action?: React.ReactNode;
+  className?: string;
 }
 
-export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
+export function EmptyState({ icon, title, description, action, className }: EmptyStateProps) {
   const { colors } = useTheme();
   return (
-    <View style={styles.container}>
-      {icon && <View style={styles.icon}>{icon}</View>}
-      <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
-      {description && <Text style={[styles.desc, { color: colors.textSecondary }]}>{description}</Text>}
-      {action && <View style={styles.action}>{action}</View>}
+    <View className={`flex-1 items-center justify-center gap-3 p-10 ${className ?? ''}`}>
+      {icon && <View className="mb-2">{icon}</View>}
+      <Text className="text-center font-sans-bold text-xl" style={{ color: colors.text }}>{title}</Text>
+      {description && (
+        <Text className="text-center font-sans text-[15px] leading-[22px]" style={{ color: colors.textSecondary }}>
+          {description}
+        </Text>
+      )}
+      {action && <View className="mt-2">{action}</View>}
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 40, gap: 12 },
-  icon: { marginBottom: 8 },
-  title: { fontFamily: 'Inter-Bold', fontSize: 20, textAlign: 'center' },
-  desc: { fontFamily: 'Inter-Regular', fontSize: 15, textAlign: 'center', lineHeight: 22 },
-  action: { marginTop: 8 },
-});

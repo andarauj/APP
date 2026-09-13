@@ -14,11 +14,14 @@ import { ExerciseMedia } from '@/components/ui/ExerciseMedia';
 import { getPlanById, getPlanExercisesWithDetails, addExerciseToPlan, deletePlanExercise, updatePlanExercise, reorderPlanExercises, substitutePlanExercise } from '@/db/planDao';
 import { searchExercises } from '@/db/exerciseDao';
 import { getLastSetForExercise } from '@/db/workoutDao';
+import { refreshPlannedWeeksFromTemplate } from '@/utils/adaptiveService';
 import { exportPlanAsXml, shareXmlFile } from '@/utils/xmlExport';
 import { parseTempo } from '@/utils/calculators';
 import { estimateDayMinutes, formatMinutes } from '@/utils/workoutTime';
 import type { WorkoutPlan, SetType, MuscleGroup , Exercise, WorkoutSet } from '@/types';
 import { PLAN_TYPE_PT, SPLIT_TYPE_PT, MUSCLE_GROUPS_PT, EQUIPMENT_PT, SET_TYPE_PT } from '@/types';
+import { auditTrainingDose, formatRirHint, usesDoseEngine } from '@/utils/trainingDose';
+import { VolumeDoseAudit } from '@/components/ui/VolumeDoseAudit';
 import { Play, Plus, Trash2, Download, X, CalendarDays, ChevronUp, ChevronDown, Repeat } from 'lucide-react-native';
 
 const REST_OPTIONS = [30, 60, 90, 120, 180, 240, 300];
@@ -95,6 +98,7 @@ export default function PlanDetailScreen() {
       dayExercises.length, dayLabel, selectedDay,
     );
     setShowPicker(false);
+    await refreshPlannedWeeksFromTemplate(Number(id)).catch(() => 0);
     load();
   };
 
@@ -105,6 +109,7 @@ export default function PlanDetailScreen() {
     if (!substitutingPe) return;
     await substitutePlanExercise(substitutingPe.id, ex.id);
     closePicker();
+    await refreshPlannedWeeksFromTemplate(Number(id)).catch(() => 0);
     load();
   };
 
@@ -117,12 +122,17 @@ export default function PlanDetailScreen() {
   const handleDeleteExercise = (peId: number) => {
     Alert.alert('Remover exercício', 'Remover do plano?', [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Remover', style: 'destructive', onPress: async () => { await deletePlanExercise(peId); load(); } },
+      { text: 'Remover', style: 'destructive', onPress: async () => {
+        await deletePlanExercise(peId);
+        await refreshPlannedWeeksFromTemplate(Number(id)).catch(() => 0);
+        load();
+      } },
     ]);
   };
 
   const handleUpdate = async (pe: any) => {
     await updatePlanExercise(pe);
+    await refreshPlannedWeeksFromTemplate(Number(id)).catch(() => 0);
     load();
   };
 
@@ -136,6 +146,7 @@ export default function PlanDetailScreen() {
     const reordered = [...dayExs];
     [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
     await reorderPlanExercises(Number(id), reordered.map(e => e.id));
+    await refreshPlannedWeeksFromTemplate(Number(id)).catch(() => 0);
     load();
   };
 
@@ -206,6 +217,20 @@ export default function PlanDetailScreen() {
             <Badge label={SPLIT_TYPE_PT[plan.split_type]} color={colors.surfaceVariant} textColor={colors.textSecondary} />
           </View>
           {plan.description ? <Text style={[styles.desc, { color: colors.textSecondary }]}>{plan.description}</Text> : null}
+          {usesDoseEngine(plan.plan_type) && (
+            <VolumeDoseAudit
+              rows={auditTrainingDose(
+                exercises.map((e: any) => ({
+                  muscle: e.primary_muscle,
+                  sets: e.sets,
+                  setType: e.set_type,
+                  dayIndex: e.day_index ?? 0,
+                })),
+                plan.plan_type,
+              )}
+              colors={colors}
+            />
+          )}
         </Card>
 
         {/* Day selector */}
@@ -290,7 +315,7 @@ export default function PlanDetailScreen() {
               <View style={styles.exInfo}>
                 <Text style={[styles.exName, { color: colors.text }]}>{ex.exercise_name}</Text>
                 <Text style={[styles.exSub, { color: colors.textSecondary }]}>
-                  {ex.sets} séries · {ex.reps_target} reps{ex.weight_target > 0 ? ` · ${ex.weight_target}kg` : ''} · {ex.rest_seconds}s descanso
+                  {ex.sets} séries · {ex.reps_target} reps{ex.weight_target > 0 ? ` · ${ex.weight_target}kg` : ''} · {ex.rest_seconds}s descanso{ex.target_rir != null ? ` · ${formatRirHint(ex.target_rir)}` : ''}
                 </Text>
                 {lastSets[ex.exercise_id] && (
                   <Text style={[styles.exHistory, { color: colors.textTertiary }]}>

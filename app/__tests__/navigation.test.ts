@@ -27,13 +27,18 @@ function routeExists(route: string): boolean {
   return candidates.some(p => fs.existsSync(p));
 }
 
-/** Every static router.push('/...') target in a file. */
+/** Every static router.push('/...') or pathname: '/...' target in a file. */
 function pushTargets(file: string): string[] {
   const src = fs.readFileSync(file, 'utf8');
   const found = new Set<string>();
-  const re = /router\.push\(\s*['"](\/[^'"]*)['"]\s*\)/g;
+  const rePush = /router\.push\(\s*['"](\/[^'"]*)['"]\s*\)/g;
+  const rePath = /pathname:\s*['"](\/[^'"]*)['"]/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(src)) !== null) found.add(m[1]);
+  while ((m = rePush.exec(src)) !== null) found.add(m[1]);
+  while ((m = rePath.exec(src)) !== null) {
+    // Skip bare "/" — used as "go home" / tabs root, not a screen file.
+    if (m[1] !== '/') found.add(m[1]);
+  }
   return [...found];
 }
 
@@ -70,6 +75,9 @@ describe('navigation reachability', () => {
       '/achievements',
       '/monthly-recap',
       '/photo-compare',
+      '/plan/home',
+      '/plan/531',
+      '/exercise/progress',
     ];
 
     const allTargets = new Set(
@@ -93,13 +101,67 @@ describe('navigation reachability', () => {
     expect(orphans).toEqual([]);
   });
 
-  it('keeps the exercise library on the tab bar', () => {
-    // Hiding this tab once made the entire library unreachable, because
-    // nothing else linked to it.
+  it('keeps the exercise library reachable from Treinos', () => {
+    // Library lives as the "Biblioteca de Exercícios" hub segment inside
+    // Treinos (embedded ExercisesScreen) — still reachable without a tab-bar
+    // icon. Also keep a deep-link path via the exercises route file.
+    const plans = fs.readFileSync(path.join(APP_DIR, '(tabs)', 'plans.tsx'), 'utf8');
+    expect(plans).toMatch(/Biblioteca de Exercícios/);
+    expect(plans).toMatch(/ExercisesScreen/);
+    expect(fs.existsSync(path.join(APP_DIR, '(tabs)', 'exercises.tsx'))).toBe(true);
+  });
+
+  it('opens on Workout with exactly four bottom tabs', () => {
+    const workout = fs.readFileSync(path.join(APP_DIR, '(tabs)', 'index.tsx'), 'utf8');
+    expect(workout).toMatch(/Planeador/);
+    expect(workout).toMatch(/Geral/);
+    expect(workout).toMatch(/Treino Rápido/);
+    expect(workout).toMatch(/Overview/);
+    expect(workout).toMatch(/Day Details/);
+    expect(workout).toMatch(/Build for Me/);
+    expect(workout).toMatch(/Add Exercise/);
+
     const layout = fs.readFileSync(path.join(APP_DIR, '(tabs)', '_layout.tsx'), 'utf8');
-    const block = layout.slice(layout.indexOf('name="exercises"'));
-    const nextScreen = block.indexOf('<Tabs.Screen');
-    const ownOptions = nextScreen === -1 ? block : block.slice(0, nextScreen);
-    expect(ownOptions).not.toContain('href: null');
+    expect(layout).toMatch(/initialRouteName: 'index'/);
+    expect(layout).toMatch(/title: 'Workout'/);
+    expect(layout).toMatch(/title: 'Discover'/);
+    expect(layout).toMatch(/title: 'Exercises'/);
+    expect(layout).toMatch(/title: 'Progress'/);
+    expect(layout).toMatch(/name="plans"/);
+    expect(layout).toMatch(/name="profile"/);
+    expect(layout).toMatch(/name="history"/);
+    expect(layout).toMatch(/href:\s*null/);
+  });
+
+  it('keeps Histórico reachable off the tab bar', () => {
+    const layout = fs.readFileSync(path.join(APP_DIR, '(tabs)', '_layout.tsx'), 'utf8');
+    expect(layout).toMatch(/name="history"/);
+    expect(layout).toMatch(/href:\s*null/);
+
+    const progress = fs.readFileSync(path.join(APP_DIR, '(tabs)', 'progress.tsx'), 'utf8');
+    expect(progress).toMatch(/\/\(tabs\)\/history/);
+
+    const profile = fs.readFileSync(path.join(APP_DIR, '(tabs)', 'profile.tsx'), 'utf8');
+    expect(profile).toMatch(/\/\(tabs\)\/history/);
+
+    const plans = fs.readFileSync(path.join(APP_DIR, '(tabs)', 'plans.tsx'), 'utf8');
+    expect(plans).toMatch(/\/\(tabs\)\/history/);
+
+    expect(fs.existsSync(path.join(APP_DIR, '(tabs)', 'history.tsx'))).toBe(true);
+    expect(fs.existsSync(path.join(APP_DIR, '(tabs)', 'discover.tsx'))).toBe(true);
+    expect(fs.existsSync(path.join(APP_DIR, '(tabs)', 'exercises.tsx'))).toBe(true);
+  });
+
+  it('exposes Treino em Casa and 5/3/1 from the Treinos hub', () => {
+    const plans = fs.readFileSync(path.join(APP_DIR, '(tabs)', 'plans.tsx'), 'utf8');
+    expect(plans).toMatch(/\/plan\/home/);
+    expect(plans).toMatch(/\/plan\/531/);
+  });
+
+  it('uses ScreenHeader on Histórico, Descobrir and Exercícios', () => {
+    for (const file of ['history.tsx', 'discover.tsx', 'exercises.tsx']) {
+      const src = fs.readFileSync(path.join(APP_DIR, '(tabs)', file), 'utf8');
+      expect(src).toMatch(/ScreenHeader/);
+    }
   });
 });

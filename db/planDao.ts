@@ -1,5 +1,6 @@
 import { getDatabase } from './database';
 import type { WorkoutPlan, PlanExercise, SetType, PlanType, SplitType } from '@/types';
+import { deleteAdaptiveDataForWorkoutPlan } from './adaptiveDao';
 
 export async function getAllPlans(): Promise<WorkoutPlan[]> {
   const db = await getDatabase();
@@ -56,6 +57,10 @@ export async function updatePlan(plan: WorkoutPlan): Promise<void> {
 }
 
 export async function deletePlan(id: number): Promise<void> {
+  // Adaptive rows have no FK to workout_plans — wipe them first so a
+  // deleted plan cannot leave an orphan mesocycle. Sessions stay
+  // (workout_sessions.plan_id is ON DELETE SET NULL).
+  await deleteAdaptiveDataForWorkoutPlan(id);
   const db = await getDatabase();
   await db.runAsync('DELETE FROM workout_plans WHERE id = ?', [id]);
 }
@@ -73,7 +78,7 @@ export async function duplicatePlan(id: number): Promise<number> {
   await db.withTransactionAsync(async () => {
     newId = await createPlan(`${plan.name} (Copia)`, plan.description, plan.plan_type, plan.split_type);
     for (const ex of exercises) {
-      await addExerciseToPlan(newId, ex.exercise_id, ex.sets, ex.reps_target, ex.weight_target, ex.rest_seconds, ex.set_type, ex.superset_group, ex.notes, ex.order_index, ex.day_label ?? '', ex.day_index ?? 0, ex.tempo ?? '');
+      await addExerciseToPlan(newId, ex.exercise_id, ex.sets, ex.reps_target, ex.weight_target, ex.rest_seconds, ex.set_type, ex.superset_group, ex.notes, ex.order_index, ex.day_label ?? '', ex.day_index ?? 0, ex.tempo ?? '', ex.target_rir ?? null);
     }
   });
   return newId;
@@ -89,6 +94,118 @@ export async function getPlanExercises(planId: number): Promise<PlanExercise[]> 
 }
 
 /** Distinct training days of a plan, in order (e.g. Push / Pull / Pernas). */
+export const MAX_PLAN_DAYS = 6;
+
+export interface PlanDaySlot {
+  day_index: number;
+  day_label: string;
+  weekday?: number;
+  exercise_count: number;
+}
+
+export function parseDaysJson(raw: string | null | undefined): Omit<PlanDaySlot, 'exercise_count'>[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((d): d is { day_index: number; day_label?: string; weekday?: number } =>
+        d != null && typeof d.day_index === 'number')
+      .map(d => ({
+        day_index: d.day_index,
+        day_label: String(d.day_label || 'Treino'),
+        weekday: typeof d.weekday === 'number' ? d.weekday : undefined,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+export async function setPlanDaySlots(
+  planId: number,
+  slots: Omit<PlanDaySlot, 'exercise_count'>[],
+): Promise<void> {
+  const db = await getDatabase();
+  const payload = JSON.stringify(slots.map(s => ({
+    day_index: s.day_index,
+    day_label: s.day_label,
+    weekday: s.weekday,
+  })));
+  await db.runAsync(
+    `UPDATE workout_plans SET days_json = ?, updated_at = strftime('%s','now') WHERE id = ?`,
+    [payload, planId],
+  );
+}
+
+/** Day entities for Overview — slots (may be empty) ∪ days that already have exercises. */
+export async function getPlanDaySlots(planId: number): Promise<PlanDaySlot[]> {
+  const plan = await getPlanById(planId);
+  const fromJson = parseDaysJson(plan?.days_json);
+  const fromEx = await getPlanDays(planId);
+  const byIndex = new Map<number, PlanDaySlot>();
+  for (const d of fromJson) {
+    byIndex.set(d.day_index, { ...d, exercise_count: 0 });
+  }
+  for (const d of fromEx) {
+    const prev = byIndex.get(d.day_index);
+    byIndex.set(d.day_index, {
+      day_index: d.day_index,
+      day_label: prev?.day_label || d.day_label,
+      weekday: prev?.weekday,
+      exercise_count: d.exercise_count,
+    });
+  }
+  return [...byIndex.values()].sort((a, b) => a.day_index - b.day_index);
+}
+
+export async function addPlanDay(
+  planId: number,
+  dayLabel: string,
+  weekday?: number,
+): Promise<PlanDaySlot> {
+  const slots = await getPlanDaySlots(planId);
+  if (slots.length >= MAX_PLAN_DAYS) {
+    throw new Error('Day limit reached');
+  }
+  const day_index = slots.length === 0 ? 0 : Math.max(...slots.map(s => s.day_index)) + 1;
+  const next: Omit<PlanDaySlot, 'exercise_count'> = {
+    day_index,
+    day_label: dayLabel,
+    weekday,
+  };
+  await setPlanDaySlots(planId, [
+    ...slots.map(({ exercise_count: _c, ...rest }) => rest),
+    next,
+  ]);
+  return { ...next, exercise_count: 0 };
+}
+
+export async function renamePlanDay(planId: number, dayIndex: number, dayLabel: string): Promise<void> {
+  const slots = await getPlanDaySlots(planId);
+  const next = slots.map(({ exercise_count: _c, ...rest }) => (
+    rest.day_index === dayIndex ? { ...rest, day_label: dayLabel } : rest
+  ));
+  await setPlanDaySlots(planId, next);
+  const db = await getDatabase();
+  await db.runAsync(
+    'UPDATE plan_exercises SET day_label = ? WHERE plan_id = ? AND day_index = ?',
+    [dayLabel, planId, dayIndex],
+  );
+}
+
+/** Removes the planned day and its exercises. Sessions stay (plan_id SET NULL on plan delete only). */
+export async function deletePlanDay(planId: number, dayIndex: number): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    'DELETE FROM plan_exercises WHERE plan_id = ? AND day_index = ?',
+    [planId, dayIndex],
+  );
+  const slots = (await getPlanDaySlots(planId))
+    .filter(s => s.day_index !== dayIndex)
+    .map(({ exercise_count: _c, ...rest }) => rest);
+  await setPlanDaySlots(planId, slots);
+}
+
 export async function getPlanDays(planId: number): Promise<{ day_index: number; day_label: string; exercise_count: number }[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<{ day_index: number; day_label: string; exercise_count: number }>(
@@ -150,13 +267,14 @@ export async function addExerciseToPlan(
   orderIndex: number,
   dayLabel: string = '',
   dayIndex: number = 0,
-  tempo: string = ''
+  tempo: string = '',
+  targetRir: number | null = null,
 ): Promise<number> {
   const db = await getDatabase();
   const result = await db.runAsync(
-    `INSERT INTO plan_exercises (plan_id, exercise_id, order_index, sets, reps_target, weight_target, rest_seconds, set_type, superset_group, notes, day_label, day_index, tempo)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [planId, exerciseId, orderIndex, sets, repsTarget, weightTarget, restSeconds, setType, supersetGroup, notes, dayLabel, dayIndex, tempo]
+    `INSERT INTO plan_exercises (plan_id, exercise_id, order_index, sets, reps_target, weight_target, rest_seconds, set_type, superset_group, notes, day_label, day_index, tempo, target_rir)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [planId, exerciseId, orderIndex, sets, repsTarget, weightTarget, restSeconds, setType, supersetGroup, notes, dayLabel, dayIndex, tempo, targetRir]
   );
   return result.lastInsertRowId as number;
 }
@@ -164,8 +282,8 @@ export async function addExerciseToPlan(
 export async function updatePlanExercise(pe: PlanExercise): Promise<void> {
   const db = await getDatabase();
   await db.runAsync(
-    `UPDATE plan_exercises SET sets = ?, reps_target = ?, weight_target = ?, rest_seconds = ?, set_type = ?, superset_group = ?, notes = ?, order_index = ?, day_label = ?, day_index = ?, tempo = ? WHERE id = ?`,
-    [pe.sets, pe.reps_target, pe.weight_target, pe.rest_seconds, pe.set_type, pe.superset_group, pe.notes, pe.order_index, pe.day_label ?? '', pe.day_index ?? 0, pe.tempo ?? '', pe.id]
+    `UPDATE plan_exercises SET sets = ?, reps_target = ?, weight_target = ?, rest_seconds = ?, set_type = ?, superset_group = ?, notes = ?, order_index = ?, day_label = ?, day_index = ?, tempo = ?, target_rir = ? WHERE id = ?`,
+    [pe.sets, pe.reps_target, pe.weight_target, pe.rest_seconds, pe.set_type, pe.superset_group, pe.notes, pe.order_index, pe.day_label ?? '', pe.day_index ?? 0, pe.tempo ?? '', pe.target_rir ?? null, pe.id]
   );
 }
 

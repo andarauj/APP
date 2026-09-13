@@ -30,24 +30,34 @@ export function AdaptivePlanCard({ status, onStartToday, todayLabel }: Props) {
   const phaseColor = PHASE_COLOR[status.phase] || colors.accent;
 
   return (
-    <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+    <View
+      className="mb-3 gap-3 rounded-xl border p-3.5"
+      style={{
+        backgroundColor: colors.surface,
+        borderColor: colors.border,
+        borderWidth: StyleSheet.hairlineWidth,
+      }}
+    >
       <TouchableOpacity
-        style={styles.header}
+        className="flex-row items-center gap-3"
         onPress={() => router.push('/adaptive/plan')}
         activeOpacity={0.8}
         accessibilityRole="button"
         accessibilityLabel="Abrir plano adaptativo"
       >
-        <View style={[styles.iconWrap, { backgroundColor: phaseColor + '22' }]}>
+        <View
+          className="h-10 w-10 items-center justify-center rounded-[10px]"
+          style={{ backgroundColor: phaseColor + '22' }}
+        >
           <Sparkles size={20} color={phaseColor} />
         </View>
-        <View style={{ flex: 1 }}>
-          <Text style={[styles.title, { color: colors.text }]}>Plano Adaptativo</Text>
-          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+        <View className="flex-1">
+          <Text className="font-sans-semibold text-base" style={{ color: colors.text }}>Plano Adaptativo</Text>
+          <Text className="mt-0.5 font-sans-semibold text-[13px]" style={{ color: colors.textSecondary }}>
             Ciclo {status.cycleIndex} · {PHASE_LABEL_PT[status.phase]}
             {status.isBridge ? ' (consolidação)' : ''}
           </Text>
-          <Text style={[styles.meta, { color: colors.textTertiary }]}>
+          <Text className="mt-0.5 font-sans text-xs" style={{ color: colors.textTertiary }}>
             {GOAL_LABEL_PT[status.goal] || status.goal} · Semana {status.weekIndex}
           </Text>
         </View>
@@ -56,14 +66,15 @@ export function AdaptivePlanCard({ status, onStartToday, todayLabel }: Props) {
 
       {onStartToday && todayLabel ? (
         <TouchableOpacity
-          style={[styles.startBtn, { backgroundColor: colors.accent }]}
+          className="flex-row items-center justify-center gap-2 rounded-[10px] py-3"
+          style={{ backgroundColor: colors.accent }}
           onPress={onStartToday}
           activeOpacity={0.85}
           accessibilityRole="button"
           accessibilityLabel={`Começar ${todayLabel}`}
         >
           <Play size={16} color={colors.onAccent} fill={colors.onAccent} />
-          <Text style={[styles.startBtnText, { color: colors.onAccent }]}>
+          <Text className="font-sans-semibold text-[15px]" style={{ color: colors.onAccent }}>
             Começar · {todayLabel}
           </Text>
         </TouchableOpacity>
@@ -71,33 +82,3 @@ export function AdaptivePlanCard({ status, onStartToday, todayLabel }: Props) {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  card: {
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: 14,
-    gap: 12,
-    marginBottom: 12,
-  },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  iconWrap: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  title: { fontFamily: 'Inter-SemiBold', fontSize: 16 },
-  subtitle: { fontFamily: 'Inter-Medium', fontSize: 13, marginTop: 2 },
-  meta: { fontFamily: 'Inter-Regular', fontSize: 12, marginTop: 2 },
-  startBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    borderRadius: 10,
-    paddingVertical: 12,
-  },
-  startBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
-});

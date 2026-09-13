@@ -7,6 +7,7 @@ import { useDatabase } from '@/hooks/useDatabase';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
+import { ScreenHeader } from '@/components/ui/ScreenHeader';
 import { getAllTrainingMaxes, setTrainingMax, advanceTrainingMaxWeek } from '@/db/trainingMaxDao';
 import { getExerciseByName } from '@/db/exerciseDao';
 import { createPlan, addExerciseToPlan } from '@/db/planDao';
@@ -16,7 +17,7 @@ import {
   nextTrainingMax, trainingMaxFromEstimated1RM, type FiveThreeOneLift,
 } from '@/utils/fiveThreeOne';
 import { hapticSuccess, hapticSelect } from '@/utils/haptics';
-import { ChevronLeft, Dumbbell, TrendingUp, Zap } from 'lucide-react-native';
+import { Dumbbell, TrendingUp, Zap } from 'lucide-react-native';
 
 // The exercise name each lift maps to in this app's seed data — confirmed
 // to exist exactly as written before wiring this up.
@@ -153,13 +154,7 @@ export default function FiveThreeOneScreen() {
 
   return (
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Voltar">
-          <ChevronLeft size={26} color={colors.text} />
-        </TouchableOpacity>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>5/3/1</Text>
-        <View style={{ width: 26 }} />
-      </View>
+      <ScreenHeader title="5/3/1" subtitle="Programa de força" showBack />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Card>
@@ -267,8 +262,6 @@ export default function FiveThreeOneScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1 },
-  headerTitle: { fontFamily: 'Inter-Bold', fontSize: 20 },
   content: { padding: 16, gap: 12, paddingBottom: 32 },
   introText: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 19 },
   sectionTitle: { fontFamily: 'Inter-SemiBold', fontSize: 12, letterSpacing: 1, marginTop: 4 },

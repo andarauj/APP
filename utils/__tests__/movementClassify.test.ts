@@ -1,4 +1,7 @@
-import { mainPattern, movementBucket, tallyMovementBuckets, isCompoundMovement, isOlympicLiftSpecialty } from '../movementClassify';
+import {
+  mainPattern, movementBucket, tallyMovementBuckets, isCompoundMovement, isOlympicLiftSpecialty,
+  movementSubcategory, subcategoryCap, slotsForDay,
+} from '../movementClassify';
 
 describe('mainPattern — the five compounds', () => {
   it('recognises the barbell lifts by name', () => {
@@ -121,6 +124,20 @@ describe('isCompoundMovement', () => {
     expect(isCompoundMovement('Dumbbell Shrug')).toBe(false);
     expect(isCompoundMovement('Preacher Curl')).toBe(false);
   });
+
+  it('recognises Portuguese / Gymleco isolation names without English keywords', () => {
+    expect(isCompoundMovement('Gymleco Elevação Lateral Máquina')).toBe(false);
+    expect(isCompoundMovement('Elevacao Lateral')).toBe(false);
+    expect(isCompoundMovement('Gymleco Crucifixo Inverso Máquina')).toBe(false);
+    expect(isCompoundMovement('Gymleco Abdução Anca Máquina')).toBe(false);
+    expect(isCompoundMovement('Gymleco Adução Anca Máquina')).toBe(false);
+    expect(isCompoundMovement('Gymleco Gémeos Sentado Máquina')).toBe(false);
+    expect(isCompoundMovement('Rosca Direta')).toBe(false);
+    expect(isCompoundMovement('Gymleco Pullover Máquina')).toBe(false);
+    expect(isCompoundMovement('Pec Deck')).toBe(false);
+    expect(isCompoundMovement('Gymleco Supino Máquina (Chest Press)')).toBe(true);
+    expect(isCompoundMovement('Gymleco Leg Press 45')).toBe(true);
+  });
 });
 
 describe('isOlympicLiftSpecialty', () => {
@@ -139,6 +156,33 @@ describe('isOlympicLiftSpecialty', () => {
     expect(isOlympicLiftSpecialty('Romanian Deadlift')).toBe(false);
     expect(isOlympicLiftSpecialty('Barbell Hip Thrust')).toBe(false);
     expect(isOlympicLiftSpecialty('Kneeling Squat')).toBe(false);
+  });
+});
+
+describe('movementSubcategory', () => {
+  it('splits chest press vs fly / crossover', () => {
+    expect(movementSubcategory('Supino com Barra', 'chest')).toBe('chest_compound');
+    expect(movementSubcategory('Incline Bench Press', 'chest')).toBe('chest_compound');
+    expect(movementSubcategory('Crossover no Cabo', 'chest')).toBe('chest_isolation');
+    expect(movementSubcategory('Cable Crossover', 'chest')).toBe('chest_isolation');
+    expect(movementSubcategory('Crucifixo com Halteres', 'chest')).toBe('chest_isolation');
+  });
+
+  it('maps Push A accessory slots', () => {
+    expect(movementSubcategory('Press de Ombros em Pé', 'shoulders')).toBe('shoulder_press');
+    expect(movementSubcategory('Elevação Lateral com Halteres', 'shoulders')).toBe('shoulder_isolation');
+    expect(movementSubcategory('Extensão de Tríceps na Polia', 'triceps')).toBe('tricep_extension');
+  });
+
+  it('caps isolation at 1 and compounds at 2', () => {
+    expect(subcategoryCap('chest_isolation')).toBe(1);
+    expect(subcategoryCap('chest_compound')).toBe(2);
+  });
+
+  it('uses Push slots for a Push A label', () => {
+    const slots = slotsForDay(['chest', 'shoulders', 'triceps'], 'Push A');
+    expect(slots?.[0]).toEqual(['chest_compound']);
+    expect(slots?.[1]).toEqual(['chest_isolation']);
   });
 });
 

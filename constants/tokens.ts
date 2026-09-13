@@ -2,9 +2,10 @@
  * "Volt & Ink" — the structural (non-color) counterpart to
  * constants/colors.ts. This formalizes values already established across
  * the app's shared primitives (Card, Chip, Button) rather than introducing
- * a new visual identity: same blue-on-near-white palette, now with a single
- * source of truth for radius, touch targets, motion and the type scale so
- * new screens don't each pick their own 8/10/11/13/24 assortment.
+ * a new visual identity: light / dark / OLED palettes live in colors.ts;
+ * here we keep a single source of truth for radius, touch targets, motion
+ * and the type scale so new screens don't each pick their own 8/10/11/13/24
+ * assortment.
  */
 
 export const RADIUS = {

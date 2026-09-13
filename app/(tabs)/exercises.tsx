@@ -6,6 +6,7 @@ import { SearchBar } from '@/components/ui/SearchBar';
 import { Chip } from '@/components/ui/Chip';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { ScreenHeader } from '@/components/ui/ScreenHeader';
 import { muscleColor } from '@/components/ui/ExerciseTile';
 import { ExerciseListItem } from '@/components/ui/ExerciseListItem';
 import { useDatabase } from '@/hooks/useDatabase';
@@ -15,7 +16,9 @@ import type { Exercise, MuscleGroup, Equipment, ExerciseType } from '@/types';
 import { MUSCLE_GROUPS_PT, EQUIPMENT_PT } from '@/types';
 import { RADIUS, TYPE, BUTTON_HEIGHT } from '@/constants/tokens';
 import { Dumbbell, Plus, SlidersHorizontal, X } from 'lucide-react-native';
-import { useRouter } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
+import { addCatalogExerciseToDay } from '@/utils/workoutHub';
+import { getPlanExercisesWithDetails } from '@/db/planDao';
 
 const MUSCLES: (MuscleGroup | null)[] = [null, 'chest', 'back', 'shoulders', 'biceps', 'triceps', 'forearms', 'abs', 'quads', 'hamstrings', 'glutes', 'calves', 'traps', 'lats', 'cardio', 'mobility', 'fullbody'];
 
@@ -24,10 +27,14 @@ const MUSCLE_GRID: MuscleGroup[] = ['chest', 'back', 'shoulders', 'biceps', 'tri
 const EQUIPMENTS: (Equipment | null)[] = [null, 'barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'kettlebell', 'band', 'ez_bar', 'smith', 'plate', 'other'];
 const TYPES: (ExerciseType | null)[] = [null, 'strength', 'cardio', 'mobility'];
 
-export default function ExercisesScreen() {
+export default function ExercisesScreen({ embedded = false }: { embedded?: boolean }) {
   const { colors } = useTheme();
   const { isReady } = useDatabase();
-  const router = useRouter();
+  const pickParams = useLocalSearchParams<{ pick?: string; planId?: string; dayIndex?: string; dayLabel?: string }>();
+  const picking = pickParams.pick === '1' && !!pickParams.planId;
+  // Imperative router — this screen is also mounted as <ExercisesScreen embedded />
+  // inside Treinos. Avoid useRouter() at the top so a NativeWind/nav race during
+  // hub switch cannot throw "Couldn't find a navigation context" on first paint.
 
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [query, setQuery] = useState('');
@@ -37,7 +44,7 @@ export default function ExercisesScreen() {
   const [showFilters, setShowFilters] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   // 'grid' = muscle-group landing; 'list' = the filtered list.
-  const [browse, setBrowse] = useState<'grid' | 'list'>('grid');
+  const [browse, setBrowse] = useState<'grid' | 'list'>(picking ? 'list' : 'grid');
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -82,6 +89,9 @@ export default function ExercisesScreen() {
   }, [isReady, query, filterMuscle, filterEquip, filterType]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (picking) setBrowse('list');
+  }, [picking]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -174,11 +184,26 @@ export default function ExercisesScreen() {
   // defeats SectionList's ability to skip re-rendering rows that haven't
   // actually changed. useCallback keeps the same function reference across
   // renders that don't touch its dependencies.
+  const handlePick = useCallback(async (ex: Exercise) => {
+    const planId = Number(pickParams.planId);
+    const dayIndex = Number(pickParams.dayIndex ?? 0);
+    const dayLabel = pickParams.dayLabel || 'Treino';
+    try {
+      const existing = await getPlanExercisesWithDetails(planId);
+      const count = existing.filter((e: { day_index?: number }) => (e.day_index ?? 0) === dayIndex).length;
+      await addCatalogExerciseToDay(planId, ex, dayIndex, dayLabel, count);
+      router.navigate('/(tabs)');
+    } catch (err) {
+      console.error('Failed to add exercise to workout:', err);
+      Alert.alert('Erro', 'Não foi possível adicionar o exercício ao treino.');
+    }
+  }, [pickParams.planId, pickParams.dayIndex, pickParams.dayLabel]);
+
   const renderItem = useCallback(({ item }: { item: Exercise }) => {
     return (
       <ExerciseListItem
         exercise={item}
-        onPress={() => router.push({ pathname: '/exercise/[id]', params: { id: item.id } })}
+        onPress={() => (picking ? handlePick(item) : router.push({ pathname: '/exercise/[id]', params: { id: item.id } }))}
         onLongPress={() => item.is_custom === 1 && handleDelete(item)}
         surfaceColor={colors.surface}
         textColor={colors.text}
@@ -187,53 +212,77 @@ export default function ExercisesScreen() {
         borderColor={colors.border}
       />
     );
-  }, [colors, router, handleDelete]);
+  }, [colors, handleDelete, picking, handlePick]);
 
-  return (
-    <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
-      {/* Header */}
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+  const body = (
+    <>
+      {/* Header — hidden when embedded inside Treinos hub (parent owns chrome). */}
+      {!embedded && (
+        <ScreenHeader
+          title={picking ? 'Adicionar ao treino' : browse === 'list' && filterMuscle ? MUSCLE_GROUPS_PT[filterMuscle] : 'Exercícios'}
+          showBack={picking || browse === 'list'}
+          onBack={picking ? () => router.navigate('/(tabs)') : browse === 'list' ? () => { setBrowse('grid'); setFilterMuscle(null); setQuery(''); } : undefined}
+          right={
+            <View style={styles.headerRight}>
+              <TouchableOpacity
+                style={[styles.iconBtn, { backgroundColor: activeFilters > 0 ? colors.primaryContainer : colors.surfaceVariant }]}
+                onPress={() => setShowFilters(true)}
+                hitSlop={2}
+                accessibilityRole="button"
+                accessibilityLabel="Filtros de exercícios"
+              >
+                <SlidersHorizontal size={20} color={activeFilters > 0 ? colors.primary : colors.textSecondary} />
+                {activeFilters > 0 && (
+                  <View style={[styles.badge, { backgroundColor: colors.primary }]}>
+                    <Text style={[styles.badgeText, { color: colors.onPrimary }]}>{activeFilters}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.iconBtn, { backgroundColor: colors.primary }]}
+                onPress={() => setShowCreate(true)}
+                hitSlop={2}
+                accessibilityRole="button"
+                accessibilityLabel="Criar exercício personalizado"
+              >
+                <Plus size={20} color={colors.onPrimary} />
+              </TouchableOpacity>
+            </View>
+          }
+        />
+      )}
+
+      {embedded && (
+        <View style={styles.embeddedActions}>
           {browse === 'list' && (
             <TouchableOpacity
               onPress={() => { setBrowse('grid'); setFilterMuscle(null); setQuery(''); }}
-              hitSlop={8}
+              style={[styles.iconBtn, { backgroundColor: colors.surfaceVariant }]}
               accessibilityRole="button"
               accessibilityLabel="Voltar aos grupos musculares"
             >
-              <X size={22} color={colors.textSecondary} />
+              <X size={18} color={colors.textSecondary} />
             </TouchableOpacity>
           )}
-          <Text style={[styles.headerTitle, { color: colors.text }]} numberOfLines={1}>
-            {browse === 'list' && filterMuscle ? MUSCLE_GROUPS_PT[filterMuscle] : 'Exercícios'}
-          </Text>
-        </View>
-        <View style={styles.headerRight}>
+          <View style={{ flex: 1 }} />
           <TouchableOpacity
             style={[styles.iconBtn, { backgroundColor: activeFilters > 0 ? colors.primaryContainer : colors.surfaceVariant }]}
             onPress={() => setShowFilters(true)}
-            hitSlop={2}
             accessibilityRole="button"
             accessibilityLabel="Filtros de exercícios"
           >
-            <SlidersHorizontal size={20} color={activeFilters > 0 ? colors.primary : colors.textSecondary} />
-            {activeFilters > 0 && (
-              <View style={[styles.badge, { backgroundColor: colors.primary }]}>
-                <Text style={[styles.badgeText, { color: colors.onPrimary }]}>{activeFilters}</Text>
-              </View>
-            )}
+            <SlidersHorizontal size={18} color={activeFilters > 0 ? colors.primary : colors.textSecondary} />
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.iconBtn, { backgroundColor: colors.primary }]}
             onPress={() => setShowCreate(true)}
-            hitSlop={2}
             accessibilityRole="button"
             accessibilityLabel="Criar exercício personalizado"
           >
-            <Plus size={20} color={colors.onPrimary} />
+            <Plus size={18} color={colors.onPrimary} />
           </TouchableOpacity>
         </View>
-      </View>
+      )}
 
       {browse === 'grid' && (
         <ScrollView contentContainerStyle={styles.gridContent} showsVerticalScrollIndicator={false}>
@@ -338,19 +387,6 @@ export default function ExercisesScreen() {
         )}
         stickySectionHeadersEnabled
         contentContainerStyle={styles.list}
-        // The library holds ~1400 rows. Without these the list mounts far
-        // more of them than fit on screen, which shows up as a stutter when
-        // opening the tab and when flinging through the alphabet.
-        // getItemLayout is deliberately not used: row height varies with
-        // whether an exercise has an illustration, so a fixed estimate would
-        // misplace rows rather than speed anything up.
-        //
-        // removeClippedSubviews is deliberately NOT set: on the New
-        // Architecture (Fabric) it crashes this list hard once it holds the
-        // full ~1400 rows — "addViewAt: failed to insert view ... index=N
-        // count=0" out of ReactClippingViewManager. The three windowing props
-        // below already bound how many rows mount, so the perf intent stands
-        // without it.
         initialNumToRender={12}
         maxToRenderPerBatch={12}
         windowSize={7}
@@ -454,14 +490,22 @@ export default function ExercisesScreen() {
           </ScrollView>
         </View>
       </Modal>
+    </>
+  );
+
+  if (embedded) {
+    return <View style={[styles.screen, { backgroundColor: colors.background }]}>{body}</View>;
+  }
+
+  return (
+    <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
+      {body}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
-  headerTitle: { fontFamily: 'Inter-ExtraBold', fontSize: 28 },
   gridContent: { padding: 16, gap: 16, paddingBottom: 32 },
   muscleGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between' },
   muscleTile: { width: '30%', alignItems: 'center', gap: 8, paddingVertical: 8 },
@@ -469,6 +513,7 @@ const styles = StyleSheet.create({
   muscleLabel: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, textAlign: 'center', minHeight: 32 },
   seeAllBtn: { height: BUTTON_HEIGHT, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   seeAllBtnText: { fontFamily: 'Inter-Bold', fontSize: 15 },
+  embeddedActions: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 4 },
   filterPillsWrap: { flexGrow: 0, flexShrink: 0 },
   filterPills: { paddingHorizontal: 16, paddingVertical: 4, gap: 8, flexDirection: 'row', alignItems: 'center' },
   pill: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: RADIUS.pill },

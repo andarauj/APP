@@ -1,4 +1,4 @@
-import { View, TextInput, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, TextInput, TouchableOpacity } from 'react-native';
 import { useTheme } from '@/hooks/useTheme';
 import { Search, X } from 'lucide-react-native';
 
@@ -11,10 +11,14 @@ interface SearchBarProps {
 export function SearchBar({ value, onChangeText, placeholder = 'Pesquisar...' }: SearchBarProps) {
   const { colors } = useTheme();
   return (
-    <View style={[styles.container, { backgroundColor: colors.surfaceVariant }]}>
+    <View
+      className="h-12 flex-row items-center gap-2 rounded-input px-3.5"
+      style={{ backgroundColor: colors.surfaceVariant }}
+    >
       <Search size={18} color={colors.textTertiary} />
       <TextInput
-        style={[styles.input, { color: colors.text }]}
+        className="flex-1 font-sans text-[15px]"
+        style={{ color: colors.text }}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
@@ -29,19 +33,3 @@ export function SearchBar({ value, onChangeText, placeholder = 'Pesquisar...' }:
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    height: 48,
-    gap: 8,
-  },
-  input: {
-    flex: 1,
-    fontFamily: 'Inter-Regular',
-    fontSize: 15,
-  },
-});

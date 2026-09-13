@@ -29,7 +29,7 @@ interface PlanExerciseDraft {
 }
 
 const PLAN_TYPES: PlanType[] = ['strength', 'hypertrophy', 'endurance', 'cardio', 'mobility'];
-const SPLIT_TYPES: SplitType[] = ['abc', 'ppl', 'fullbody', 'upper_lower', 'bro', 'custom'];
+const SPLIT_TYPES: SplitType[] = ['abc', 'ppl', 'fullbody', 'upper_lower', 'ul_ppl', 'bro', 'custom'];
 const SET_TYPES: SetType[] = ['normal', 'warmup', 'dropset', 'failure', 'amrap'];
 const REST_OPTIONS = [30, 60, 90, 120, 180, 240, 300];
 

@@ -1,4 +1,4 @@
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import { useTheme } from '@/hooks/useTheme';
 import { Badge } from '@/components/ui/Badge';
 import type { WorkoutPlan } from '@/types';
@@ -30,16 +30,17 @@ export function PlanGroupCard({
 
   return (
     <TouchableOpacity
-      style={[styles.planCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+      className="flex-row overflow-hidden rounded-2xl border"
+      style={{ backgroundColor: colors.surface, borderColor: colors.border }}
       onPress={() => onOpenGroup(group)}
       activeOpacity={0.7}
     >
-      <View style={[styles.planAccent, { backgroundColor: colors.primary }]} />
-      <View style={styles.planBody}>
-        <View style={styles.planTop}>
-          <Text style={[styles.planName, { color: colors.text }]} numberOfLines={1}>{group.name}</Text>
+      <View className="w-1 self-stretch" style={{ backgroundColor: colors.primary }} />
+      <View className="flex-1 gap-2 p-3.5">
+        <View className="flex-row items-start justify-between">
+          <Text className="mr-2 flex-1 font-sans-bold text-[17px]" style={{ color: colors.text }} numberOfLines={1}>{group.name}</Text>
           {!hasMultiple && (
-            <View style={styles.planActions}>
+            <View className="flex-row gap-3">
               <TouchableOpacity onPress={() => onDuplicate(latest)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Duplicar plano ${group.name}`}>
                 <Copy size={18} color={colors.textTertiary} />
               </TouchableOpacity>
@@ -49,43 +50,33 @@ export function PlanGroupCard({
             </View>
           )}
         </View>
-        {latest.description ? <Text style={[styles.planDesc, { color: colors.textSecondary }]} numberOfLines={2}>{latest.description}</Text> : null}
-        <View style={styles.planMeta}>
+        {latest.description ? (
+          <Text className="font-sans text-[13px] leading-[18px]" style={{ color: colors.textSecondary }} numberOfLines={2}>{latest.description}</Text>
+        ) : null}
+        <View className="flex-row flex-wrap items-center gap-1.5">
           <Badge label={PLAN_TYPE_PT[latest.plan_type]} color={colors.primaryContainer} textColor={colors.primary} />
           <Badge label={SPLIT_TYPE_PT[latest.split_type]} color={colors.surfaceVariant} textColor={colors.textSecondary} />
           {hasMultiple && (
             <Badge label={`${group.plans.length} versões`} color={colors.accentContainer} textColor={colors.accent} />
           )}
-          <Text style={[styles.planDate, { color: colors.textTertiary }]}>{formatDate(latest.updated_at)}</Text>
+          <Text className="font-sans text-xs leading-4" style={{ color: colors.textTertiary }}>{formatDate(latest.updated_at)}</Text>
         </View>
         {!hasMultiple && (
           <TouchableOpacity
-            style={[styles.startBtn, { backgroundColor: colors.primary }]}
+            className="mt-1 flex-row items-center justify-center gap-1.5 rounded-[10px] py-2.5"
+            style={{ backgroundColor: colors.primary }}
             onPress={() => onQuickStart(latest)}
             accessibilityRole="button"
             accessibilityLabel={`Iniciar treino ${group.name}`}
           >
             <Play size={16} color="#fff" />
-            <Text style={styles.startBtnText}>{(dayCounts[latest.id] ?? 1) > 1 ? 'Escolher Dia' : 'Iniciar Treino'}</Text>
+            <Text className="font-sans-semibold text-sm text-white">{(dayCounts[latest.id] ?? 1) > 1 ? 'Escolher Dia' : 'Iniciar Treino'}</Text>
           </TouchableOpacity>
         )}
       </View>
-      {hasMultiple ? <Layers size={18} color={colors.textTertiary} style={styles.chevron} /> : <ChevronRight size={18} color={colors.textTertiary} style={styles.chevron} />}
+      {hasMultiple
+        ? <Layers size={18} color={colors.textTertiary} style={{ alignSelf: 'center', marginRight: 8 }} />
+        : <ChevronRight size={18} color={colors.textTertiary} style={{ alignSelf: 'center', marginRight: 8 }} />}
     </TouchableOpacity>
   );
 }
-
-const styles = StyleSheet.create({
-  planCard: { flexDirection: 'row', borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
-  planAccent: { width: 4, alignSelf: 'stretch' },
-  planBody: { flex: 1, padding: 14, gap: 8 },
-  planTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
-  planActions: { flexDirection: 'row', gap: 12 },
-  planName: { fontFamily: 'Inter-Bold', fontSize: 17, flex: 1, marginRight: 8 },
-  planDesc: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 18 },
-  planMeta: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, alignItems: 'center' },
-  planDate: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16 },
-  startBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 10, paddingVertical: 10, marginTop: 4 },
-  startBtnText: { color: '#fff', fontFamily: 'Inter-SemiBold', fontSize: 14 },
-  chevron: { alignSelf: 'center', marginRight: 8 },
-});

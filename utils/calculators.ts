@@ -5,6 +5,23 @@ export function calculate1RM(weight: number, reps: number): number {
   return Math.round(weight * (1 + reps / 30) * 10) / 10;
 }
 
+/** Brzycki estimate — slightly more conservative than Epley at higher reps. */
+export function calculate1RMBrzycki(weight: number, reps: number): number {
+  if (reps <= 0 || weight <= 0) return 0;
+  if (reps === 1) return weight;
+  if (reps >= 37) return calculate1RM(weight, reps); // Brzycki undefined near 37
+  return Math.round((weight * 36) / (37 - reps) * 10) / 10;
+}
+
+/** Average of Epley + Brzycki for a stable in-session e1RM readout. */
+export function estimate1RM(weight: number, reps: number): number {
+  const e = calculate1RM(weight, reps);
+  const b = calculate1RMBrzycki(weight, reps);
+  if (!e) return 0;
+  if (!b) return e;
+  return Math.round(((e + b) / 2) * 10) / 10;
+}
+
 export interface PlateResult {
   plates: { weight: number; count: number }[];
   totalWeight: number;

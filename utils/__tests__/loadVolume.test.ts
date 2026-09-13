@@ -1,4 +1,4 @@
-import { effectiveLoad, setVolume, shouldPreferRepsKpi, loadModeForEquipment } from '../loadVolume';
+import { effectiveLoad, setVolume, sessionVolumeFromSets, shouldPreferRepsKpi, loadModeForEquipment } from '../loadVolume';
 
 describe('loadModeForEquipment', () => {
   it('marks bodyweight equipment', () => {
@@ -31,6 +31,17 @@ describe('setVolume', () => {
     const sets = [15, 15, 12];
     const total = sets.reduce((sum, reps) => sum + setVolume(reps, 0, 'bodyweight', 75), 0);
     expect(total).toBe(3150);
+  });
+});
+
+describe('sessionVolumeFromSets', () => {
+  it('matches dashboard effective load (bodyweight + skip warmup)', () => {
+    expect(sessionVolumeFromSets([
+      { reps: 10, weight: 0, set_type: 'warmup', equipment: 'bodyweight' },
+      { reps: 15, weight: 0, set_type: 'normal', equipment: 'bodyweight' },
+      { reps: 12, weight: 0, set_type: 'normal', equipment: 'bodyweight' },
+      { reps: 8, weight: 60, set_type: 'normal', equipment: 'barbell' },
+    ], 75)).toBe(15 * 75 + 12 * 75 + 8 * 60);
   });
 });
 

@@ -1,6 +1,7 @@
 import { getDatabase } from './database';
 import type { WorkoutSession, WorkoutSet, SetType, PersonalRecord } from '@/types';
 import { calculate1RM } from '@/utils/calculators';
+import { evaluateDoubleProgression, loadStepForWeight, parseRepRange } from '@/utils/doubleProgression';
 
 /**
  * SQLite expression: effective kg for a set. Bodyweight @ 0 kg uses the
@@ -16,12 +17,17 @@ const EFFECTIVE_LOAD_SQL = `CASE
   )
   ELSE 0
 END`;
-export async function createSession(name: string, planId: number | null, dayIndex: number | null = null): Promise<number> {
+export async function createSession(
+  name: string,
+  planId: number | null,
+  dayIndex: number | null = null,
+  origin?: { adaptiveWeekId?: number | null; phase?: string | null },
+): Promise<number> {
   const db = await getDatabase();
   const now = Math.floor(Date.now() / 1000);
   const result = await db.runAsync(
-    'INSERT INTO workout_sessions (plan_id, day_index, name, started_at) VALUES (?, ?, ?, ?)',
-    [planId, dayIndex, name, now]
+    'INSERT INTO workout_sessions (plan_id, day_index, name, started_at, adaptive_week_id, phase) VALUES (?, ?, ?, ?, ?, ?)',
+    [planId, dayIndex, name, now, origin?.adaptiveWeekId ?? null, origin?.phase ?? null]
   );
   return result.lastInsertRowId as number;
 }
@@ -45,6 +51,20 @@ export async function getSessionById(id: number): Promise<WorkoutSession | null>
   const db = await getDatabase();
   const row = await db.getFirstAsync('SELECT * FROM workout_sessions WHERE id = ?', [id]);
   return row as WorkoutSession | null;
+}
+
+/** Rows the Workout Overview uses to mark COMPLETED vs PLANNED — does not delete history. */
+export async function getPlanSessionRows(planId: number): Promise<{
+  plan_id: number | null;
+  day_index: number | null;
+  ended_at: number | null;
+  started_at: number;
+}[]> {
+  const db = await getDatabase();
+  return db.getAllAsync(
+    'SELECT plan_id, day_index, ended_at, started_at FROM workout_sessions WHERE plan_id = ? ORDER BY started_at ASC',
+    [planId],
+  );
 }
 
 export async function getAllSessions(limit = 100, offset = 0): Promise<WorkoutSession[]> {
@@ -160,7 +180,7 @@ export async function deleteSet(id: number): Promise<void> {
  */
 export async function updateWorkoutSet(
   id: number,
-  patch: { reps?: number; weight?: number; rpe?: number | null },
+  patch: { reps?: number; weight?: number; rpe?: number | null; set_type?: string },
 ): Promise<void> {
   const db = await getDatabase();
   const fields: string[] = [];
@@ -168,6 +188,7 @@ export async function updateWorkoutSet(
   if (patch.reps !== undefined) { fields.push('reps = ?'); params.push(patch.reps); }
   if (patch.weight !== undefined) { fields.push('weight = ?'); params.push(patch.weight); }
   if (patch.rpe !== undefined) { fields.push('rpe = ?'); params.push(patch.rpe); }
+  if (patch.set_type !== undefined) { fields.push('set_type = ?'); params.push(patch.set_type); }
   if (fields.length === 0) return;
   params.push(id);
   await db.runAsync(`UPDATE workout_sets SET ${fields.join(', ')} WHERE id = ?`, params);
@@ -474,42 +495,61 @@ export async function getProgressionSuggestion(
   );
   if (sets.length === 0) return null;
 
-  // "8-12" -> 12, "10" -> 10, "20+" -> no ceiling to clear
-  const topRep = parseInt(repsTarget.split('-').pop()?.replace(/\D/g, '') || '0');
-  if (!topRep) return null;
+  const { low, high } = parseRepRange(repsTarget);
+  if (!high) return null;
 
   const weight = Math.max(...sets.map(s => s.weight));
-  const allHitTop = sets.every(s => s.reps >= topRep);
+  const allHitTop = sets.every(s => s.reps >= high);
 
-  // Bodyweight / unloaded: progress by reps, not kg.
   if (weight <= 0) {
     if (!allHitTop) {
       return {
         shouldProgress: false,
         suggestedWeight: 0,
         reason: '',
-        suggestedReps: topRep,
+        suggestedReps: high,
         isBodyweight: true,
       };
     }
     return {
       shouldProgress: true,
       suggestedWeight: 0,
-      suggestedReps: topRep + 2,
+      suggestedReps: high + 2,
       isBodyweight: true,
-      reason: `Fizeste ${topRep}+ reps em todas as séries — tenta ${topRep + 2} na próxima`,
+      reason: `Fizeste ${high}+ reps em todas as séries — tenta ${high + 2} na próxima`,
     };
   }
 
-  if (!allHitTop) {
-    return { shouldProgress: false, suggestedWeight: weight, reason: '', isBodyweight: false };
+  const priorRows = await db.getAllAsync<{ session_id: number }>(
+    `SELECT session_id, MAX(completed_at) as t FROM workout_sets
+     WHERE exercise_id = ? AND set_type != 'warmup'
+     GROUP BY session_id ORDER BY t DESC LIMIT 2`,
+    [exerciseId],
+  );
+  let priorBelowMin = 0;
+  if (priorRows.length > 1 && low > 0) {
+    const prevSets = await db.getAllAsync<{ reps: number; weight: number }>(
+      `SELECT reps, weight FROM workout_sets
+       WHERE session_id = ? AND exercise_id = ? AND set_type != 'warmup'`,
+      [priorRows[1].session_id, exerciseId],
+    );
+    if (prevSets.some(s => s.reps < low)) priorBelowMin = 1;
   }
 
-  const increment = weight >= 100 ? 5 : weight >= 40 ? 2.5 : weight >= 20 ? 2 : 1;
+  const result = evaluateDoubleProgression({
+    sets,
+    repsLow: low,
+    repsHigh: high,
+    increment: loadStepForWeight(weight),
+    priorBelowMinSessions: priorBelowMin,
+  });
+  if (result.action === 'hold') {
+    return { shouldProgress: false, suggestedWeight: result.nextWeight, reason: result.reason, isBodyweight: false };
+  }
   return {
     shouldProgress: true,
-    suggestedWeight: weight + increment,
-    reason: `Fizeste ${topRep}+ reps em todas as series com ${weight}kg`,
+    suggestedWeight: result.nextWeight,
+    reason: result.reason || `Fizeste ${high}+ reps em todas as series com ${weight}kg`,
     isBodyweight: false,
   };
 }
@@ -1059,6 +1099,18 @@ export async function getHistoricalRpeAtWeight(
  * of the app already handles calendar-day boundaries (e.g.
  * getMonthlyRecapData).
  */
+/** Trailing-7-days active training time — same window as weekly volume. */
+export async function getThisWeekTrainingDuration(): Promise<number> {
+  const db = await getDatabase();
+  const since = Math.floor(Date.now() / 1000) - 7 * 86400;
+  const row = await db.getFirstAsync<{ duration: number }>(
+    `SELECT COALESCE(SUM(total_duration), 0) as duration
+     FROM workout_sessions WHERE ended_at IS NOT NULL AND started_at >= ?`,
+    [since],
+  );
+  return row?.duration ?? 0;
+}
+
 export async function getThisWeekCompletedDays(): Promise<Set<number>> {
   const db = await getDatabase();
   const now = new Date();

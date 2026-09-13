@@ -13,6 +13,7 @@ import { Calendar, Flame, TrendingUp, Download, Upload, ChevronLeft, ChevronRigh
 import { Card } from '@/components/ui/Card';
 import { TabBar } from '@/components/ui/TabBar';
 import { BarChart } from '@/components/ui/Charts';
+import { ScreenHeader } from '@/components/ui/ScreenHeader';
 
 export default function HistoryScreen() {
   const { colors } = useTheme();
@@ -193,38 +194,25 @@ export default function HistoryScreen() {
   const adjustedFirstDay = (firstDay + 6) % 7; // Mon=0
 
   return (
-    <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <View style={styles.headerTitleRow}>
-          {/* BUGFIX (reported: "não deixa voltar a trás"): this screen is a
-              hidden tab (reached via router.push from Progresso/summary, not
-              a visible bottom-tab icon), so there's no bottom-bar icon to tap
-              back to Progresso with. router.canGoBack()/router.back() looked
-              like the fix but isn't: canGoBack() is true even right after a
-              plain tab switch, and back() in that case doesn't return to
-              Progresso — it unwinds to the tabs navigator's first declared
-              child (Descobrir) instead, regardless of which tab was actually
-              open before. router.replace('/(tabs)') has the same problem
-              once the tabs navigator is already mounted. router.navigate,
-              unlike back()/replace(), lets an already-mounted nested
-              navigator resolve to the right screen instead of resetting —
-              confirmed on-device across every entry point (Progresso tab
-              switch, and back-out-of-Equilíbrio-Muscular stack pop). */}
+    <SafeAreaView edges={['top']} className="flex-1" style={{ backgroundColor: colors.background }}>
+      <ScreenHeader
+        title="Histórico"
+        showBack
+        // Hidden tab: router.back() can land on the wrong tab — navigate to tabs root.
+        onBack={() => router.navigate('/(tabs)')}
+        right={
           <TouchableOpacity
-            onPress={() => router.navigate('/(tabs)')}
-            hitSlop={8}
+            onPress={handleImport}
+            className="flex-row items-center gap-1.5 rounded-[10px] px-3 py-2"
+            style={{ backgroundColor: colors.surfaceVariant }}
             accessibilityRole="button"
-            accessibilityLabel="Voltar"
+            accessibilityLabel="Importar treino ou plano XML"
           >
-            <ChevronLeft size={26} color={colors.text} />
+            <Upload size={18} color={colors.textSecondary} />
+            <Text className="font-sans-semibold text-sm" style={{ color: colors.textSecondary }}>Importar</Text>
           </TouchableOpacity>
-          <Text style={[styles.headerTitle, { color: colors.text }]}>Histórico</Text>
-        </View>
-        <TouchableOpacity onPress={handleImport} style={[styles.importBtn, { backgroundColor: colors.surfaceVariant }]} accessibilityRole="button" accessibilityLabel="Importar treino ou plano XML">
-          <Upload size={18} color={colors.textSecondary} />
-          <Text style={[styles.importText, { color: colors.textSecondary }]}>Importar</Text>
-        </TouchableOpacity>
-      </View>
+        }
+      />
 
       {/* Tab Navigation */}
       <TabBar
@@ -241,32 +229,32 @@ export default function HistoryScreen() {
       />
 
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerClassName="gap-3 p-4 pb-8"
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} colors={[colors.primary]} />}
       >
         {/* Streak cards — always visible */}
-        <View style={styles.streakRow}>
-          <Card style={styles.streakCard}>
-            <View style={[styles.streakIcon, { backgroundColor: colors.accentContainer }]}>
+        <View className="flex-row gap-2.5">
+          <Card className="flex-1 items-center gap-1.5 py-3.5">
+            <View className="h-11 w-11 items-center justify-center rounded-full" style={{ backgroundColor: colors.accentContainer }}>
               <Flame size={22} color={colors.accent} />
             </View>
-            <Text style={[styles.streakValue, { color: colors.text }]}>{streak.currentStreak}</Text>
-            <Text style={[styles.streakLabel, { color: colors.textSecondary }]}>Dias seguidos</Text>
+            <Text className="font-sans-bold text-[28px]" style={{ color: colors.text }}>{streak.currentStreak}</Text>
+            <Text className="font-sans text-xs leading-4" style={{ color: colors.textSecondary }}>Dias seguidos</Text>
           </Card>
-          <Card style={styles.streakCard}>
-            <View style={[styles.streakIcon, { backgroundColor: colors.primaryContainer }]}>
+          <Card className="flex-1 items-center gap-1.5 py-3.5">
+            <View className="h-11 w-11 items-center justify-center rounded-full" style={{ backgroundColor: colors.primaryContainer }}>
               <TrendingUp size={22} color={colors.primary} />
             </View>
-            <Text style={[styles.streakValue, { color: colors.text }]}>{streak.longestStreak}</Text>
-            <Text style={[styles.streakLabel, { color: colors.textSecondary }]}>Recorde</Text>
+            <Text className="font-sans-bold text-[28px]" style={{ color: colors.text }}>{streak.longestStreak}</Text>
+            <Text className="font-sans text-xs leading-4" style={{ color: colors.textSecondary }}>Recorde</Text>
           </Card>
-          <Card style={styles.streakCard}>
-            <View style={[styles.streakIcon, { backgroundColor: colors.secondaryContainer }]}>
+          <Card className="flex-1 items-center gap-1.5 py-3.5">
+            <View className="h-11 w-11 items-center justify-center rounded-full" style={{ backgroundColor: colors.secondaryContainer }}>
               <Calendar size={22} color={colors.secondary} />
             </View>
-            <Text style={[styles.streakValue, { color: colors.text }]}>{streak.totalWorkouts}</Text>
-            <Text style={[styles.streakLabel, { color: colors.textSecondary }]}>Total</Text>
+            <Text className="font-sans-bold text-[28px]" style={{ color: colors.text }}>{streak.totalWorkouts}</Text>
+            <Text className="font-sans text-xs leading-4" style={{ color: colors.textSecondary }}>Total</Text>
           </Card>
         </View>
 
@@ -564,18 +552,6 @@ const styles = StyleSheet.create({
   dayModalContent: { padding: 16, gap: 12 },
   dayEmpty: { alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 48 },
   dayEmptyText: { fontFamily: 'Inter-Regular', fontSize: 14, textAlign: 'center' },
-  screen: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
-  headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  headerTitle: { fontFamily: 'Inter-Bold', fontSize: 28 },
-  importBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10 },
-  importText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
-  content: { padding: 16, gap: 12, paddingBottom: 32 },
-  streakRow: { flexDirection: 'row', gap: 10 },
-  streakCard: { flex: 1, alignItems: 'center', gap: 6, paddingVertical: 14 },
-  streakIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
-  streakValue: { fontFamily: 'Inter-Bold', fontSize: 28 },
-  streakLabel: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16 },
   calHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
   calTitle: { fontFamily: 'Inter-Bold', fontSize: 17 },
   calWeekdays: { flexDirection: 'row', marginBottom: 4 },

@@ -133,7 +133,7 @@ Multiplicadores aplicados aos alvos-base do plano (séries × reps × %e1RM):
 |---|---|---|---|
 | **Adaptação** | 0.85 | reps altas (12–15), ~65% | reencontrar cargas, técnica |
 | **Acumulação** | 1.15 | 8–12, ~72% | acumular trabalho (maior parte do crescimento) |
-| **Intensificação** | 0.90 | 4–6, ~85% | pico de força |
+| **Intensificação** | 0.95 (não-força) | 6–10, ~80% (força: 3–5, ~88%) | carga sobe; hipertrofia fica no intervalo 6–20+ |
 | **Descarga** | 0.50 | 6–8 fáceis, ~60% | recuperação; próximo ciclo parte mais alto |
 
 Ajuste fino por objetivo: `bulking` puxa Acumulação mais longa/volumosa;

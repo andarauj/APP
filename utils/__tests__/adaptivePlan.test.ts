@@ -48,8 +48,11 @@ describe('phase spec by goal', () => {
       expect(phaseSpec('deload', g).volumeMult).toBeLessThanOrEqual(0.6);
     }
   });
-  it('general intensification volume is grounded at 0.80x (PERIODIZATION_RESEARCH.md §"Judgment on the app\'s current hardcoded multipliers") — a deliberate change, not accidental drift', () => {
-    expect(phaseSpec('intensification', 'general').volumeMult).toBeCloseTo(0.80);
+  it('general intensification stays near accumulation volume (0.95x) and in the 6–10 band — not a 4–6 strength week', () => {
+    const spec = phaseSpec('intensification', 'general');
+    expect(spec.volumeMult).toBeCloseTo(0.95);
+    expect(spec.repLow).toBe(6);
+    expect(spec.repHigh).toBe(10);
   });
 });
 
@@ -110,8 +113,8 @@ describe('phaseTargets', () => {
   });
   it('weight is e1RM * phase intensity, rounded', () => {
     const t = phaseTargets('intensification', 'general', 3, 100, 0, 2.5);
-    // general intensification ~0.85 -> 85 kg
-    expect(t.targetWeight).toBe(85);
+    // general intensification ~0.80 -> 80 kg
+    expect(t.targetWeight).toBe(80);
   });
   it('returns 0 weight when e1RM unknown (caller keeps last logged)', () => {
     expect(phaseTargets('accumulation', 'general', 3, 0).targetWeight).toBe(0);
@@ -121,6 +124,16 @@ describe('phaseTargets', () => {
     const stalled = phaseTargets('accumulation', 'general', 3, 100, 5);
     expect(stalled.repHigh).toBe(fresh.repHigh + 2);
     expect(stalled.repLow).toBe(fresh.repLow);
+  });
+  it('a second accumulation week adds one set per exercise', () => {
+    const first = phaseTargets('accumulation', 'general', 3, 100, 0, 2.5, 'intermediate', 0);
+    const second = phaseTargets('accumulation', 'general', 3, 100, 0, 2.5, 'intermediate', 1);
+    expect(second.targetSets).toBe(first.targetSets + 1);
+  });
+  it('strength intensification stays in a 3–5 window', () => {
+    const t = phaseTargets('intensification', 'strength', 3, 100);
+    expect(t.repHigh).toBeLessThanOrEqual(5);
+    expect(t.repLow).toBeLessThanOrEqual(4);
   });
 });
 
@@ -138,6 +151,7 @@ describe('loadIncrement', () => {
     expect(loadIncrement('barbell')).toBe(2.5);
     expect(loadIncrement('machine')).toBe(2.5);
     expect(loadIncrement('cable')).toBe(2.5);
+    expect(loadIncrement('gymleco')).toBe(2.5);
     expect(loadIncrement('')).toBe(2.5);
   });
 });

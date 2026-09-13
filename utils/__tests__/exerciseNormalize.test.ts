@@ -50,6 +50,11 @@ describe('resolveCanonicalKey / merges', () => {
     expect(resolveCanonicalKey('Barbell Bench Press')).toBe(normalizeExerciseKey('Supino com Barra'));
   });
 
+  it('merges Cable Crossover into Crossover no Cabo', () => {
+    expect(resolveCanonicalKey('Cable Crossover')).toBe(normalizeExerciseKey('Crossover no Cabo'));
+    expect(resolveCanonicalKey('Crossover no Cabo')).toBe(normalizeExerciseKey('Crossover no Cabo'));
+  });
+
   it('merges dumbbell lateral raise', () => {
     expect(resolveCanonicalKey('Dumbbell Lateral Raise')).toBe(
       normalizeExerciseKey('Elevação Lateral com Halteres')

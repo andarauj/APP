@@ -7,11 +7,17 @@ import { getSessionById, getSessionSetsWithExercise, updateSession } from '@/db/
 import { exportWorkoutAsXml, shareXmlFile, exportWorkoutSummaryText, shareTextFile } from '@/utils/xmlExport';
 import type { WorkoutSession , MuscleGroup } from '@/types';
 import { formatTime, formatDate } from '@/utils/format';
-import { Trophy, Download, Home, Dumbbell, Gauge, Mail } from 'lucide-react-native';
+import { Trophy, Download, Home, Dumbbell, Gauge, Mail, TrendingUp, Scale, Calendar } from 'lucide-react-native';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { MUSCLE_GROUPS_PT } from '@/types';
 import { summarizeWorkoutPace, rateSetPace, type WorkoutPaceSummary } from '@/utils/setPace';
+import { getWeeklyPlanner } from '@/db/plannerDao';
+import { getPlanById, getPlanDays } from '@/db/planDao';
+import { getLatestBodyMetric } from '@/db/bodyMetricsDao';
+import { sessionVolumeFromSets } from '@/utils/loadVolume';
+
+const WEEKDAY_FULL = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
 const PACE_VERDICT_TEXT: Record<WorkoutPaceSummary['verdict'], (p: WorkoutPaceSummary) => string> = {
   fast: () => 'Estás a fazer as séries mais depressa do que o ideal — vale a pena controlar melhor o movimento, sem pressa.',
@@ -31,6 +37,32 @@ export default function WorkoutSummaryScreen() {
   const [displayStats, setDisplayStats] = useState({ sets: 0, volume: 0, duration: 0 });
   const [pace, setPace] = useState<WorkoutPaceSummary | null>(null);
   const [sendingSummary, setSendingSummary] = useState(false);
+  const [nextPlanHint, setNextPlanHint] = useState<string | null>(null);
+  const [bodyweightKg, setBodyweightKg] = useState<number | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const planner = await getWeeklyPlanner();
+        const today = new Date().getDay();
+        for (let offset = 1; offset <= 7; offset++) {
+          const weekday = (today + offset) % 7;
+          const entry = planner[weekday];
+          if (!entry) continue;
+          const plan = await getPlanById(entry.planId);
+          const days = await getPlanDays(entry.planId);
+          const day = days.find(d => d.day_index === entry.dayIndex);
+          const when = offset === 1 ? 'Amanhã' : WEEKDAY_FULL[weekday];
+          const label = day?.day_label || plan?.name || 'Treino';
+          setNextPlanHint(`${when} · ${label}`);
+          return;
+        }
+        setNextPlanHint('Nada agendado — define o próximo dia em Hoje');
+      } catch {
+        setNextPlanHint(null);
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -62,10 +94,9 @@ export default function WorkoutSummaryScreen() {
       // the session's summary fields fixes this for unfinished sessions and
       // is equally correct for finished ones.
       const realSets = sets.length;
-      // Volume excludes warmup sets, matching every other volume query in
-      // db/workoutDao.ts (set_type != 'warmup') — a warmup set's light load
-      // isn't meant to count toward the session's working volume.
-      const realVolume = sets.reduce((sum: number, st: any) => sum + (st.set_type === 'warmup' ? 0 : st.reps * st.weight), 0);
+      const bodyweight = (await getLatestBodyMetric())?.weight ?? null;
+      setBodyweightKg(bodyweight);
+      const realVolume = sessionVolumeFromSets(sets, bodyweight);
       let realDuration = s?.total_duration || 0;
       if (s && !s.ended_at) {
         const lastSetTime = sets.reduce((max: number, st: any) => Math.max(max, st.completed_at || 0), 0);
@@ -134,7 +165,7 @@ export default function WorkoutSummaryScreen() {
 
   const volumePerMuscle: Record<string, number> = {};
   setsByExercise.forEach(ex => {
-    const vol = ex.sets.reduce((s: number, set: any) => s + (set.set_type === 'warmup' ? 0 : set.weight * set.reps), 0);
+    const vol = sessionVolumeFromSets(ex.sets, bodyweightKg);
     volumePerMuscle[ex.muscle] = (volumePerMuscle[ex.muscle] || 0) + vol;
   });
 
@@ -260,29 +291,73 @@ export default function WorkoutSummaryScreen() {
         ))}
       </ScrollView>
 
-      {/* Actions */}
-      <View style={[styles.actions, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
-        <TouchableOpacity
-          style={[styles.actionBtnSquare, { backgroundColor: colors.surfaceVariant }]}
-          onPress={handleExport}
-          accessibilityRole="button"
-          accessibilityLabel="Exportar dados deste treino"
-        >
-          <Download size={20} color={colors.textSecondary} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.actionBtnSquare, { backgroundColor: colors.surfaceVariant }]}
-          onPress={handleSendSummary}
-          disabled={sendingSummary}
-          accessibilityRole="button"
-          accessibilityLabel="Enviar resumo deste treino por email"
-        >
-          <Mail size={20} color={colors.textSecondary} />
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.primary }]} onPress={() => router.replace('/(tabs)/history')}>
-          <Home size={20} color="#fff" />
-          <Text style={[styles.actionBtnText, { color: '#fff' }]}>Ver Histórico</Text>
-        </TouchableOpacity>
+      {/* Actions — next logical steps after finishing */}
+      <View style={[styles.actionsCol, { borderTopColor: colors.border, backgroundColor: colors.background }]}>
+        {nextPlanHint && (
+          <TouchableOpacity
+            style={[styles.nextPlanBanner, { backgroundColor: colors.primaryContainer }]}
+            onPress={() => router.replace('/(tabs)')}
+            accessibilityRole="button"
+            accessibilityLabel={`Próximo no plano: ${nextPlanHint}`}
+          >
+            <Calendar size={16} color={colors.primary} />
+            <Text style={[styles.nextPlanText, { color: colors.primary }]} numberOfLines={1}>
+              Próximo: {nextPlanHint}
+            </Text>
+          </TouchableOpacity>
+        )}
+        <View style={styles.nextRow}>
+          <TouchableOpacity
+            style={[styles.nextChip, { backgroundColor: colors.primaryContainer }]}
+            onPress={() => router.replace('/(tabs)/progress')}
+            accessibilityRole="button"
+            accessibilityLabel="Ver progresso"
+          >
+            <TrendingUp size={16} color={colors.primary} />
+            <Text style={[styles.nextChipText, { color: colors.primary }]}>Progresso</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.nextChip, { backgroundColor: colors.surfaceVariant }]}
+            onPress={() => router.replace({ pathname: '/(tabs)/progress', params: { tab: 'corpo' } })}
+            accessibilityRole="button"
+            accessibilityLabel="Registar medidas corporais"
+          >
+            <Scale size={16} color={colors.text} />
+            <Text style={[styles.nextChipText, { color: colors.text }]}>Medidas</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.nextChip, { backgroundColor: colors.surfaceVariant }]}
+            onPress={() => router.replace('/(tabs)')}
+            accessibilityRole="button"
+            accessibilityLabel="Voltar ao Workout"
+          >
+            <Home size={16} color={colors.text} />
+            <Text style={[styles.nextChipText, { color: colors.text }]}>Workout</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.actions}>
+          <TouchableOpacity
+            style={[styles.actionBtnSquare, { backgroundColor: colors.surfaceVariant }]}
+            onPress={handleExport}
+            accessibilityRole="button"
+            accessibilityLabel="Exportar dados deste treino"
+          >
+            <Download size={20} color={colors.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.actionBtnSquare, { backgroundColor: colors.surfaceVariant }]}
+            onPress={handleSendSummary}
+            disabled={sendingSummary}
+            accessibilityRole="button"
+            accessibilityLabel="Enviar resumo deste treino por email"
+          >
+            <Mail size={20} color={colors.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.actionBtn, { backgroundColor: colors.primary }]} onPress={() => router.replace('/(tabs)/history')}>
+            <Dumbbell size={20} color="#fff" />
+            <Text style={[styles.actionBtnText, { color: '#fff' }]}>Ver Histórico</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     </SafeAreaView>
   );
@@ -290,7 +365,7 @@ export default function WorkoutSummaryScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  content: { padding: 16, gap: 12, paddingBottom: 100 },
+  content: { padding: 16, gap: 12, paddingBottom: 200 },
   heroSection: { alignItems: 'center', gap: 8, paddingVertical: 16 },
   heroIcon: { width: 80, height: 80, borderRadius: 40, alignItems: 'center', justifyContent: 'center', marginBottom: 4 },
   heroTitle: { fontFamily: 'Inter-Bold', fontSize: 28 },
@@ -319,7 +394,16 @@ const styles = StyleSheet.create({
   setIndex: { fontFamily: 'Inter-SemiBold', fontSize: 13, lineHeight: 17, width: 20 },
   setVal: { fontFamily: 'Inter-SemiBold', fontSize: 15, flex: 1 },
   setRpe: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17 },
-  actions: { position: 'absolute', bottom: 0, left: 0, right: 0, flexDirection: 'row', gap: 12, padding: 16, borderTopWidth: 1 },
+  actionsCol: { position: 'absolute', bottom: 0, left: 0, right: 0, borderTopWidth: 1, paddingTop: 10, gap: 10 },
+  nextPlanBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    marginHorizontal: 16, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12,
+  },
+  nextPlanText: { fontFamily: 'Inter-SemiBold', fontSize: 13, flex: 1 },
+  nextRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16 },
+  nextChip: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: 12 },
+  nextChipText: { fontFamily: 'Inter-Bold', fontSize: 12 },
+  actions: { flexDirection: 'row', gap: 12, paddingHorizontal: 16, paddingBottom: 16 },
   actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14, borderRadius: 14 },
   actionBtnSquare: { width: 50, alignItems: 'center', justifyContent: 'center', borderRadius: 14 },
   actionBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },

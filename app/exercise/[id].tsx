@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, Share } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { ScreenHeader } from '@/components/ui/ScreenHeader';
 import { Card } from '@/components/ui/Card';
@@ -35,6 +35,7 @@ const RANGES: { key: string; label: string; days: number }[] = [
 export default function ExerciseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { colors } = useTheme();
+  const router = useRouter();
   const [exercise, setExercise] = useState<Exercise | null>(null);
   const [history, setHistory] = useState<WorkoutSet[]>([]);
   const [progress, setProgress] = useState<{ date: number; weight: number; volume: number; reps: number }[]>([]);
@@ -197,6 +198,16 @@ export default function ExerciseDetailScreen() {
             <Chip key={r.key} label={r.label} selected={rangeKey === r.key} onPress={() => setRangeKey(r.key)} />
           ))}
         </View>
+
+        <TouchableOpacity
+          style={[styles.progressLink, { backgroundColor: colors.primaryContainer }]}
+          onPress={() => router.push({ pathname: '/exercise/progress', params: { exerciseId: String(id) } })}
+          accessibilityRole="button"
+          accessibilityLabel="Abrir progressão detalhada"
+        >
+          <TrendingUp size={16} color={colors.primary} />
+          <Text style={[styles.progressLinkText, { color: colors.primary }]}>Progressão detalhada</Text>
+        </TouchableOpacity>
 
         {detailTab === 'grafico' && (
           <>
@@ -381,6 +392,11 @@ const styles = StyleSheet.create({
   detailTab: { flex: 1, paddingVertical: 12, alignItems: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
   detailTabLabel: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
   rangeRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  progressLink: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    paddingVertical: 10, borderRadius: 12,
+  },
+  progressLinkText: { fontFamily: 'Inter-Bold', fontSize: 13 },
   card: { gap: 12 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sectionTitle: { fontFamily: 'Inter-Bold', fontSize: 16 },

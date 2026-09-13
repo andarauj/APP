@@ -8,6 +8,7 @@
  */
 
 import type { AdaptiveGoal, AdaptivePhase, AdaptiveExperience } from './nspi';
+import { planTypeForGoal, targetRirFor } from './trainingDose';
 
 export const PHASE_ORDER: AdaptivePhase[] = ['on_ramp', 'accumulation', 'intensification', 'deload'];
 
@@ -54,8 +55,8 @@ export const CYCLE_RATIONALE_PT =
   'Cada fase controla uma variável de treino diferente, por esta ordem: ' +
   'a Adaptação constrói capacidade de trabalho com cargas leves antes de ' +
   'mais nada; a Acumulação sobe o volume, que é o que mais gera estímulo; ' +
-  'a Intensificação troca volume por carga para testar os teus limites de ' +
-  'força; e a Descarga reduz tudo a metade para recuperar antes do próximo ' +
+  'a Intensificação sobe a carga (6–10 reps, ou 3–5 se o objectivo é força); ' +
+  'e a Descarga reduz tudo a metade para recuperar antes do próximo ' +
   'ciclo, que arranca de um patamar mais alto que este.';
 
 interface PhaseSpec {
@@ -79,14 +80,10 @@ interface PhaseSpec {
  * - accumulation: >1.0x volume matches the well-established idea that
  *   volume should rise as a mesocycle progresses (Schoenfeld et al. 2017
  *   dose-response meta-analysis; Israetel et al. 2020 MEV->MAV ramp).
- * - intensification: was 0.90x. Revised down to 0.80x — a mere 10% set-count
- *   cut is small relative to what the literature associates with a drop to
- *   4-6 reps at ~85% e1RM: Baz-Valle et al.'s validation of "total sets" as
- *   a volume proxy is scoped to 6-20+ reps (4-6 sits at/below that range),
- *   and periodization sources (Bompa; Lorenz & Morrison 2015) describe
- *   volume dropping "systematically", not by ~10%, as intensity climbs.
- *   No source gives an exact correct number here — 0.80x is the
- *   conservative end of the research's suggested 0.70-0.80x test range.
+ * - intensification: non-strength stays in the 6–10 rep band at ~80% e1RM
+ *   with volume ~0.95x (load up, do not drop to 4–6 — that range sits
+ *   outside Baz-Valle's 6–20+ set-count validation). Strength goal keeps
+ *   3–5 @ ~88% via GOAL_TILT. See HYPERTROPHY_PROGRAMMING.md.
  * - deload: 0.50x sits at the midpoint of Bell et al. (2025)'s "moderate
  *   recovery needs" tier (40-60% cut) and is well inside what one controlled
  *   study (Vann et al. 2021, an 85% cut) found caused no measurable harm.
@@ -95,7 +92,7 @@ interface PhaseSpec {
 const BASE_PHASES: Record<AdaptivePhase, PhaseSpec> = {
   on_ramp:         { volumeMult: 0.85, repLow: 12, repHigh: 15, intensityPct: 0.65, expect: 'Semana de adaptação: reps altas, RPE 6–7, reencontrar as cargas.' },
   accumulation:    { volumeMult: 1.15, repLow: 8,  repHigh: 12, intensityPct: 0.72, expect: 'Semana de acumulação: mais séries, RPE 7–8, é aqui que se cresce.' },
-  intensification: { volumeMult: 0.80, repLow: 4,  repHigh: 6,  intensityPct: 0.85, expect: 'Semana de intensificação: pesado, reps baixas, RPE 8–9.' },
+  intensification: { volumeMult: 0.95, repLow: 6,  repHigh: 10, intensityPct: 0.80, expect: 'Semana de intensificação: mais carga, 6–10 reps, RPE 8–9.' },
   deload:          { volumeMult: 0.50, repLow: 6,  repHigh: 8,  intensityPct: 0.60, expect: 'Semana de descarga: metade do volume, cargas leves, recuperar.' },
 };
 
@@ -115,7 +112,7 @@ const GOAL_TILT: Record<AdaptiveGoal, Partial<Record<AdaptivePhase, Partial<Phas
   },
   bulking: {
     accumulation:    { volumeMult: 1.25, repLow: 8, repHigh: 14 },
-    intensification: { volumeMult: 0.95, repLow: 6, repHigh: 8, intensityPct: 0.80 },
+    intensification: { volumeMult: 0.95, repLow: 6, repHigh: 10, intensityPct: 0.80 },
   },
   cutting: {
     accumulation:    { volumeMult: 1.05, repLow: 10, repHigh: 15 },
@@ -196,7 +193,7 @@ export function loadIncrement(equipment: string): number {
   const e = (equipment || '').toLowerCase();
   if (e.includes('body') || e === 'none' || e.includes('band')) return 0;
   if (e.includes('dumbbell') || e.includes('kettlebell')) return 2;
-  if (e.includes('machine') || e.includes('cable') || e.includes('smith')) return 2.5;
+  if (e.includes('machine') || e.includes('cable') || e.includes('smith') || e.includes('gymleco')) return 2.5;
   return 2.5; // barbell, ez bar, trap bar, plate-loaded
 }
 
@@ -205,6 +202,7 @@ export interface ExerciseTargets {
   repLow: number;
   repHigh: number;
   targetSets: number;
+  targetRir: number;
 }
 
 /**
@@ -215,6 +213,8 @@ export interface ExerciseTargets {
  *                    window slightly so a stuck lifter has room to grind)
  * @param increment   loadable step for this exercise's equipment (kg)
  * @param experience  beginner/intermediate/advanced — see EXPERIENCE_ADJUST
+ * @param weekInPhase 0-based repeat index inside this phase (accumulation
+ *                    weeks after the first add +1 set / exercise).
  */
 export function phaseTargets(
   phase: AdaptivePhase,
@@ -224,14 +224,22 @@ export function phaseTargets(
   stall = 0,
   increment = 2.5,
   experience: AdaptiveExperience = 'intermediate',
+  weekInPhase = 0,
 ): ExerciseTargets {
   const spec = phaseSpec(phase, goal, experience);
-  const targetSets = Math.max(1, Math.round(baseSets * spec.volumeMult));
+  let targetSets = Math.max(1, Math.round(baseSets * spec.volumeMult));
+  // Israetel et al. 2020: adding sets is the best-supported hypertrophy
+  // lever inside a mesocycle. +1 / exercise / extra accumulation week is a
+  // heuristic (RP public material cites +1–3 / muscle / week).
+  if (phase === 'accumulation' && weekInPhase > 0) {
+    targetSets = Math.min(6, targetSets + weekInPhase);
+  }
   const repBump = Math.min(2, stall); // up to +2 reps of room when stalling
   const repLow = spec.repLow;
   const repHigh = spec.repHigh + repBump;
   const targetWeight = e1rm > 0 ? roundToIncrement(e1rm * spec.intensityPct, increment) : 0;
-  return { targetWeight, repLow, repHigh, targetSets };
+  const targetRir = targetRirFor(planTypeForGoal(goal), { phase, compound: true });
+  return { targetWeight, repLow, repHigh, targetSets, targetRir };
 }
 
 /** Estimated 1RM from a top set (Epley), shared with utils/calculators. */

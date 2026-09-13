@@ -1,26 +1,33 @@
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import { useTheme } from '@/hooks/useTheme';
-import { useRouter } from 'expo-router';
+import { router } from 'expo-router';
 import { ArrowLeft } from 'lucide-react-native';
 
 interface ScreenHeaderProps {
   title: string;
   subtitle?: string;
   showBack?: boolean;
+  /** Override default router.back() — needed for hidden tabs like Histórico. */
+  onBack?: () => void;
   right?: React.ReactNode;
+  className?: string;
 }
 
-export function ScreenHeader({ title, subtitle, showBack, right }: ScreenHeaderProps) {
+export function ScreenHeader({ title, subtitle, showBack, onBack, right, className }: ScreenHeaderProps) {
   const { colors } = useTheme();
-  const router = useRouter();
+  // Imperative router — avoids useRouter() hook failures if this header is
+  // ever painted during a brief NavigationContainer gap (fonts / NativeWind).
 
   return (
-    <View style={[styles.header, { backgroundColor: colors.background, borderBottomColor: colors.border }]}>
-      <View style={styles.left}>
+    <View
+      className={`flex-row items-center justify-between gap-3 border-b px-4 pb-3 pt-3 ${className ?? ''}`}
+      style={{ backgroundColor: colors.background, borderBottomColor: colors.border }}
+    >
+      <View className="min-w-0 flex-1 flex-row items-center gap-3">
         {showBack && (
           <TouchableOpacity
-            onPress={() => router.back()}
-            style={styles.backBtn}
+            onPress={() => (onBack ? onBack() : router.back())}
+            className="p-1"
             hitSlop={8}
             accessibilityRole="button"
             accessibilityLabel="Voltar"
@@ -28,35 +35,27 @@ export function ScreenHeader({ title, subtitle, showBack, right }: ScreenHeaderP
             <ArrowLeft size={24} color={colors.text} />
           </TouchableOpacity>
         )}
-        {/* flexShrink + numberOfLines stop a long title (e.g. an auto-generated
-            plan name) from pushing the action buttons off-screen or under it. */}
-        <View style={styles.titleWrap}>
-          <Text style={[styles.title, { color: colors.text }]} numberOfLines={1} ellipsizeMode="tail">{title}</Text>
-          {subtitle && <Text style={[styles.subtitle, { color: colors.textSecondary }]} numberOfLines={1}>{subtitle}</Text>}
+        <View className="min-w-0 flex-1">
+          <Text
+            className="font-sans-bold text-[22px]"
+            style={{ color: colors.text }}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
+            {title}
+          </Text>
+          {subtitle && (
+            <Text
+              className="mt-0.5 font-sans text-[13px] leading-[17px]"
+              style={{ color: colors.textSecondary }}
+              numberOfLines={1}
+            >
+              {subtitle}
+            </Text>
+          )}
         </View>
       </View>
-      {right && <View style={styles.right}>{right}</View>}
+      {right && <View className="shrink-0 flex-row items-center gap-2">{right}</View>}
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    // The screen's SafeAreaView already applies the status-bar inset, so the
-    // header only needs its own breathing room here.
-    paddingTop: 12,
-    paddingBottom: 12,
-    gap: 12,
-    borderBottomWidth: 1,
-  },
-  left: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 },
-  titleWrap: { flex: 1, minWidth: 0 },
-  right: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 },
-  backBtn: { padding: 4 },
-  title: { fontFamily: 'Inter-Bold', fontSize: 22 },
-  subtitle: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17, marginTop: 2 },
-});

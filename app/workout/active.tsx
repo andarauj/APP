@@ -1,15 +1,17 @@
-import { useState, useEffect, useCallback, useRef, memo } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, TextInput, Alert, FlatList, Modal, Platform, Vibration, BackHandler, KeyboardAvoidingView, Keyboard } from 'react-native';
+import { useState, useEffect, useCallback, useRef, useMemo, memo } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, TextInput, Alert, FlatList, Modal, Platform, Vibration, BackHandler, KeyboardAvoidingView, Keyboard } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, useAnimatedReaction, withSequence, withTiming, withSpring, ZoomIn, FadeOut } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
 import { useAppMode } from '@/hooks/useAppMode';
-import { useActiveWorkout } from '@/hooks/useActiveWorkout';
+import { useActiveWorkout, remainingRestSeconds, resumeRestSeed } from '@/hooks/useActiveWorkout';
 import { useStopwatch, useCountdown } from '@/hooks/useTimers';
 import { getPlanExercisesWithDetails } from '@/db/planDao';
 import { getAdaptiveStatus } from '@/utils/adaptiveService';
-import { getExerciseStates, type AdaptiveExerciseStateRow } from '@/db/adaptiveDao';
+import { getExerciseStates, getWeekById, type AdaptiveExerciseStateRow } from '@/db/adaptiveDao';
+import { applySnapshotToPlanExercises } from '@/utils/plannedWorkout';
+import { parsePlannedDays } from '@/utils/mesocycleMaterialize';
 import { PHASE_LABEL_PT, PHASE_COLOR, phaseSpec } from '@/utils/adaptivePlan';
 import type { AdaptiveGoal, AdaptivePhase } from '@/utils/nspi';
 import { createSession, updateSession, discardSession, addSet, updateWorkoutSet, getLastSetForExercise, getLastSessionSetsByIndex, getHistoricalRpeAtWeight , getProgressionSuggestion, getSessionTemplate, getSessionById, getSessionSetsWithExercise } from '@/db/workoutDao';
@@ -17,19 +19,22 @@ import { searchExercises, getAlternativeExercises, setExerciseUserNotes } from '
 import { getSettingWithDefault, DEFAULT_SETTINGS } from '@/db/settingsDao';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { scheduleRestEndNotification, cancelRestEndNotification } from '@/utils/restNotification';
-import type { Exercise, SetType, MuscleGroup } from '@/types';
-import { MUSCLE_GROUPS_PT, EQUIPMENT_PT } from '@/types';
+import type { Exercise, SetType, MuscleGroup, Equipment } from '@/types';
+import { MUSCLE_GROUPS_PT, EQUIPMENT_PT, SET_TYPE_PT } from '@/types';
+import type { Theme } from '@/constants/colors';
+import { nextSetType, setTypeBadgeLabel, REST_PRESETS_SECONDS, adjustRestRemaining, normalizeRepsTarget, parseLoggedReps, plannedSetType } from '@/utils/workoutSetUi';
 import { SearchBar } from '@/components/ui/SearchBar';
 import { ExerciseTile } from '@/components/ui/ExerciseTile';
 import { formatTime, formatVolume } from '@/utils/format';
 import { setVolume, shouldPreferRepsKpi } from '@/utils/loadVolume';
 import { getLatestBodyWeightKg } from '@/db/bodyMetricsDao';
-import { parseTempo, calculatePlates } from '@/utils/calculators';
+import { parseTempo, calculatePlates, calculate1RM } from '@/utils/calculators';
 import { hapticTap, hapticSuccess, hapticWarning, hapticSelect } from '@/utils/haptics';
 import { playRestEndSound } from '@/utils/sound';
 import { findSupersetPartner } from '@/utils/supersets';
 import { isSetLocked } from '@/utils/setLocking';
 import { restSecondsFor } from '@/utils/planGenerator';
+import { formatRirHint } from '@/utils/trainingDose';
 import { suggestSetAdjustment, type AutoRegulationSuggestion } from '@/utils/autoRegulation';
 import { moveExerciseInSession } from '@/utils/workoutSessionUtils';
 import { TempoMetronomeBox } from '@/components/workout/TempoMetronomeBox';
@@ -76,10 +81,38 @@ interface ActiveExercise {
   supersetGroup?: number | null;
   /** Illustration for the movement, when the exercise row has one. */
   imageUrl?: string;
+  /** Prescribed RIR for this exercise (logged effort stays RPE). */
+  targetRir?: number | null;
 }
 
 const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10];
 const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
+
+/** Material OLED surfaces for the gym floor — true black + elevated cards. */
+const WORKOUT_OLED = {
+  background: '#000000',
+  surface: '#121212',
+  surfaceVariant: '#1E1E1E',
+  surfaceHighlight: '#2A2A2A',
+  text: '#FFFFFF',
+  textSecondary: '#D0D0D0',
+  textTertiary: '#8E8E8E',
+  border: '#2C2C2C',
+  borderLight: '#3A3A3A',
+  chip: '#1E1E1E',
+  primary: '#3D8BFF',
+  primaryContainer: '#15305F',
+  onPrimary: '#FFFFFF',
+  rest: '#3D8BFF',
+  secondary: '#22C55E',
+  success: '#22C55E',
+  secondaryContainer: '#0E3A22',
+  onSecondary: '#04150C',
+  overlay: 'rgba(0,0,0,0.78)',
+} as const;
+
+const REST_BAR_RESERVE = 96;
+const PROGRESS_BAR_RESERVE = 58;
 
 /** Row shape returned by db/workoutDao.ts's getSessionSetsWithExercise. */
 interface LoggedSetRow {
@@ -119,11 +152,42 @@ function rebuildExerciseFromLoggedSets(exerciseId: number, sets: LoggedSetRow[],
 }
 
 export default function ActiveWorkoutScreen() {
-  const { planId, planName, dayIndex, repeatSessionId, resumeSessionId } = useLocalSearchParams<{ planId: string; planName: string; dayIndex?: string; repeatSessionId?: string; resumeSessionId?: string }>();
-  const { colors } = useTheme();
+  const { planId, planName, dayIndex, weekId, phase, repeatSessionId, resumeSessionId, resumeRestEndsAtMs, resumeRestRingSeconds } = useLocalSearchParams<{
+    planId: string; planName: string; dayIndex?: string; weekId?: string; weekIndex?: string; phase?: string;
+    repeatSessionId?: string;
+    resumeSessionId?: string; resumeRestEndsAtMs?: string; resumeRestRingSeconds?: string;
+  }>();
+  const { colors: themeColors } = useTheme();
+  const colors = useMemo<Theme>(() => ({ ...themeColors, ...WORKOUT_OLED }), [themeColors]);
   const { isSimple } = useAppMode();
   const router = useRouter();
-  const { minimize, clearMinimized } = useActiveWorkout();
+  const { minimize, clearMinimized, minimized } = useActiveWorkout();
+
+  // Capture rest deadline before clearing the mini-player snapshot so expand
+  // resumes mid-countdown instead of resetting FloatingRestBar to full duration.
+  // Prefer the route param (set by the mini-player) then the live context.
+  // Locked in a ref so clearMinimized() on mount doesn't wipe the value on
+  // the next render before FloatingRestBar reads it.
+  // `ring` is the original rest length (denominator for RestRing fill).
+  const resumedRestRef = useRef<{ endsAt: number; left: number; ring: number } | null>(null);
+  if (resumedRestRef.current === null) {
+    const fromParam = resumeRestEndsAtMs ? Number(resumeRestEndsAtMs) : NaN;
+    const ringFromParam = resumeRestRingSeconds ? Number(resumeRestRingSeconds) : NaN;
+    let endsAt: number | null = null;
+    let ringHint: number | null = Number.isFinite(ringFromParam) && ringFromParam > 0 ? ringFromParam : null;
+    if (Number.isFinite(fromParam) && fromParam > 0) endsAt = fromParam;
+    else if (
+      resumeSessionId
+      && minimized
+      && String(minimized.sessionId) === String(resumeSessionId)
+      && minimized.restEndsAtMs != null
+    ) {
+      endsAt = minimized.restEndsAtMs;
+      if (ringHint == null && minimized.restRingSeconds != null) ringHint = minimized.restRingSeconds;
+    }
+    resumedRestRef.current = resumeRestSeed(endsAt, ringHint);
+  }
+  const resumedRest = resumedRestRef.current;
 
   // Being on this screen at all — fresh start or resumed — means the
   // session is no longer minimized, regardless of how it got here (tapping
@@ -136,8 +200,18 @@ export default function ActiveWorkoutScreen() {
 
   const [sessionId, setSessionId] = useState<number | null>(null);
   const [exercises, setExercises] = useState<ActiveExercise[]>([]);
-  const [restActive, setRestActive] = useState(false);
-  const [restDuration, setRestDuration] = useState(Number(DEFAULT_SETTINGS.defaultRestSeconds));
+  const [restActive, setRestActive] = useState(() => resumedRest != null);
+  const [restDuration, setRestDuration] = useState(() =>
+    resumedRest?.left ?? Number(DEFAULT_SETTINGS.defaultRestSeconds)
+  );
+  /** Wall-clock deadline for the active rest — survives minimize → mini-player. */
+  const [restEndsAtMs, setRestEndsAtMs] = useState<number | null>(() =>
+    resumedRest?.endsAt ?? null
+  );
+  /** RestRing denominator — kept across minimize so mid-rest expand isn't 42/42. */
+  const [restRingSeconds, setRestRingSeconds] = useState(() =>
+    resumedRest?.ring ?? resumedRest?.left ?? Number(DEFAULT_SETTINGS.defaultRestSeconds)
+  );
   const [setTimerActive, setSetTimerActive] = useState(false);
   const [showAddExercise, setShowAddExercise] = useState(false);
   const [pickerQuery, setPickerQuery] = useState('');
@@ -280,6 +354,7 @@ export default function ActiveWorkoutScreen() {
     // pop up a few seconds later (harmless if it already fired, but avoids
     // a lingering duplicate alert while the app is in the foreground).
     cancelRestEndNotification().catch(() => {});
+    setRestEndsAtMs(null);
     setRestActive(false);
   }, [vibrateEnabled, soundEnabled]);
 
@@ -335,7 +410,14 @@ export default function ActiveWorkoutScreen() {
 
   const init = async () => {
     const defaultRest = await getSettingWithDefault('defaultRestSeconds', DEFAULT_SETTINGS.defaultRestSeconds);
-    setRestDuration(parseInt(defaultRest));
+    // CRITICAL: never overwrite restDuration while mid-rest expand is active.
+    // restEndsAtMs / FloatingRestBar.bindEndsAtMs are the source of truth for
+    // the countdown; defaultRest only seeds a *new* rest when there is none.
+    // Overwriting duration while useCountdown had a live endTimeRef used to
+    // fight the deadline (freeze or jump to full default after minimize→expand).
+    if (resumedRestRef.current == null) {
+      setRestDuration(parseInt(defaultRest));
+    }
     setVibrateEnabled(await getSettingWithDefault('vibrateEnabled', '1') === '1');
     setSoundEnabled(await getSettingWithDefault('soundEnabled', '1') === '1');
     setRestRemindersEnabled(await getSettingWithDefault('restNotifyEnabled', '1') === '1');
@@ -353,11 +435,14 @@ export default function ActiveWorkoutScreen() {
     // opened with), otherwise the route's own param.
     let effectiveDayIndex = routeDayIndex;
     let resumedSets: Awaited<ReturnType<typeof getSessionSetsWithExercise>> = [];
+    let originWeekId = weekId ? Number(weekId) : null;
+    const originPhase = typeof phase === 'string' && phase.length > 0 ? phase : null;
     if (resumeSessionId) {
       const existing = await getSessionById(Number(resumeSessionId));
       if (existing && !existing.ended_at) {
         sid = existing.id;
         effectiveDayIndex = existing.day_index;
+        originWeekId = existing.adaptive_week_id ?? originWeekId;
         resumedSets = await getSessionSetsWithExercise(sid);
         // Jump the clock straight to the last checkpoint instead of
         // recomputing from started_at — see useStopwatch's setBase comment
@@ -368,10 +453,16 @@ export default function ActiveWorkoutScreen() {
         // "Concluir o que foi feito" from the recovery banner) between
         // navigating here and this screen mounting — fall back to a
         // normal fresh start rather than resuming nothing.
-        sid = await createSession(planName || 'Treino', Number(planId) || null, routeDayIndex);
+        sid = await createSession(planName || 'Treino', Number(planId) || null, routeDayIndex, {
+          adaptiveWeekId: originWeekId,
+          phase: originPhase,
+        });
       }
     } else {
-      sid = await createSession(planName || 'Treino', Number(planId) || null, routeDayIndex);
+      sid = await createSession(planName || 'Treino', Number(planId) || null, routeDayIndex, {
+        adaptiveWeekId: originWeekId,
+        phase: originPhase,
+      });
     }
     setSessionId(sid);
 
@@ -438,7 +529,19 @@ export default function ActiveWorkoutScreen() {
     }
 
     if (Number(planId) > 0) {
-      const allPlanExs = await getPlanExercisesWithDetails(Number(planId));
+      let allPlanExs = await getPlanExercisesWithDetails(Number(planId));
+      let fromSnapshot = false;
+      if (originWeekId) {
+        const plannedWeek = await getWeekById(originWeekId);
+        const snapDay = plannedWeek
+          ? parsePlannedDays(plannedWeek.planned_json).find(d =>
+            effectiveDayIndex === null || Number(d.dayIndex) === Number(effectiveDayIndex))
+          : null;
+        if (snapDay && snapDay.exercises.length > 0) {
+          allPlanExs = applySnapshotToPlanExercises(allPlanExs, snapDay);
+          fromSnapshot = true;
+        }
+      }
       // Load only the selected training day. Without this, starting a workout
       // from a multi-day plan queued up every exercise of every day at once.
       // effectiveDayIndex (not the raw route param) so a resumed session
@@ -452,13 +555,16 @@ export default function ActiveWorkoutScreen() {
         planExs.map(async (pe, i) => {
           const lastSet = await getLastSetForExercise(pe.exercise_id);
           const previousByIndex = await getLastSessionSetsByIndex(pe.exercise_id);
-          const reps = pe.reps_target || '8';
-          const progression = await getProgressionSuggestion(pe.exercise_id, pe.reps_target || '');
-          // Pre-fill with the suggested load when the user cleared the rep
-          // range last time, otherwise repeat last session's weight.
-          const weight = progression?.shouldProgress
-            ? String(progression.suggestedWeight)
-            : lastSet ? String(lastSet.weight) : String(pe.weight_target || 0);
+          const reps = normalizeRepsTarget(pe.reps_target);
+          const setType = plannedSetType(pe.set_type);
+          const progression = fromSnapshot ? null : await getProgressionSuggestion(pe.exercise_id, reps);
+          // Planned-week snapshots are the prescription for that week — do
+          // not overlay last-session double-progression on top of them.
+          const weight = fromSnapshot
+            ? String(pe.weight_target || 0)
+            : progression?.shouldProgress
+              ? String(progression.suggestedWeight)
+              : lastSet ? String(lastSet.weight) : String(pe.weight_target || 0);
           const resumedForThisExercise = resumedByExercise.get(pe.exercise_id) ?? [];
           resumedByExercise.delete(pe.exercise_id);
           const resumedByIndex = new Map(resumedForThisExercise.map(s => [s.set_index, s]));
@@ -486,13 +592,13 @@ export default function ActiveWorkoutScreen() {
                 };
               }
               return {
-                reps, weight, rpe: null, setType: pe.set_type as SetType, done: false,
+                reps, weight, rpe: null, setType, done: false,
                 previousReps: previousByIndex[si] ? String(previousByIndex[si].reps) : undefined,
                 previousWeight: previousByIndex[si] ? String(previousByIndex[si].weight) : undefined,
               };
             }),
             defaultSets: pe.sets,
-            defaultRepsTarget: pe.reps_target,
+            defaultRepsTarget: reps,
             defaultWeight: pe.weight_target,
             restSeconds: pe.rest_seconds,
             tempo: pe.tempo || '',
@@ -505,6 +611,7 @@ export default function ActiveWorkoutScreen() {
               : null,
             supersetGroup: pe.superset_group ?? null,
             imageUrl: pe.image_url || '',
+            targetRir: pe.target_rir ?? null,
           };
         })
       );
@@ -543,7 +650,7 @@ export default function ActiveWorkoutScreen() {
       name: alt.name,
       primaryMuscle: alt.primary_muscle,
       equipment: alt.equipment,
-      userNotes: (alt as any).user_notes || '',
+      userNotes: alt.user_notes || '',
       progression: null,
       imageUrl: alt.image_url || '',
       // Keep the same number of sets, but reset loads — and ANTERIOR's
@@ -570,7 +677,7 @@ export default function ActiveWorkoutScreen() {
   const addExerciseToWorkout = async (ex: Exercise) => {
     const lastSet = await getLastSetForExercise(ex.id);
     const previousByIndex = await getLastSessionSetsByIndex(ex.id);
-    const defaultReps = '8-12';
+    const defaultReps = normalizeRepsTarget('8-12');
     // BUGFIX: this used to only ever repeat the last weight used, never the
     // double-progression suggestion — an exercise loaded as part of a plan
     // already gets the "you hit the top of your rep range, try +2.5kg"
@@ -581,7 +688,7 @@ export default function ActiveWorkoutScreen() {
     const weight = progression?.shouldProgress
       ? String(progression.suggestedWeight)
       : lastSet ? String(lastSet.weight) : '0';
-    const reps = lastSet ? String(lastSet.reps) : '10';
+    const reps = defaultReps;
     const newEx: ActiveExercise = {
       exerciseId: ex.id,
       name: ex.name,
@@ -622,7 +729,7 @@ export default function ActiveWorkoutScreen() {
       // unnoticed until the malformed row hit the UI). Fall back to the
       // exercise's planned defaults instead.
       const base = last ?? {
-        reps: ex.defaultRepsTarget || '8',
+        reps: normalizeRepsTarget(ex.defaultRepsTarget),
         weight: String(ex.defaultWeight || 0),
         rpe: null,
         setType: 'normal' as SetType,
@@ -631,7 +738,14 @@ export default function ActiveWorkoutScreen() {
       // copied from (`last`'s own history), not this new, extra set — an
       // added 4th set has no set-4 history to show, so ANTERIOR must read
       // "–" for it rather than echoing set 3's numbers.
-      return { ...ex, sets: [...ex.sets, { ...base, previousReps: undefined, previousWeight: undefined, done: false }] };
+      return { ...ex, sets: [...ex.sets, {
+        ...base,
+        reps: normalizeRepsTarget(ex.defaultRepsTarget || base.reps),
+        setType: base.setType === 'warmup' ? 'normal' : base.setType,
+        previousReps: undefined,
+        previousWeight: undefined,
+        done: false,
+      }] };
     }));
   };
 
@@ -698,7 +812,7 @@ export default function ActiveWorkoutScreen() {
   // keystroke in a weight/reps field), so leaving it unstable would
   // re-render every OTHER set row on the screen on every keystroke,
   // defeating the point of memoizing SetRow at all.
-  const updateSet = useCallback((exIdx: number, setIdx: number, field: 'reps' | 'weight' | 'rpe', value: string | number | null) => {
+  const updateSet = useCallback((exIdx: number, setIdx: number, field: 'reps' | 'weight' | 'rpe' | 'setType', value: string | number | null) => {
     setExercises(prev => prev.map((ex, i) => {
       if (i !== exIdx) return ex;
       return { ...ex, sets: ex.sets.map((s, si) => si === setIdx ? { ...s, [field]: value } : s) };
@@ -706,6 +820,7 @@ export default function ActiveWorkoutScreen() {
   }, []) as {
     (exIdx: number, setIdx: number, field: 'reps' | 'weight', value: string): void;
     (exIdx: number, setIdx: number, field: 'rpe', value: number | null): void;
+    (exIdx: number, setIdx: number, field: 'setType', value: SetType): void;
   };
 
   /**
@@ -727,14 +842,15 @@ export default function ActiveWorkoutScreen() {
   const persistSetCorrection = (
     exIdx: number,
     setIdx: number,
-    overrides?: { reps?: string; weight?: string; rpe?: number | null },
+    overrides?: { reps?: string; weight?: string; rpe?: number | null; setType?: SetType },
   ) => {
     const set = exercises[exIdx]?.sets[setIdx];
     if (!set?.done || !set.dbId) return;
     updateWorkoutSet(set.dbId, {
-      reps: parseInt(overrides?.reps ?? set.reps) || 0,
+      reps: parseLoggedReps(overrides?.reps ?? set.reps),
       weight: parseFloat(overrides?.weight ?? set.weight) || 0,
       rpe: overrides && 'rpe' in overrides ? overrides.rpe! : set.rpe,
+      set_type: plannedSetType(overrides?.setType ?? set.setType),
     }).catch(() => {});
   };
 
@@ -761,12 +877,13 @@ export default function ActiveWorkoutScreen() {
     if (!silent) setSupersetFocusIdx(null); // clears any stale highlight from a previous round
     const ex = exercises[exIdx];
     const set = ex.sets[setIdx];
-    const reps = parseInt(set.reps) || 0;
+    const reps = parseLoggedReps(set.reps);
     const weight = parseFloat(set.weight) || 0;
+    const setType = plannedSetType(set.setType);
 
     const { id: dbId, isPr } = await addSet(
       sessionId, ex.exerciseId, setIdx, reps, weight, set.rpe,
-      0, setElapsed, set.setType
+      0, setElapsed, setType
     );
 
     // Checkpoint the real elapsed time after every set — atomic persistence
@@ -799,7 +916,7 @@ export default function ActiveWorkoutScreen() {
         weight,
         rpe: set.rpe,
         lastSetRpe: setIdx > 0 ? ex.sets[setIdx - 1].rpe : undefined,
-        lastSetReps: setIdx > 0 ? parseInt(ex.sets[setIdx - 1].reps) || 0 : undefined,
+        lastSetReps: setIdx > 0 ? parseLoggedReps(ex.sets[setIdx - 1].reps) : undefined,
         lastSetWeight: setIdx > 0 ? parseFloat(ex.sets[setIdx - 1].weight) || 0 : undefined,
       })
         .then(tips => {
@@ -901,7 +1018,9 @@ export default function ActiveWorkoutScreen() {
     // setting, not a number baked in here.
     const restForExercise = ex.restSeconds || Number(DEFAULT_SETTINGS.defaultRestSeconds);
     setRestDuration(restForExercise);
+    setRestRingSeconds(restForExercise);
     setRestResetToken(t => t + 1);
+    setRestEndsAtMs(Date.now() + restForExercise * 1000);
     setRestActive(true);
 
     // Schedule a notification for when rest ends, so leaving the phone
@@ -933,23 +1052,25 @@ export default function ActiveWorkoutScreen() {
     setShowFinish(true);
   };
 
+  const isWorkingSet = (s: ActiveExercise['sets'][0]) => s.setType !== 'warmup';
   const totalVolume = exercises.reduce((sum, ex) =>
-    sum + ex.sets.filter(s => s.done).reduce(
-      (v, s) => v + setVolume(parseInt(s.reps) || 0, parseFloat(s.weight) || 0, ex.equipment, userBodyweightKg),
+    sum + ex.sets.filter(s => s.done && isWorkingSet(s)).reduce(
+      (v, s) => v + setVolume(parseLoggedReps(s.reps), parseFloat(s.weight) || 0, ex.equipment, userBodyweightKg),
       0
     ), 0
   );
-  const totalSets = exercises.reduce((sum, ex) => sum + ex.sets.filter(s => s.done).length, 0);
+  const totalSets = exercises.reduce((sum, ex) => sum + ex.sets.filter(s => s.done && isWorkingSet(s)).length, 0);
   const totalReps = exercises.reduce((sum, ex) =>
-    sum + ex.sets.filter(s => s.done).reduce((r, s) => r + (parseInt(s.reps) || 0), 0), 0
+    sum + ex.sets.filter(s => s.done && isWorkingSet(s)).reduce((r, s) => r + parseLoggedReps(s.reps), 0), 0
   );
   const bwDoneSets = exercises.reduce((sum, ex) =>
-    sum + (ex.equipment === 'bodyweight' ? ex.sets.filter(s => s.done).length : 0), 0
+    sum + (ex.equipment === 'bodyweight' ? ex.sets.filter(s => s.done && isWorkingSet(s)).length : 0), 0
   );
   const preferRepsKpi = shouldPreferRepsKpi(bwDoneSets, totalSets);
   // For the sticky progress bar — every set across every exercise, done or
   // not, so "12 de 20 séries" means what it says.
   const totalPlannedSets = exercises.reduce((sum, ex) => sum + ex.sets.length, 0);
+  const progressDoneSets = exercises.reduce((sum, ex) => sum + ex.sets.filter(s => s.done).length, 0);
 
   const handleFinish = () => setShowFinish(true);
 
@@ -1014,6 +1135,8 @@ export default function ActiveWorkoutScreen() {
               totalPlannedSets,
               baseElapsedSeconds: totalElapsed,
               minimizedAtMs: Date.now(),
+              restEndsAtMs: restActive ? restEndsAtMs : null,
+              restRingSeconds: restActive ? restRingSeconds : null,
             });
           }
           router.back();
@@ -1050,7 +1173,7 @@ export default function ActiveWorkoutScreen() {
         }
       },
     ]);
-  }, [sessionId, router, totalElapsed, totalVolume, totalSets, totalPlannedSets, exercises, planId, planName, dayIndex, minimize]);
+  }, [sessionId, router, totalElapsed, totalVolume, totalSets, totalPlannedSets, exercises, planId, planName, dayIndex, minimize, restActive, restEndsAtMs, restRingSeconds]);
 
   // BUGFIX (reported): the confirmation dialog above only fired from the
   // header's "Cancelar" button — Android's physical/gesture back button
@@ -1069,21 +1192,27 @@ export default function ActiveWorkoutScreen() {
   }, [handleCancel]));
 
   return (
-    <SafeAreaView edges={['top','bottom']} style={[styles.screen, { backgroundColor: colors.background }]}>
+    <SafeAreaView edges={['top','bottom']} className="flex-1" style={{ backgroundColor: colors.background }}>
       {/* Top bar */}
-      <View style={[styles.topBar, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity onPress={handleCancel} style={[styles.cancelBtn, { backgroundColor: colors.surfaceVariant }]} accessibilityRole="button" accessibilityLabel="Cancelar treino">
+      <View className="flex-row items-center justify-between border-b px-3 py-2.5" style={{ borderBottomColor: colors.border }}>
+        <TouchableOpacity
+          onPress={handleCancel}
+          className="h-9 w-9 items-center justify-center rounded-[10px]"
+          style={{ backgroundColor: colors.surfaceVariant }}
+          accessibilityRole="button"
+          accessibilityLabel="Cancelar treino"
+        >
           <X size={20} color={colors.textSecondary} />
         </TouchableOpacity>
-        <View style={styles.topCenter}>
-          <Text style={[styles.workoutName, { color: colors.text }]} numberOfLines={1}>{planName}</Text>
+        <View className="flex-1 items-center">
+          <Text className="font-sans-semibold text-[15px]" style={{ color: colors.text }} numberOfLines={1}>{planName}</Text>
           <TouchableOpacity
             onPress={() => setWorkoutPaused(p => !p)}
-            style={styles.timerRow}
+            className="mt-0.5 flex-row items-center gap-1.5"
             accessibilityRole="button"
             accessibilityLabel={workoutPaused ? 'Retomar treino' : 'Pausar treino'}
           >
-            <Text style={[styles.totalTimer, { color: workoutPaused ? colors.textTertiary : colors.primary }]}>
+            <Text className="font-sans-bold text-[22px]" style={{ color: workoutPaused ? colors.textTertiary : colors.primary }}>
               {formatTime(totalElapsed)}
             </Text>
             {workoutPaused ? (
@@ -1093,47 +1222,53 @@ export default function ActiveWorkoutScreen() {
             )}
           </TouchableOpacity>
         </View>
-        <TouchableOpacity onPress={handleFinish} style={[styles.finishBtn, { backgroundColor: colors.secondary }]} accessibilityRole="button" accessibilityLabel="Terminar treino">
-          <Text style={[styles.finishText, { color: colors.onSecondary }]}>Terminar</Text>
+        <TouchableOpacity
+          onPress={handleFinish}
+          className="rounded-[10px] px-3.5 py-2"
+          style={{ backgroundColor: colors.secondary }}
+          accessibilityRole="button"
+          accessibilityLabel="Terminar treino"
+        >
+          <Text className="font-sans-semibold text-sm" style={{ color: colors.onSecondary }}>Terminar</Text>
         </TouchableOpacity>
       </View>
 
       {/* Paused banner — makes the paused state unmistakable, since the timer
           alone (just not incrementing) is easy to miss mid-workout. */}
       {workoutPaused && (
-        <View style={[styles.pausedBanner, { backgroundColor: colors.accentContainer }]}>
+        <View className="flex-row items-center gap-2 px-4 py-2" style={{ backgroundColor: colors.accentContainer }}>
           <Pause size={14} color={colors.accent} />
-          <Text style={[styles.pausedBannerText, { color: colors.accent }]}>Treino em pausa</Text>
+          <Text className="flex-1 font-sans-semibold text-[13px] leading-[17px]" style={{ color: colors.accent }}>Treino em pausa</Text>
           <TouchableOpacity onPress={() => setWorkoutPaused(false)} accessibilityRole="button" accessibilityLabel="Retomar treino">
-            <Text style={[styles.pausedBannerAction, { color: colors.accent }]}>Retomar</Text>
+            <Text className="font-sans-bold text-[13px] leading-[17px]" style={{ color: colors.accent }}>Retomar</Text>
           </TouchableOpacity>
         </View>
       )}
 
       {/* Stats bar */}
-      <View style={[styles.statsBar, { backgroundColor: colors.surface, borderBottomColor: colors.border }]}>
-        <View style={styles.stat}>
-          <Text style={[styles.statValue, { color: colors.text }]}>{totalSets}</Text>
-          <Text style={[styles.statLabel, { color: colors.textTertiary }]}>Séries</Text>
+      <View className="flex-row items-center border-b py-2" style={{ backgroundColor: colors.surface, borderBottomColor: colors.border }}>
+        <View className="flex-1 items-center">
+          <Text className="font-sans-bold text-base" style={{ color: colors.text }}>{totalSets}</Text>
+          <Text className="font-sans text-[11px] leading-[14px]" style={{ color: colors.textTertiary }}>Séries</Text>
         </View>
-        <View style={[styles.statDiv, { backgroundColor: colors.border }]} />
-        <View style={styles.stat}>
+        <View className="h-7 w-px" style={{ backgroundColor: colors.border }} />
+        <View className="flex-1 items-center">
           {preferRepsKpi ? (
             <>
-              <Text style={[styles.statValue, { color: colors.text }]}>{totalReps}</Text>
-              <Text style={[styles.statLabel, { color: colors.textTertiary }]}>Reps</Text>
+              <Text className="font-sans-bold text-base" style={{ color: colors.text }}>{totalReps}</Text>
+              <Text className="font-sans text-[11px] leading-[14px]" style={{ color: colors.textTertiary }}>Reps</Text>
             </>
           ) : (
             <>
-              <Text style={[styles.statValue, { color: colors.text }]}>{Math.round(totalVolume)} kg</Text>
-              <Text style={[styles.statLabel, { color: colors.textTertiary }]}>Volume</Text>
+              <Text className="font-sans-bold text-base" style={{ color: colors.text }}>{Math.round(totalVolume)} kg</Text>
+              <Text className="font-sans text-[11px] leading-[14px]" style={{ color: colors.textTertiary }}>Volume</Text>
             </>
           )}
         </View>
-        <View style={[styles.statDiv, { backgroundColor: colors.border }]} />
-        <View style={styles.stat}>
-          <Text style={[styles.statValue, { color: colors.text }]}>{exercises.filter(ex => ex.sets.some(s => s.done)).length}</Text>
-          <Text style={[styles.statLabel, { color: colors.textTertiary }]}>Exercícios</Text>
+        <View className="h-7 w-px" style={{ backgroundColor: colors.border }} />
+        <View className="flex-1 items-center">
+          <Text className="font-sans-bold text-base" style={{ color: colors.text }}>{exercises.filter(ex => ex.sets.some(s => s.done)).length}</Text>
+          <Text className="font-sans text-[11px] leading-[14px]" style={{ color: colors.textTertiary }}>Exercícios</Text>
         </View>
       </View>
 
@@ -1142,10 +1277,11 @@ export default function ActiveWorkoutScreen() {
         <Animated.View
           entering={ZoomIn.springify().damping(12)}
           exiting={FadeOut.duration(200)}
-          style={[styles.prNotif, { backgroundColor: colors.accentContainer }]}
+          className="flex-row items-center gap-2 px-3.5 py-2"
+          style={{ backgroundColor: colors.accentContainer }}
         >
           <Trophy size={16} color={colors.accent} />
-          <Text style={[styles.prText, { color: colors.accent }]}>PR: {newPrs[0]}</Text>
+          <Text className="font-sans-bold text-sm" style={{ color: colors.accent }}>PR: {newPrs[0]}</Text>
         </Animated.View>
       )}
 
@@ -1157,22 +1293,23 @@ export default function ActiveWorkoutScreen() {
         <Animated.View
           entering={ZoomIn.springify().damping(12)}
           exiting={FadeOut.duration(200)}
-          style={[styles.adjustNotif, { backgroundColor: colors.primaryContainer }]}
+          className="mx-3 mt-2 flex-row items-start gap-2.5 rounded-xl px-3.5 py-2.5"
+          style={{ backgroundColor: colors.primaryContainer }}
         >
           <Gauge size={16} color={colors.primary} style={{ marginTop: 1 }} />
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.adjustText, { color: colors.text }]}>
+          <View className="flex-1">
+            <Text className="font-sans text-[13px] leading-[18px]" style={{ color: colors.text }}>
               {adjustmentSuggestion.exerciseName}: normalmente {adjustmentSuggestion.weight}kg é RPE {adjustmentSuggestion.suggestion.historicalAvgRpe} para ti — hoje sentiu-se diferente.
               {adjustmentSuggestion.suggestion.direction === 'decrease' ? ' Baixar um pouco a próxima série?' : ' Talvez consigas subir um pouco?'}
             </Text>
-            <View style={styles.adjustActions}>
+            <View className="mt-1.5 flex-row gap-[18px]">
               <TouchableOpacity onPress={applyAdjustmentSuggestion} accessibilityRole="button" accessibilityLabel="Aplicar ajuste sugerido">
-                <Text style={[styles.adjustActionText, { color: colors.primary }]}>
+                <Text className="font-sans-bold text-[13px]" style={{ color: colors.primary }}>
                   {adjustmentSuggestion.suggestion.direction === 'decrease' ? 'Baixar' : 'Subir'} próxima série
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity onPress={() => setAdjustmentSuggestion(null)} accessibilityRole="button" accessibilityLabel="Ignorar sugestão">
-                <Text style={[styles.adjustActionText, { color: colors.textTertiary }]}>Ignorar</Text>
+                <Text className="font-sans-bold text-[13px]" style={{ color: colors.textTertiary }}>Ignorar</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1202,7 +1339,10 @@ export default function ActiveWorkoutScreen() {
         ref={scrollViewRef}
         onScroll={e => { scrollOffsetRef.current = e.nativeEvent.contentOffset.y; }}
         scrollEventThrottle={32}
-        contentContainerStyle={styles.exerciseList}
+        contentContainerClassName="gap-2.5 p-3"
+        contentContainerStyle={{
+          paddingBottom: 24 + (totalPlannedSets > 0 ? PROGRESS_BAR_RESERVE : 0) + (restActive ? REST_BAR_RESERVE : 0),
+        }}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
@@ -1210,49 +1350,46 @@ export default function ActiveWorkoutScreen() {
         {exercises.map((ex, exIdx) => (
           <View
             key={exIdx}
-            style={[
-              styles.exCard,
-              { backgroundColor: colors.surface, borderColor: colors.border },
-              supersetFocusIdx === exIdx && { borderColor: colors.accent, borderWidth: 2 },
-            ]}
+            className={`overflow-hidden rounded-[14px] border ${supersetFocusIdx === exIdx ? 'border-2' : ''}`}
+            style={{
+              backgroundColor: colors.surface,
+              borderColor: supersetFocusIdx === exIdx ? colors.accent : colors.border,
+            }}
           >
             {ex.supersetGroup != null && (
-              <View style={[styles.supersetBadge, { backgroundColor: supersetFocusIdx === exIdx ? colors.accent : colors.surfaceVariant }]}>
-                <Text style={[styles.supersetBadgeText, { color: supersetFocusIdx === exIdx ? colors.onAccent : colors.textSecondary }]}>
+              <View
+                className="self-start rounded-br-[10px] rounded-tl-[13px] px-2.5 py-1"
+                style={{ backgroundColor: supersetFocusIdx === exIdx ? colors.accent : colors.surfaceVariant }}
+              >
+                <Text className="font-sans-bold text-[10px] leading-[13px] tracking-wide" style={{ color: supersetFocusIdx === exIdx ? colors.onAccent : colors.textSecondary }}>
                   {supersetFocusIdx === exIdx ? 'A SEGUIR — SUPERSET' : `SUPERSET ${ex.supersetGroup}`}
                 </Text>
               </View>
             )}
             {/* Exercise header */}
             <TouchableOpacity
-              style={styles.exHeader}
+              className="flex-row items-center gap-2.5 p-3.5"
               onPress={() => setExercises(prev => prev.map((e, i) => i === exIdx ? { ...e, expanded: !e.expanded } : e))}
               onLongPress={() => removeExerciseFromWorkout(exIdx)}
               delayLongPress={500}
               accessibilityHint="Manter premido para remover este exercício do treino"
             >
-              {/* BUGFIX (reported: "só o nome não me diz nada" — a generic
-                  muscle-group icon looked the same for every exercise
-                  working that muscle, so nothing here actually showed WHICH
-                  movement this was). Shows the real illustration as a small
-                  thumbnail when the dataset has one; falls back to the
-                  muscle icon for the curated exercises that don't. */}
               {ex.imageUrl ? (
                 <TouchableOpacity
                   onPress={() => setDemoFor({ name: ex.name, url: ex.imageUrl! })}
-                  style={styles.exThumbWrap}
+                  className="h-[38px] w-[38px] overflow-hidden rounded-lg"
                   accessibilityRole="button"
                   accessibilityLabel={`Ver ilustração de ${ex.name} em ecrã inteiro`}
                 >
                   <ExerciseMedia uri={ex.imageUrl} height={38} />
                 </TouchableOpacity>
               ) : (
-                <ExerciseTile muscle={ex.primaryMuscle as MuscleGroup} equipment={ex.equipment as any} size={38} />
+                <ExerciseTile muscle={ex.primaryMuscle as MuscleGroup} equipment={ex.equipment as Equipment} size={38} />
               )}
-              <View style={[styles.exDot, { backgroundColor: ex.sets.every(s => s.done) ? colors.secondary : colors.primary }]} />
-              <View style={styles.exHeaderInfo}>
-                <Text style={[styles.exName, { color: colors.text }]}>{ex.name}</Text>
-                <Text style={[styles.exMeta, { color: colors.textSecondary }]} numberOfLines={1}>
+              <View className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: ex.sets.every(s => s.done) ? colors.secondary : colors.primary }} />
+              <View className="min-w-0 flex-1">
+                <Text className="font-sans-semibold text-[15px]" style={{ color: colors.text }}>{ex.name}</Text>
+                <Text className="mt-0.5 font-sans text-xs leading-4" style={{ color: colors.textSecondary }} numberOfLines={1}>
                   {MUSCLE_GROUPS_PT[ex.primaryMuscle as MuscleGroup] || ex.primaryMuscle} · {EQUIPMENT_PT[ex.equipment as keyof typeof EQUIPMENT_PT] || ex.equipment} · {ex.sets.filter(s => s.done).length}/{ex.sets.length} séries
                 </Text>
               </View>
@@ -1260,7 +1397,7 @@ export default function ActiveWorkoutScreen() {
                 <TouchableOpacity
                   onPress={() => setWhyTargetFor(exIdx)}
                   hitSlop={8}
-                  style={{ marginRight: 10 }}
+                  className="mr-2.5"
                   accessibilityRole="button"
                   accessibilityLabel={`Porquê este alvo em ${ex.name}`}
                 >
@@ -1270,7 +1407,7 @@ export default function ActiveWorkoutScreen() {
               <TouchableOpacity
                 onPress={() => openSubstitute(exIdx)}
                 hitSlop={8}
-                style={{ marginRight: 10 }}
+                className="mr-2.5"
                 accessibilityRole="button"
                 accessibilityLabel={`Substituir ${ex.name} por alternativa`}
               >
@@ -1280,66 +1417,58 @@ export default function ActiveWorkoutScreen() {
             </TouchableOpacity>
 
             {ex.expanded && (
-              <View style={styles.exBody}>
-                {/* Reorder within this session only — see moveExercise above
-                   for why this can't disturb logged sets or the timers. */}
+              <View className="gap-1 px-3 pb-3">
                 {exercises.length > 1 && (
-                  <View style={styles.exReorderRow}>
+                  <View className="mb-2.5 flex-row gap-4">
                     <TouchableOpacity
                       onPress={() => moveExercise(exIdx, -1)}
                       disabled={exIdx === 0}
                       hitSlop={8}
-                      style={styles.exReorderBtn}
+                      className="flex-row items-center gap-1.5"
                       accessibilityRole="button"
                       accessibilityLabel={`Mover ${ex.name} para cima`}
                     >
                       <ArrowUp size={16} color={exIdx === 0 ? colors.textTertiary : colors.textSecondary} />
-                      <Text style={[styles.exReorderText, { color: exIdx === 0 ? colors.textTertiary : colors.textSecondary }]}>Mover para cima</Text>
+                      <Text className="font-sans-semibold text-xs" style={{ color: exIdx === 0 ? colors.textTertiary : colors.textSecondary }}>Mover para cima</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       onPress={() => moveExercise(exIdx, 1)}
                       disabled={exIdx === exercises.length - 1}
                       hitSlop={8}
-                      style={styles.exReorderBtn}
+                      className="flex-row items-center gap-1.5"
                       accessibilityRole="button"
                       accessibilityLabel={`Mover ${ex.name} para baixo`}
                     >
                       <ArrowDown size={16} color={exIdx === exercises.length - 1 ? colors.textTertiary : colors.textSecondary} />
-                      <Text style={[styles.exReorderText, { color: exIdx === exercises.length - 1 ? colors.textTertiary : colors.textSecondary }]}>Mover para baixo</Text>
+                      <Text className="font-sans-semibold text-xs" style={{ color: exIdx === exercises.length - 1 ? colors.textTertiary : colors.textSecondary }}>Mover para baixo</Text>
                     </TouchableOpacity>
                   </View>
                 )}
-                {/* Full-size illustration for the exercise actually open right
-                   now — the small header thumbnail is enough to recognise an
-                   exercise at a glance, but the one you're about to do
-                   deserves to be seen clearly, not just named. Tapping it
-                   opens the same view full-screen. */}
                 {!!ex.imageUrl && (
                   <TouchableOpacity
                     onPress={() => setDemoFor({ name: ex.name, url: ex.imageUrl! })}
                     activeOpacity={0.85}
-                    style={{ marginBottom: 10 }}
+                    className="mb-2.5"
                     accessibilityRole="button"
                     accessibilityLabel={`Ver ilustração de ${ex.name} em ecrã inteiro`}
                   >
                     <ExerciseMedia uri={ex.imageUrl} height={170} />
                   </TouchableOpacity>
                 )}
-                {/* Double-progression hint from the previous session */}
                 {ex.progression && (
-                  <View style={[styles.progressHint, { backgroundColor: colors.secondaryContainer }]}>
+                  <View className="mb-2 flex-row items-center gap-1.5 rounded-lg px-2.5 py-2" style={{ backgroundColor: colors.secondaryContainer }}>
                     <TrendingUp size={14} color={colors.secondary} />
-                    <Text style={[styles.progressHintText, { color: colors.secondary }]}>
+                    <Text className="flex-1 font-sans-semibold text-xs leading-4" style={{ color: colors.secondary }}>
                       Sobe para {ex.progression.suggestedWeight}kg · {ex.progression.reason}
                     </Text>
                   </View>
                 )}
 
-                {/* Sticky personal notes for this exercise */}
                 {editingNotesFor === exIdx ? (
-                  <View style={styles.notesEdit}>
+                  <View className="mb-2 flex-row items-start gap-2">
                     <TextInput
-                      style={[styles.notesInput, { color: colors.text, backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}
+                      className="min-h-11 flex-1 rounded-lg border p-2.5 font-sans text-[13px] leading-[17px]"
+                      style={{ color: colors.text, backgroundColor: colors.surfaceVariant, borderColor: colors.border }}
                       value={notesDraft}
                       onChangeText={setNotesDraft}
                       placeholder="Ex: banco na posição 4, pega larga"
@@ -1348,7 +1477,8 @@ export default function ActiveWorkoutScreen() {
                       autoFocus
                     />
                     <TouchableOpacity
-                      style={[styles.notesSave, { backgroundColor: colors.primary }]}
+                      className="h-11 w-11 items-center justify-center rounded-lg"
+                      style={{ backgroundColor: colors.primary }}
                       onPress={() => saveNotes(exIdx)}
                       accessibilityRole="button"
                       accessibilityLabel="Guardar notas do exercicio"
@@ -1358,14 +1488,15 @@ export default function ActiveWorkoutScreen() {
                   </View>
                 ) : (
                   <TouchableOpacity
-                    style={styles.notesRow}
+                    className="mb-1 flex-row items-center gap-1.5 py-1.5"
                     onPress={() => { setNotesDraft(ex.userNotes || ''); setEditingNotesFor(exIdx); }}
                     accessibilityRole="button"
                     accessibilityLabel={ex.userNotes ? 'Editar notas do exercicio' : 'Adicionar notas ao exercicio'}
                   >
                     <StickyNote size={14} color={ex.userNotes ? colors.accent : colors.textTertiary} />
                     <Text
-                      style={[styles.notesText, { color: ex.userNotes ? colors.text : colors.textTertiary }]}
+                      className="flex-1 font-sans text-xs leading-4"
+                      style={{ color: ex.userNotes ? colors.text : colors.textTertiary }}
                       numberOfLines={2}
                     >
                       {ex.userNotes || 'Adicionar nota (posição do banco, pega...)'}
@@ -1373,11 +1504,6 @@ export default function ActiveWorkoutScreen() {
                   </TouchableOpacity>
                 )}
 
-                {/* Rep cadence (tempo) metronome — isolated component, see PERF
-                    note near the top of this file for why. Hidden in Modo
-                    Simples along with RPE and auto-regulation — someone who
-                    finds those too much clutter doesn't want a metronome
-                    box either. */}
                 {parseTempo(ex.tempo || '') && !isSimple && (
                   <TempoMetronomeBox
                     tempo={ex.tempo || ''}
@@ -1389,9 +1515,8 @@ export default function ActiveWorkoutScreen() {
                   />
                 )}
 
-                {/* Live coaching tips for this exercise */}
                 {coachingExerciseIdx === exIdx && coachingTips.length > 0 && (
-                  <View style={styles.coachingTipsContainer}>
+                  <View className="mb-3">
                     <LiveCoachingStack
                       tips={coachingTips}
                       maxTips={2}
@@ -1402,18 +1527,22 @@ export default function ActiveWorkoutScreen() {
                   </View>
                 )}
 
-                {/* Set header */}
-                <View style={styles.setHeaderRow}>
-                  <Text style={[styles.setHeaderCell, styles.setNumCell, { color: colors.textTertiary }]}>S</Text>
-                  <Text style={[styles.setHeaderCell, styles.setPrevCell, { color: colors.textTertiary }]}>ANTERIOR</Text>
-                  <Text style={[styles.setHeaderCell, styles.setWeightCell, { color: colors.textTertiary }]}>KG</Text>
-                  <Text style={[styles.setHeaderCell, styles.setRepsCell, { color: colors.textTertiary }]}>REPS</Text>
-                  {!isSimple && <Text style={[styles.setHeaderCell, styles.setRpeCell, { color: colors.textTertiary }]}>RPE</Text>}
-                  <View style={styles.setDoneCell} />
+                {ex.targetRir != null && !isSimple && (
+                  <Text className="mb-1 font-sans text-[11px] leading-[14px]" style={{ color: colors.textSecondary }}>
+                    Alvo: {formatRirHint(ex.targetRir)}
+                  </Text>
+                )}
+                <View className="flex-row items-center py-1">
+                  <Text className="w-7 text-center font-sans-semibold text-[10px] leading-[13px] tracking-wide" style={{ color: colors.textTertiary }}>S</Text>
+                  <Text className="flex-[1.2] text-center font-sans-semibold text-[10px] leading-[13px] tracking-wide" style={{ color: colors.textTertiary }}>ANTERIOR</Text>
+                  <Text className="flex-[1.3] text-center font-sans-semibold text-[10px] leading-[13px] tracking-wide" style={{ color: colors.textTertiary }}>KG</Text>
+                  <Text className="flex-1 text-center font-sans-semibold text-[10px] leading-[13px] tracking-wide" style={{ color: colors.textTertiary }}>
+                    REPS{ex.defaultRepsTarget ? ` · ${ex.defaultRepsTarget}` : ''}
+                  </Text>
+                  {!isSimple && <Text className="w-11 text-center font-sans-semibold text-[10px] leading-[13px] tracking-wide" style={{ color: colors.textTertiary }}>RPE</Text>}
+                  <View className="w-9" />
                 </View>
 
-                {/* Only the current (next-to-log) set accepts input; sets
-                    further down wait their turn — see isSetLocked. */}
                 {ex.sets.map((set, setIdx) => (
                   <SetRow
                     key={setIdx}
@@ -1423,6 +1552,7 @@ export default function ActiveWorkoutScreen() {
                     colors={colors}
                     isSimple={isSimple}
                     locked={isSetLocked(ex.sets, setIdx)}
+                    repsTarget={ex.defaultRepsTarget}
                     onUpdate={updateSet}
                     onComplete={completeSet}
                     onRemove={removeSet}
@@ -1431,59 +1561,72 @@ export default function ActiveWorkoutScreen() {
                   />
                 ))}
 
-                <TouchableOpacity style={[styles.addSetBtn, { borderColor: colors.border }]} onPress={() => addSetToExercise(exIdx)} accessibilityRole="button" accessibilityLabel="Adicionar série">
+                <TouchableOpacity
+                  className="mt-1 flex-row items-center justify-center gap-1.5 rounded-lg border border-dashed py-2"
+                  style={{ borderColor: colors.border }}
+                  onPress={() => addSetToExercise(exIdx)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Adicionar série"
+                >
                   <Plus size={16} color={colors.primary} />
-                  <Text style={[styles.addSetText, { color: colors.primary }]}>Série</Text>
+                  <Text className="font-sans-semibold text-[13px] leading-[17px]" style={{ color: colors.primary }}>Série</Text>
                 </TouchableOpacity>
               </View>
             )}
           </View>
         ))}
 
-        {/* Add exercise button */}
         <TouchableOpacity
-          style={[styles.addExBtn, { borderColor: colors.border, backgroundColor: colors.surfaceVariant }]}
+          className="flex-row items-center justify-center gap-2 rounded-xl border-2 border-dashed py-3.5"
+          style={{ borderColor: colors.border, backgroundColor: colors.surfaceVariant }}
           onPress={() => { setPickerQuery(''); setShowAddExercise(true); }}
           accessibilityRole="button"
           accessibilityLabel="Adicionar exercício ao treino"
         >
           <Plus size={20} color={colors.primary} />
-          <Text style={[styles.addExText, { color: colors.primary }]}>Adicionar Exercício</Text>
+          <Text className="font-sans-semibold text-[15px]" style={{ color: colors.primary }}>Adicionar Exercício</Text>
         </TouchableOpacity>
 
-
-        {/* Set timer */}
-        <View style={[styles.setTimerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <View style={styles.setTimerRow}>
+        <View className="gap-2.5 rounded-[14px] border p-3.5" style={{ backgroundColor: colors.surface, borderColor: colors.border }}>
+          <View className="flex-row items-center gap-2">
             <Timer size={18} color={colors.textSecondary} />
-            <Text style={[styles.setTimerLabel, { color: colors.textSecondary }]}>Tempo de série</Text>
-            <Text style={[styles.setTimerValue, { color: colors.text }]}>{formatTime(setElapsed)}</Text>
+            <Text className="flex-1 font-sans text-sm" style={{ color: colors.textSecondary }}>Tempo de série</Text>
+            <Text className="font-sans-bold text-xl" style={{ color: colors.text }}>{formatTime(setElapsed)}</Text>
           </View>
-          <View style={styles.setTimerButtons}>
-            <TouchableOpacity style={[styles.setTimerBtn, { backgroundColor: setTimerActive ? colors.error : colors.secondary }]} onPress={() => setSetTimerActive(!setTimerActive)} accessibilityRole="button" accessibilityLabel={setTimerActive ? 'Parar cronómetro de série' : 'Iniciar cronómetro de série'}>
-              <Text style={[styles.setTimerBtnText, { color: setTimerActive ? colors.onError : colors.onSecondary }]}>{setTimerActive ? 'Parar' : 'Iniciar'}</Text>
+          <View className="flex-row gap-2">
+            <TouchableOpacity
+              className="flex-1 flex-row items-center justify-center gap-1.5 rounded-[10px] py-2.5"
+              style={{ backgroundColor: setTimerActive ? colors.error : colors.secondary }}
+              onPress={() => setSetTimerActive(!setTimerActive)}
+              accessibilityRole="button"
+              accessibilityLabel={setTimerActive ? 'Parar cronómetro de série' : 'Iniciar cronómetro de série'}
+            >
+              <Text className="font-sans-semibold text-sm" style={{ color: setTimerActive ? colors.onError : colors.onSecondary }}>{setTimerActive ? 'Parar' : 'Iniciar'}</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.setTimerBtn, { backgroundColor: colors.surfaceVariant }]} onPress={() => { resetSetTimer(); setSetTimerActive(false); }} accessibilityRole="button" accessibilityLabel="Reiniciar cronómetro de série">
+            <TouchableOpacity
+              className="flex-1 flex-row items-center justify-center gap-1.5 rounded-[10px] py-2.5"
+              style={{ backgroundColor: colors.surfaceVariant }}
+              onPress={() => { resetSetTimer(); setSetTimerActive(false); }}
+              accessibilityRole="button"
+              accessibilityLabel="Reiniciar cronómetro de série"
+            >
               <RotateCcw size={16} color={colors.textSecondary} />
             </TouchableOpacity>
           </View>
         </View>
 
-        {/* Extra clearance so the last card can scroll clear of the floating
-            rest bar (see below) instead of ending up hidden behind it. */}
-        <View style={{ height: restActive ? 84 : 32 }} />
       </ScrollView>
       </KeyboardAvoidingView>
 
       {/* Sticky progress bar — "how much is left" at a glance without
           scrolling back up, for a workout that can run 5+ exercises long. */}
       {totalPlannedSets > 0 && (
-        <View style={[styles.progressFooter, { backgroundColor: colors.surface, borderTopColor: colors.border }]}>
-          <Text style={[styles.progressFooterText, { color: colors.textSecondary }]}>
-            {totalSets} de {totalPlannedSets} séries ({Math.round((totalSets / totalPlannedSets) * 100)}%)
+        <View className="gap-1.5 border-t px-4 pb-3 pt-2.5" style={{ backgroundColor: colors.surface, borderTopColor: colors.border }}>
+          <Text className="text-center font-sans-semibold text-xs" style={{ color: colors.textSecondary }}>
+            {progressDoneSets} de {totalPlannedSets} séries ({Math.round((progressDoneSets / totalPlannedSets) * 100)}%)
           </Text>
-          <View style={[styles.progressFooterTrack, { backgroundColor: colors.surfaceVariant }]}>
-            <View style={[styles.progressFooterFill, { backgroundColor: colors.secondary, width: `${Math.min(100, (totalSets / totalPlannedSets) * 100)}%` }]} />
+          <View className="h-1.5 overflow-hidden rounded-sm" style={{ backgroundColor: colors.surfaceVariant }}>
+            <View className="h-full rounded-sm" style={{ backgroundColor: colors.secondary, width: `${Math.min(100, (progressDoneSets / totalPlannedSets) * 100)}%` }} />
           </View>
         </View>
       )}
@@ -1499,41 +1642,51 @@ export default function ActiveWorkoutScreen() {
         <FloatingRestBar
           restDuration={restDuration}
           restResetToken={restResetToken}
+          resumeEndsAtMs={resumedRest?.endsAt ?? null}
+          resumeRingSeconds={resumedRest?.ring ?? null}
           totalPlannedSets={totalPlannedSets}
           restRemindersEnabled={restRemindersEnabled}
           vibrateEnabled={vibrateEnabled}
           soundEnabled={soundEnabled}
           colors={colors}
-          setRestActive={setRestActive}
+          setRestActive={(active) => {
+            if (!active) {
+              setRestEndsAtMs(null);
+              setRestRingSeconds(Number(DEFAULT_SETTINGS.defaultRestSeconds));
+            }
+            setRestActive(active);
+          }}
+          onDeadlineChange={setRestEndsAtMs}
+          onRingDurationChange={setRestRingSeconds}
           onRestComplete={onRestComplete}
         />
       )}
 
       {/* Exercise picker */}
       <Modal visible={showAddExercise} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowAddExercise(false)}>
-        <View style={[styles.picker, { backgroundColor: colors.background }]}>
-          <View style={[styles.pickerHeader, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.pickerTitle, { color: colors.text }]}>Adicionar Exercício</Text>
+        <View className="flex-1" style={{ backgroundColor: colors.background }}>
+          <View className="flex-row items-center justify-between border-b p-5" style={{ borderBottomColor: colors.border }}>
+            <Text className="font-sans-bold text-xl" style={{ color: colors.text }}>Adicionar Exercício</Text>
             <TouchableOpacity onPress={() => setShowAddExercise(false)}><X size={24} color={colors.text} /></TouchableOpacity>
           </View>
-          <View style={{ padding: 12 }}>
+          <View className="p-3">
             <SearchBar value={pickerQuery} onChangeText={setPickerQuery} placeholder="Pesquisar..." />
           </View>
           <FlatList
             data={pickerResults}
             keyExtractor={item => String(item.id)}
             renderItem={({ item }) => (
-              <TouchableOpacity style={[styles.pickerItem, { borderBottomColor: colors.border }]} onPress={() => addExerciseToWorkout(item)}>
+              <TouchableOpacity className="flex-row items-center justify-between border-b px-4 py-3.5" style={{ borderBottomColor: colors.border }} onPress={() => addExerciseToWorkout(item)}>
                 {item.image_url ? (
-                  <View style={styles.pickerThumbWrap}>
+                  <View className="h-10 w-10 overflow-hidden rounded-lg">
                     <ExerciseMedia uri={item.image_url} height={40} />
                   </View>
                 ) : (
                   <ExerciseTile muscle={item.primary_muscle} equipment={item.equipment} size={40} />
                 )}
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.pickerName, { color: colors.text }]}>{item.name}</Text>
-                  <Text style={[styles.pickerSub, { color: colors.textSecondary }]}>{MUSCLE_GROUPS_PT[item.primary_muscle]} · {EQUIPMENT_PT[item.equipment]}</Text>
+                <View className="ml-3 flex-1">
+                  <Text className="font-sans-semibold text-[15px]" style={{ color: colors.text }}>{item.name}</Text>
+                  <Text className="mt-0.5 font-sans text-xs leading-4" style={{ color: colors.textSecondary }}>{MUSCLE_GROUPS_PT[item.primary_muscle]} · {EQUIPMENT_PT[item.equipment]}</Text>
                 </View>
                 <Plus size={20} color={colors.primary} />
               </TouchableOpacity>
@@ -1545,55 +1698,52 @@ export default function ActiveWorkoutScreen() {
 
       {/* Finish modal */}
       <Modal visible={showFinish} animationType="fade" transparent>
-        <View style={styles.finishOverlay}>
-          <View style={[styles.finishModal, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <Text style={[styles.finishTitle, { color: colors.text }]}>Terminar treino?</Text>
-            <View style={styles.finishStats}>
-              <View style={styles.finishStat}>
-                <Text style={[styles.finishStatVal, { color: colors.primary }]}>{formatTime(totalElapsed)}</Text>
-                <Text style={[styles.finishStatLabel, { color: colors.textSecondary }]}>Duração</Text>
+        <View className="flex-1 items-center justify-center p-6" style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}>
+          <View className="w-full gap-4 rounded-3xl border p-6" style={{ backgroundColor: colors.surface, borderColor: colors.border }}>
+            <Text className="text-center font-sans-bold text-[22px]" style={{ color: colors.text }}>Terminar treino?</Text>
+            <View className="flex-row justify-around">
+              <View className="items-center gap-1">
+                <Text className="font-sans-bold text-2xl" style={{ color: colors.primary }}>{formatTime(totalElapsed)}</Text>
+                <Text className="font-sans text-[13px] leading-[17px]" style={{ color: colors.textSecondary }}>Duração</Text>
               </View>
-              <View style={styles.finishStat}>
-                <Text style={[styles.finishStatVal, { color: colors.primary }]}>{totalSets}</Text>
-                <Text style={[styles.finishStatLabel, { color: colors.textSecondary }]}>Séries</Text>
+              <View className="items-center gap-1">
+                <Text className="font-sans-bold text-2xl" style={{ color: colors.primary }}>{totalSets}</Text>
+                <Text className="font-sans text-[13px] leading-[17px]" style={{ color: colors.textSecondary }}>Séries</Text>
               </View>
               {preferRepsKpi ? (
-                <View style={styles.finishStat}>
-                  <Text style={[styles.finishStatVal, { color: colors.primary }]}>{totalReps}</Text>
-                  <Text style={[styles.finishStatLabel, { color: colors.textSecondary }]}>Reps</Text>
+                <View className="items-center gap-1">
+                  <Text className="font-sans-bold text-2xl" style={{ color: colors.primary }}>{totalReps}</Text>
+                  <Text className="font-sans text-[13px] leading-[17px]" style={{ color: colors.textSecondary }}>Reps</Text>
                 </View>
               ) : (
-                <View style={styles.finishStat}>
-                  <Text style={[styles.finishStatVal, { color: colors.primary }]}>{Math.round(totalVolume)} kg</Text>
-                  <Text style={[styles.finishStatLabel, { color: colors.textSecondary }]}>Volume</Text>
+                <View className="items-center gap-1">
+                  <Text className="font-sans-bold text-2xl" style={{ color: colors.primary }}>{Math.round(totalVolume)} kg</Text>
+                  <Text className="font-sans text-[13px] leading-[17px]" style={{ color: colors.textSecondary }}>Volume</Text>
                 </View>
               )}
             </View>
             {preferRepsKpi && totalVolume > 0 && (
-              <Text style={[styles.finishStatLabel, { color: colors.textTertiary, textAlign: 'center', marginBottom: 8 }]}>
+              <Text className="mb-2 text-center font-sans text-[13px] leading-[17px]" style={{ color: colors.textTertiary }}>
                 {formatVolume(totalVolume)} estimados (peso corporal)
               </Text>
             )}
 
-            {/* "Mark complete" — glide through the rest of the workout using
-                the reps/weight already filled in, instead of tapping every
-                remaining set (inspired by EvolveYou's mark-complete option). */}
             {totalUndoneSets > 0 && (
-              <View style={[styles.undoneNotice, { backgroundColor: colors.surfaceVariant }]}>
-                <Text style={[styles.undoneNoticeText, { color: colors.textSecondary }]}>
+              <View className="mt-3.5 flex-row items-center justify-between rounded-[10px] px-3.5 py-2.5" style={{ backgroundColor: colors.surfaceVariant }}>
+                <Text className="font-sans text-[13px] leading-[17px]" style={{ color: colors.textSecondary }}>
                   {totalUndoneSets} {totalUndoneSets === 1 ? 'série' : 'séries'} por registar
                 </Text>
                 <TouchableOpacity onPress={bulkCompleteRemaining} accessibilityRole="button" accessibilityLabel="Concluir séries restantes com os valores atuais">
-                  <Text style={[styles.undoneNoticeAction, { color: colors.primary }]}>Concluir tudo</Text>
+                  <Text className="font-sans-bold text-[13px] leading-[17px]" style={{ color: colors.primary }}>Concluir tudo</Text>
                 </TouchableOpacity>
               </View>
             )}
 
-            <TouchableOpacity style={[styles.confirmFinishBtn, { backgroundColor: colors.secondary }]} onPress={confirmFinish}>
-              <Text style={[styles.confirmFinishText, { color: colors.onSecondary }]}>Guardar Treino</Text>
+            <TouchableOpacity className="items-center rounded-[14px] py-4" style={{ backgroundColor: colors.secondary }} onPress={confirmFinish}>
+              <Text className="font-sans-bold text-[17px]" style={{ color: colors.onSecondary }}>Guardar Treino</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.continueBtn, { borderColor: colors.border }]} onPress={() => setShowFinish(false)}>
-              <Text style={[styles.continueBtnText, { color: colors.textSecondary }]}>Continuar a treinar</Text>
+            <TouchableOpacity className="items-center rounded-[14px] border py-3.5" style={{ borderColor: colors.border }} onPress={() => setShowFinish(false)}>
+              <Text className="font-sans-semibold text-[15px]" style={{ color: colors.textSecondary }}>Continuar a treinar</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1601,11 +1751,11 @@ export default function ActiveWorkoutScreen() {
 
       {/* Substitute exercise (machine taken / equipment unavailable) */}
       <Modal visible={substituteFor !== null} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setSubstituteFor(null)}>
-        <View style={[styles.picker, { backgroundColor: colors.background }]}>
-          <View style={[styles.pickerHeader, { borderBottomColor: colors.border }]}>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.pickerTitle, { color: colors.text }]}>Substituir exercício</Text>
-              <Text style={[styles.pickerSub, { color: colors.textSecondary }]}>
+        <View className="flex-1" style={{ backgroundColor: colors.background }}>
+          <View className="flex-row items-center justify-between border-b p-5" style={{ borderBottomColor: colors.border }}>
+            <View className="flex-1">
+              <Text className="font-sans-bold text-xl" style={{ color: colors.text }}>Substituir exercício</Text>
+              <Text className="mt-0.5 font-sans text-xs leading-4" style={{ color: colors.textSecondary }}>
                 Alternativas para o mesmo músculo
               </Text>
             </View>
@@ -1618,21 +1768,22 @@ export default function ActiveWorkoutScreen() {
             keyExtractor={item => String(item.id)}
             renderItem={({ item }) => (
               <TouchableOpacity
-                style={[styles.pickerItem, { borderBottomColor: colors.border }]}
+                className="flex-row items-center justify-between border-b px-4 py-3.5"
+                style={{ borderBottomColor: colors.border }}
                 onPress={() => applySubstitute(item)}
                 accessibilityRole="button"
                 accessibilityLabel={`Substituir por ${item.name}`}
               >
                 {item.image_url ? (
-                  <View style={styles.pickerThumbWrap}>
+                  <View className="h-10 w-10 overflow-hidden rounded-lg">
                     <ExerciseMedia uri={item.image_url} height={40} />
                   </View>
                 ) : (
                   <ExerciseTile muscle={item.primary_muscle} equipment={item.equipment} size={40} />
                 )}
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.pickerName, { color: colors.text }]}>{item.name}</Text>
-                  <Text style={[styles.pickerSub, { color: colors.textSecondary }]}>
+                <View className="ml-3 flex-1">
+                  <Text className="font-sans-semibold text-[15px]" style={{ color: colors.text }}>{item.name}</Text>
+                  <Text className="mt-0.5 font-sans text-xs leading-4" style={{ color: colors.textSecondary }}>
                     {MUSCLE_GROUPS_PT[item.primary_muscle]} · {EQUIPMENT_PT[item.equipment]}
                   </Text>
                 </View>
@@ -1640,7 +1791,7 @@ export default function ActiveWorkoutScreen() {
               </TouchableOpacity>
             )}
             ListEmptyComponent={
-              <Text style={{ color: colors.textSecondary, fontFamily: 'Inter-Regular', fontSize: 14, padding: 20, textAlign: 'center' }}>
+              <Text className="p-5 text-center font-sans text-sm" style={{ color: colors.textSecondary }}>
                 Sem alternativas para este músculo.
               </Text>
             }
@@ -1658,9 +1809,9 @@ export default function ActiveWorkoutScreen() {
         presentationStyle="pageSheet"
         onRequestClose={() => setDemoFor(null)}
       >
-        <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }}>
-          <View style={[styles.pickerHeader, { borderBottomColor: colors.border }]}>
-            <Text style={[styles.pickerTitle, { color: colors.text, flex: 1 }]} numberOfLines={1}>
+        <SafeAreaView className="flex-1" style={{ backgroundColor: colors.background }}>
+          <View className="flex-row items-center justify-between border-b p-5" style={{ borderBottomColor: colors.border }}>
+            <Text className="flex-1 font-sans-bold text-xl" style={{ color: colors.text }} numberOfLines={1}>
               {demoFor?.name}
             </Text>
             <TouchableOpacity
@@ -1673,7 +1824,7 @@ export default function ActiveWorkoutScreen() {
             </TouchableOpacity>
           </View>
           {demoFor && (
-            <View style={{ padding: 16 }}>
+            <View className="p-4">
               <ExerciseMedia uri={demoFor.url} height={320} />
             </View>
           )}
@@ -1694,7 +1845,8 @@ export default function ActiveWorkoutScreen() {
         onRequestClose={() => setWhyTargetFor(null)}
       >
         <TouchableOpacity
-          style={styles.whyOverlay}
+          className="flex-1 items-center justify-center p-7"
+          style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
           activeOpacity={1}
           onPress={() => setWhyTargetFor(null)}
         >
@@ -1706,46 +1858,47 @@ export default function ActiveWorkoutScreen() {
             if (!state) return null;
             const spec = phaseSpec(adaptiveInfo.phase, adaptiveInfo.goal);
             return (
-              <TouchableOpacity activeOpacity={1} onPress={() => {}} style={[styles.whyCard, { backgroundColor: colors.surface }]}>
-                <View style={styles.whyHeaderRow}>
+              <TouchableOpacity activeOpacity={1} onPress={() => {}} className="w-full gap-2.5 rounded-[20px] p-5" style={{ backgroundColor: colors.surface }}>
+                <View className="flex-row items-center gap-2">
                   <Star size={18} color={colors.accent} fill={colors.accent} />
-                  <Text style={[styles.whyTitle, { color: colors.text }]}>Porquê este alvo</Text>
+                  <Text className="font-sans-bold text-[17px]" style={{ color: colors.text }}>Porquê este alvo</Text>
                 </View>
-                <Text style={[styles.whyExName, { color: colors.textSecondary }]}>{ex.name}</Text>
+                <Text className="-mt-1.5 mb-1 font-sans text-[13px]" style={{ color: colors.textSecondary }}>{ex.name}</Text>
 
-                <View style={[styles.whyPhaseRow, { backgroundColor: PHASE_COLOR[adaptiveInfo.phase] + '1A' }]}>
-                  <View style={[styles.phaseDotSmall, { backgroundColor: PHASE_COLOR[adaptiveInfo.phase] }]} />
-                  <Text style={[styles.whyPhaseText, { color: PHASE_COLOR[adaptiveInfo.phase] }]}>
+                <View className="mb-0.5 flex-row items-center gap-2 rounded-[10px] px-2.5 py-2" style={{ backgroundColor: PHASE_COLOR[adaptiveInfo.phase] + '1A' }}>
+                  <View className="h-2 w-2 rounded-full" style={{ backgroundColor: PHASE_COLOR[adaptiveInfo.phase] }} />
+                  <Text className="font-sans-bold text-[13px]" style={{ color: PHASE_COLOR[adaptiveInfo.phase] }}>
                     Fase de {PHASE_LABEL_PT[adaptiveInfo.phase]}
                   </Text>
                 </View>
 
-                <View style={styles.whyRow}>
-                  <Text style={[styles.whyLabel, { color: colors.textSecondary }]}>Peso alvo</Text>
-                  <Text style={[styles.whyValue, { color: colors.text }]}>
+                <View className="flex-row items-center justify-between">
+                  <Text className="font-sans text-[13px]" style={{ color: colors.textSecondary }}>Peso alvo</Text>
+                  <Text className="font-sans-semibold text-[13px]" style={{ color: colors.text }}>
                     ~{Math.round(spec.intensityPct * 100)}% do teu 1RM estimado
                   </Text>
                 </View>
-                <View style={styles.whyRow}>
-                  <Text style={[styles.whyLabel, { color: colors.textSecondary }]}>Janela de reps</Text>
-                  <Text style={[styles.whyValue, { color: colors.text }]}>{state.current_reps_low}–{state.current_reps_high}</Text>
+                <View className="flex-row items-center justify-between">
+                  <Text className="font-sans text-[13px]" style={{ color: colors.textSecondary }}>Janela de reps</Text>
+                  <Text className="font-sans-semibold text-[13px]" style={{ color: colors.text }}>{state.current_reps_low}–{state.current_reps_high}</Text>
                 </View>
                 {state.step_stall_count > 0 && (
-                  <View style={styles.whyRow}>
-                    <Text style={[styles.whyLabel, { color: colors.textSecondary }]}>Sem progressão há</Text>
-                    <Text style={[styles.whyValue, { color: colors.text }]}>{state.step_stall_count} semana{state.step_stall_count > 1 ? 's' : ''}</Text>
+                  <View className="flex-row items-center justify-between">
+                    <Text className="font-sans text-[13px]" style={{ color: colors.textSecondary }}>Sem progressão há</Text>
+                    <Text className="font-sans-semibold text-[13px]" style={{ color: colors.text }}>{state.step_stall_count} semana{state.step_stall_count > 1 ? 's' : ''}</Text>
                   </View>
                 )}
 
-                <Text style={[styles.whyExpect, { color: colors.textTertiary }]}>{spec.expect}</Text>
+                <Text className="mt-1.5 font-sans text-xs leading-[17px]" style={{ color: colors.textTertiary }}>{spec.expect}</Text>
 
                 <TouchableOpacity
-                  style={[styles.whyCloseBtn, { backgroundColor: colors.surfaceVariant }]}
+                  className="mt-1.5 items-center rounded-xl py-3"
+                  style={{ backgroundColor: colors.surfaceVariant }}
                   onPress={() => setWhyTargetFor(null)}
                   accessibilityRole="button"
                   accessibilityLabel="Fechar"
                 >
-                  <Text style={[styles.whyCloseBtnText, { color: colors.text }]}>Entendido</Text>
+                  <Text className="font-sans-semibold text-sm" style={{ color: colors.text }}>Entendido</Text>
                 </TouchableOpacity>
               </TouchableOpacity>
             );
@@ -1778,21 +1931,62 @@ export default function ActiveWorkoutScreen() {
  * restart off of).
  */
 function FloatingRestBar({
-  restDuration, restResetToken, totalPlannedSets, restRemindersEnabled, vibrateEnabled, soundEnabled, colors, setRestActive, onRestComplete,
+  restDuration, restResetToken, resumeEndsAtMs, resumeRingSeconds, totalPlannedSets, restRemindersEnabled, vibrateEnabled, soundEnabled, colors, setRestActive, onDeadlineChange, onRingDurationChange, onRestComplete,
 }: {
-  restDuration: number; restResetToken: number; totalPlannedSets: number;
-  restRemindersEnabled: boolean; vibrateEnabled: boolean; soundEnabled: boolean; colors: any;
+  restDuration: number; restResetToken: number;
+  /** Absolute deadline when expanding from mini-player; keeps wall-clock sync. */
+  resumeEndsAtMs?: number | null;
+  /** Original rest length for RestRing fill when expanding mid-countdown. */
+  resumeRingSeconds?: number | null;
+  totalPlannedSets: number;
+  restRemindersEnabled: boolean; vibrateEnabled: boolean; soundEnabled: boolean; colors: Theme;
   setRestActive: (active: boolean) => void;
+  onDeadlineChange: (endsAtMs: number | null) => void;
+  onRingDurationChange: (seconds: number) => void;
   onRestComplete: () => void;
 }) {
-  const { remaining, isFinished, addTime, reset } = useCountdown(restDuration, true, onRestComplete);
+  // bindEndsAtMs seeds endTimeRef on first render so expand mid-rest never
+  // arms Date.now()+restDuration (which would drift from the minimize deadline).
+  const { remaining, isFinished, addTime, reset, setEndsAt, getEndsAt } = useCountdown(
+    restDuration,
+    true,
+    onRestComplete,
+    resumeEndsAtMs ?? null,
+  );
+  // Ring fill uses this as the denominator — update when presets fire so
+  // jumping from 60→120 doesn't clamp the progress ring incorrectly.
+  // On resume, prefer the original duration so a mid-rest expand
+  // (e.g. 42s left of 90) doesn't make the ring look "full" at 42/42.
+  const [ringDuration, setRingDuration] = useState(() =>
+    Math.max(restDuration, resumeRingSeconds ?? restDuration)
+  );
+  const didResumeRef = useRef(false);
+
+  // Publish the wall-clock resume deadline to the parent once (minimize snapshot).
+  useEffect(() => {
+    if (didResumeRef.current) return;
+    if (resumeEndsAtMs != null && remainingRestSeconds(resumeEndsAtMs) != null) {
+      didResumeRef.current = true;
+      setEndsAt(resumeEndsAtMs);
+      onDeadlineChange(resumeEndsAtMs);
+      onRingDurationChange(Math.max(restDuration, resumeRingSeconds ?? restDuration));
+    } else {
+      // Fresh rest (not an expand): parent deadline = hook's armed endTime.
+      const ends = getEndsAt();
+      if (ends != null) onDeadlineChange(ends);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    if (restResetToken > 0) reset(restDuration);
-    // Only restResetToken should retrigger this — see the component doc
-    // comment above. Including restDuration/reset here would also fire on
-    // every render where either identity happens to change, which is not
-    // the "start a fresh rest now" signal this exists to react to.
+    if (restResetToken > 0) {
+      reset(restDuration);
+      setRingDuration(restDuration);
+      onRingDurationChange(restDuration);
+      // reset() nulls endTime then the tick effect re-arms; publish after microtask
+      // via the same formula completeSet uses so parent minimize snapshot stays honest.
+      onDeadlineChange(Date.now() + restDuration * 1000);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restResetToken]);
 
@@ -1828,48 +2022,107 @@ function FloatingRestBar({
   // back to the bar" signal matters most.
   const isUrgent = remaining <= 10;
 
+  const applyDelta = (delta: number) => {
+    // Guard −10 when already ≤10s so it can't double as an accidental skip.
+    if (delta === -10 && remaining <= 10) return;
+    const next = adjustRestRemaining(remaining, delta);
+    addTime(delta);
+    // Prefer the hook's absolute deadline (single source of truth) over
+    // recomputing Date.now()+next, which drifts from endTimeRef.
+    onDeadlineChange(getEndsAt() ?? Date.now() + next * 1000);
+    if (delta > 0) {
+      setRingDuration((d) => {
+        const ring = Math.max(d, remaining + delta);
+        onRingDurationChange(ring);
+        return ring;
+      });
+    }
+    if (restRemindersEnabled) scheduleRestEndNotification(next, '').catch(() => {});
+    hapticSelect();
+  };
+
+  const applyPreset = (seconds: number) => {
+    setRingDuration(seconds);
+    onRingDurationChange(seconds);
+    reset(seconds);
+    onDeadlineChange(Date.now() + seconds * 1000);
+    if (restRemindersEnabled) scheduleRestEndNotification(seconds, '').catch(() => {});
+    hapticSelect();
+  };
+
   return (
     <View
       pointerEvents="box-none"
-      style={[
-        styles.floatingRestBar,
-        { bottom: totalPlannedSets > 0 ? 66 : 14 },
-        { backgroundColor: isUrgent ? colors.errorContainer : colors.surface, borderColor: isUrgent ? colors.error : colors.border },
-      ]}
+      className="absolute left-3 right-3 flex-row items-center gap-2.5 rounded-2xl border px-3 py-2"
+      style={{
+        bottom: totalPlannedSets > 0 ? 72 : 16,
+        backgroundColor: isUrgent ? colors.errorContainer : colors.surface,
+        borderColor: isUrgent ? colors.error : colors.border,
+        elevation: 6,
+        shadowColor: '#000',
+        shadowOpacity: 0.18,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 3 },
+      }}
     >
       <RestRing
         remainingSV={remainingSV}
-        duration={restDuration}
+        duration={ringDuration}
         size={40}
         strokeWidth={4}
         color={isUrgent ? colors.error : colors.primary}
         trackColor={colors.surfaceVariant}
       />
-      <Text style={[styles.floatingRestLabel, { color: isUrgent ? colors.error : colors.textSecondary }]}>DESCANSO</Text>
-      <View style={{ flex: 1 }} />
+      <Text className="font-sans-semibold text-[11px] tracking-widest" style={{ color: isUrgent ? colors.error : colors.textSecondary }}>DESCANSO</Text>
+      <View className="flex-row items-center gap-1">
+        {REST_PRESETS_SECONDS.map((secs) => (
+          <TouchableOpacity
+            key={secs}
+            onPress={() => applyPreset(secs)}
+            className="min-w-9 items-center rounded-lg px-2 py-1.5"
+            style={{
+              backgroundColor: ringDuration === secs ? colors.primaryContainer : colors.surfaceVariant,
+            }}
+            hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+            accessibilityRole="button"
+            accessibilityLabel={`Definir descanso para ${secs} segundos`}
+          >
+            <Text className="font-sans-bold text-[11px]" style={{ color: ringDuration === secs ? colors.primary : colors.text }}>
+              {secs}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <View className="flex-1" />
       <TouchableOpacity
-        onPress={() => {
-          addTime(30);
-          // Keep the scheduled notification's timing in sync with the
-          // manual +30s adjustment, using the post-adjustment remaining
-          // time rather than the stale pre-adjustment value.
-          if (restRemindersEnabled) scheduleRestEndNotification(remaining + 30, '').catch(() => {});
-        }}
-        style={[styles.floatingRestBtn, { backgroundColor: colors.surfaceVariant }]}
+        onPress={() => applyDelta(-10)}
+        className="min-w-11 items-center justify-center rounded-xl px-3.5 py-2.5"
+        style={{ backgroundColor: colors.surfaceVariant }}
+        hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
+        accessibilityRole="button"
+        accessibilityLabel="Remover 10 segundos ao descanso"
+      >
+        <Text className="font-sans-bold text-[13px]" style={{ color: colors.text }}>−10s</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        onPress={() => applyDelta(30)}
+        className="min-w-11 items-center justify-center rounded-xl px-3.5 py-2.5"
+        style={{ backgroundColor: colors.surfaceVariant }}
         hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
         accessibilityRole="button"
         accessibilityLabel="Adicionar 30 segundos ao descanso"
       >
-        <Text style={[styles.floatingRestBtnText, { color: colors.text }]}>+30s</Text>
+        <Text className="font-sans-bold text-[13px]" style={{ color: colors.text }}>+30s</Text>
       </TouchableOpacity>
       <TouchableOpacity
         onPress={() => { setRestActive(false); cancelRestEndNotification().catch(() => {}); }}
-        style={[styles.floatingRestBtn, { backgroundColor: colors.secondary }]}
+        className="min-w-11 items-center justify-center rounded-xl px-3.5 py-2.5"
+        style={{ backgroundColor: colors.secondary }}
         hitSlop={{ top: 10, bottom: 10, left: 6, right: 6 }}
         accessibilityRole="button"
         accessibilityLabel="Saltar descanso"
       >
-        <Text style={[styles.floatingRestBtnText, { color: colors.onSecondary }]}>Saltar</Text>
+        <Text className="font-sans-bold text-[13px]" style={{ color: colors.onSecondary }}>Saltar</Text>
       </TouchableOpacity>
     </View>
   );
@@ -1899,8 +2152,10 @@ function FloatingRestBar({
  * of those fired this render; it still fully protects the common case of
  * typing into a field or another row's own set completing.
  */
-const SetRow = memo(function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, onUpdate, onComplete, onRemove, onCorrect, onFocusInput }: {
-  set: ActiveExercise['sets'][0]; setIdx: number; exIdx: number; colors: any; isSimple: boolean;
+const SetRow = memo(function SetRow({ set, setIdx, exIdx, colors, isSimple, locked, repsTarget, onUpdate, onComplete, onRemove, onCorrect, onFocusInput }: {
+  set: ActiveExercise['sets'][0]; setIdx: number; exIdx: number; colors: Theme; isSimple: boolean;
+  /** Prescribed plan range shown as the REPS placeholder (e.g. "12-15"). */
+  repsTarget?: string;
   /** True for an undone set that isn't next in line yet — see the
    *  firstUndoneIdx computation where SetRow is rendered. Blocks input and
    *  completing out of order; a done set is never locked, so it can always
@@ -1909,11 +2164,12 @@ const SetRow = memo(function SetRow({ set, setIdx, exIdx, colors, isSimple, lock
   onUpdate: {
     (exIdx: number, setIdx: number, field: 'reps' | 'weight', value: string): void;
     (exIdx: number, setIdx: number, field: 'rpe', value: number | null): void;
+    (exIdx: number, setIdx: number, field: 'setType', value: SetType): void;
   };
   onComplete: (exIdx: number, setIdx: number) => void;
   onRemove: (exIdx: number, setIdx: number) => void;
   /** Persists an edit made to an already-done set — see persistSetCorrection. */
-  onCorrect: (exIdx: number, setIdx: number, overrides?: { reps?: string; weight?: string; rpe?: number | null }) => void;
+  onCorrect: (exIdx: number, setIdx: number, overrides?: { reps?: string; weight?: string; rpe?: number | null; setType?: SetType }) => void;
   /** Registers whichever input the person just tapped into, so the screen
    *  can scroll it clear of the keyboard once it's done animating in. */
   onFocusInput: (ref: TextInput | null) => void;
@@ -1958,8 +2214,16 @@ const SetRow = memo(function SetRow({ set, setIdx, exIdx, colors, isSimple, lock
   };
 
   const adjustReps = (delta: number) => {
-    const current = parseInt(set.reps) || 0;
+    const current = parseLoggedReps(set.reps);
     onUpdate(exIdx, setIdx, 'reps', String(Math.max(0, current + delta)));
+  };
+
+  const cycleSetType = () => {
+    if (!editable) return;
+    const next = nextSetType(set.setType);
+    onUpdate(exIdx, setIdx, 'setType', next);
+    if (set.done) onCorrect(exIdx, setIdx, { setType: next });
+    hapticSelect();
   };
 
   const setTypeColors: Record<SetType, string> = {
@@ -1970,43 +2234,66 @@ const SetRow = memo(function SetRow({ set, setIdx, exIdx, colors, isSimple, lock
     amrap: colors.amrap,
   };
 
+  const w = parseFloat(set.weight) || 0;
+  const r = parseLoggedReps(set.reps);
+  const e1rm = set.setType !== 'warmup' && w > 0 && r > 0 ? calculate1RM(w, r) : 0;
+  const isWarmup = set.setType === 'warmup';
+
   return (
     <>
       <TouchableOpacity
+        className="flex-row items-center gap-1.5 rounded-[10px] px-1 py-1.5"
         style={[
-          styles.setRow,
-          isActive && { backgroundColor: colors.primaryContainer + '40', borderRadius: 10 },
-          set.done && { opacity: 0.5 },
-          locked && { opacity: 0.4 },
+          {
+            backgroundColor: set.done
+              ? colors.secondaryContainer
+              : isActive
+                ? colors.surfaceVariant
+                : 'transparent',
+          },
+          locked && !set.done && { opacity: 0.4 },
         ]}
         onLongPress={() => onRemove(exIdx, setIdx)}
         delayLongPress={600}
       >
-        <View style={styles.setNumCell}>
-          <View style={[styles.setNumBadge, { backgroundColor: setTypeColors[set.setType] + '33' }]}>
-            <Text style={[styles.setNumText, { color: setTypeColors[set.setType] }]}>{setIdx + 1}</Text>
-          </View>
+        <View className="w-7 items-center">
+          <TouchableOpacity
+            className="h-6 w-6 items-center justify-center rounded-full"
+            style={{ backgroundColor: setTypeColors[set.setType] + '33' }}
+            onPress={cycleSetType}
+            disabled={!editable}
+            accessibilityRole="button"
+            accessibilityLabel={`Tipo de série: ${SET_TYPE_PT[set.setType]}. Toca para mudar.`}
+          >
+            <Text className="font-sans-bold text-xs leading-4" style={{ color: setTypeColors[set.setType] }}>
+              {setTypeBadgeLabel(set.setType, setIdx)}
+            </Text>
+          </TouchableOpacity>
         </View>
-        <View style={styles.setPrevCell}>
-          <Text style={[styles.setPrevText, { color: colors.textTertiary }]}>
+        <View className="flex-[1.2] items-center">
+          <Text className="font-sans text-xs leading-4" style={{ color: colors.textTertiary }}>
             {set.previousReps && set.previousWeight ? `${set.previousReps}×${set.previousWeight}` : '–'}
           </Text>
+          {e1rm > 0 && isActive && !isSimple ? (
+            <Text className="mt-px font-sans-semibold text-[10px] leading-3" style={{ color: colors.textTertiary }}>≈{e1rm}kg</Text>
+          ) : null}
         </View>
-        <View style={[styles.setWeightCell, styles.weightCellRow]}>
+        <View className="flex-[1.3] flex-row gap-0.5">
           {editable && (
             <TouchableOpacity
-              style={styles.weightStepBtn}
+              className="h-11 w-[26px] items-center justify-center"
               onPress={() => { adjustWeight(-2.5); if (set.done) onCorrect(exIdx, setIdx, { weight: String(Math.max(0, (parseFloat(set.weight) || 0) - 2.5)) }); }}
               hitSlop={{ top: 12, bottom: 12, left: 9, right: 9 }}
               accessibilityRole="button"
               accessibilityLabel="Reduzir peso em 2.5 quilos"
             >
-              <Text style={[styles.weightStepText, { color: colors.error }]}>−</Text>
+              <Text className="font-sans-black text-lg leading-5" style={{ color: colors.error }}>−</Text>
             </TouchableOpacity>
           )}
           <TextInput
             ref={weightInputRef}
-            style={[styles.setInput, styles.setInputInRow, { color: colors.text, backgroundColor: editable ? colors.surfaceVariant : 'transparent', borderColor: colors.border }]}
+            className="h-11 flex-1 rounded-lg border text-center font-sans-semibold text-[15px]"
+            style={{ color: colors.text, backgroundColor: editable ? colors.surfaceHighlight : 'transparent', borderColor: isActive ? colors.primary : colors.border }}
             value={set.weight}
             onChangeText={v => onUpdate(exIdx, setIdx, 'weight', v)}
             onFocus={() => { setShowQuickAdjust(true); onFocusInput(weightInputRef.current); }}
@@ -2017,48 +2304,43 @@ const SetRow = memo(function SetRow({ set, setIdx, exIdx, colors, isSimple, lock
           />
           {editable && (
             <TouchableOpacity
-              style={styles.weightStepBtn}
+              className="h-11 w-[26px] items-center justify-center"
               onPress={() => { adjustWeight(2.5); if (set.done) onCorrect(exIdx, setIdx, { weight: String((parseFloat(set.weight) || 0) + 2.5) }); }}
               hitSlop={{ top: 12, bottom: 12, left: 9, right: 9 }}
               accessibilityRole="button"
               accessibilityLabel="Aumentar peso em 2.5 quilos"
             >
-              <Text style={[styles.weightStepText, { color: colors.secondary }]}>+</Text>
+              <Text className="font-sans-black text-lg leading-5" style={{ color: colors.secondary }}>+</Text>
             </TouchableOpacity>
           )}
         </View>
-        <View style={styles.setRepsCell}>
+        <View className="flex-1 items-center">
           <TextInput
             ref={repsInputRef}
-            style={[styles.setInput, { color: colors.text, backgroundColor: editable ? colors.surfaceVariant : 'transparent', borderColor: colors.border }]}
+            className="h-11 w-full rounded-lg border text-center font-sans-semibold text-[15px]"
+            style={{ color: colors.text, backgroundColor: editable ? colors.surfaceHighlight : 'transparent', borderColor: isActive ? colors.primary : colors.border }}
             value={set.reps}
             onChangeText={v => onUpdate(exIdx, setIdx, 'reps', v)}
             onFocus={() => onFocusInput(repsInputRef.current)}
             onBlur={() => onCorrect(exIdx, setIdx)}
-            keyboardType="numeric"
+            keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default'}
+            placeholder={repsTarget || '12-15'}
+            placeholderTextColor={colors.textTertiary}
             selectTextOnFocus
             editable={editable}
+            accessibilityLabel={isWarmup ? `Reps de aquecimento, alvo ${repsTarget || set.reps}` : `Reps de trabalho, alvo ${repsTarget || set.reps}`}
           />
         </View>
-        {/* A done set stays editable (to fix a mistake), unlike a future,
-            not-yet-reached one — see the `editable`/`locked` comments above.
-            Correcting RPE persists immediately via onCorrect's override,
-            since it fires in the same tap as onUpdate — see
-            persistSetCorrection's comment on why reading fresh state there
-            would race the update. */}
         {!isSimple && (
-          <TouchableOpacity style={styles.setRpeCell} onPress={() => editable && setShowRpe(true)} disabled={!editable}>
-            <Text style={[styles.rpeText, { color: set.rpe ? colors.text : colors.textTertiary }]}>
+          <TouchableOpacity className="w-11 items-center justify-center" onPress={() => editable && setShowRpe(true)} disabled={!editable}>
+            <Text className="font-sans-semibold text-[13px] leading-[17px]" style={{ color: set.rpe ? colors.text : colors.textTertiary }}>
               {set.rpe || '–'}
             </Text>
           </TouchableOpacity>
         )}
         <AnimatedTouchable
-          style={[styles.setDoneCell, styles.doneBtn, { backgroundColor: set.done ? colors.secondary : colors.surfaceVariant }, doneAnimatedStyle]}
-          // The button is 36pt so the set row stays compact, but this is the
-          // control people hit mid-set with sweaty hands and shaky arms.
-          // hitSlop brings the effective target to ~48pt, the Android
-          // minimum, without changing the layout.
+          className="h-9 w-9 items-center justify-center rounded-[10px]"
+          style={[{ backgroundColor: set.done ? colors.secondary : colors.surfaceHighlight }, doneAnimatedStyle]}
           hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
           onPress={() => { if (!set.done && !locked) { setShowQuickAdjust(false); onComplete(exIdx, setIdx); } }}
           disabled={locked}
@@ -2077,63 +2359,60 @@ const SetRow = memo(function SetRow({ set, setIdx, exIdx, colors, isSimple, lock
         </AnimatedTouchable>
       </TouchableOpacity>
 
-      {/* Quick weight/rep adjust — plate-sized steps, no keyboard needed */}
       {showQuickAdjust && editable && (
-        <View style={[styles.quickAdjust, { backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}>
-          <View style={styles.quickRow}>
-            <Text style={[styles.quickLabel, { color: colors.textSecondary }]}>Peso</Text>
+        <View className="mt-1 gap-1.5 rounded-[10px] border p-2" style={{ backgroundColor: colors.surfaceVariant, borderColor: colors.border }}>
+          <View className="flex-row items-center gap-1.5">
+            <Text className="w-[38px] font-sans-semibold text-[11px] leading-[14px]" style={{ color: colors.textSecondary }}>Peso</Text>
             {[-5, -2.5, -1.25, 1.25, 2.5, 5].map(d => (
               <TouchableOpacity
                 key={d}
-                style={[styles.quickBtn, { backgroundColor: colors.surfaceHighlight }]}
+                className="flex-1 items-center rounded-lg py-2"
+                style={{ backgroundColor: colors.surfaceHighlight }}
                 onPress={() => adjustWeight(d)}
                 accessibilityRole="button"
                 accessibilityLabel={`${d > 0 ? 'Aumentar' : 'Reduzir'} peso em ${Math.abs(d)} quilos`}
               >
-                <Text style={[styles.quickBtnText, { color: d > 0 ? colors.secondary : colors.error }]}>
+                <Text className="font-sans-bold text-[13px] leading-[17px]" style={{ color: d > 0 ? colors.secondary : colors.error }}>
                   {d > 0 ? `+${d}` : d}
                 </Text>
               </TouchableOpacity>
             ))}
           </View>
 
-          {/* Plate breakdown — reuses the already-open quick-adjust panel
-              rather than adding a separate button to an already-crowded
-              row; calculatePlates already existed (used by the Perfil
-              calculator) but was never wired into the actual workout
-              screen where it matters most: mid-set, deciding what to load. */}
           {(() => {
             const targetWeight = parseFloat(set.weight) || 0;
-            if (targetWeight <= 20) return null; // at or under an empty bar — nothing to break down
+            if (targetWeight <= 20) return null;
             const { plates } = calculatePlates(targetWeight, 'kg');
             if (plates.length === 0) return null;
             return (
-              <View style={styles.plateRow}>
-                <Text style={[styles.quickLabel, { color: colors.textSecondary }]}>Anilhas/lado</Text>
-                <Text style={[styles.plateText, { color: colors.text }]}>
+              <View className="flex-row flex-wrap items-center gap-1.5">
+                <Text className="w-[38px] font-sans-semibold text-[11px] leading-[14px]" style={{ color: colors.textSecondary }}>Anilhas/lado</Text>
+                <Text className="shrink font-sans-semibold text-xs" style={{ color: colors.text }}>
                   {plates.map(p => `${p.count}×${p.weight}kg`).join('  +  ')}
                 </Text>
               </View>
             );
           })()}
 
-          <View style={styles.quickRow}>
-            <Text style={[styles.quickLabel, { color: colors.textSecondary }]}>Reps</Text>
+          <View className="flex-row items-center gap-1.5">
+            <Text className="w-[38px] font-sans-semibold text-[11px] leading-[14px]" style={{ color: colors.textSecondary }}>Reps</Text>
             {[-1, 1].map(d => (
               <TouchableOpacity
                 key={d}
-                style={[styles.quickBtn, { backgroundColor: colors.surfaceHighlight }]}
+                className="flex-1 items-center rounded-lg py-2"
+                style={{ backgroundColor: colors.surfaceHighlight }}
                 onPress={() => adjustReps(d)}
                 accessibilityRole="button"
                 accessibilityLabel={`${d > 0 ? 'Mais' : 'Menos'} uma repetição`}
               >
-                <Text style={[styles.quickBtnText, { color: d > 0 ? colors.secondary : colors.error }]}>
+                <Text className="font-sans-bold text-[13px] leading-[17px]" style={{ color: d > 0 ? colors.secondary : colors.error }}>
                   {d > 0 ? `+${d}` : d}
                 </Text>
               </TouchableOpacity>
             ))}
             <TouchableOpacity
-              style={[styles.quickClose, { borderColor: colors.border }]}
+              className="items-center rounded-lg border px-2.5 py-2"
+              style={{ borderColor: colors.border }}
               onPress={() => setShowQuickAdjust(false)}
               accessibilityRole="button"
               accessibilityLabel="Fechar ajuste rapido"
@@ -2144,22 +2423,29 @@ const SetRow = memo(function SetRow({ set, setIdx, exIdx, colors, isSimple, lock
         </View>
       )}
 
-      {/* RPE picker */}
       {showRpe && (
-        <View style={[styles.rpePicker, { backgroundColor: colors.surfaceVariant, borderColor: colors.border }]}>
-          <Text style={[styles.rpeTitle, { color: colors.textSecondary }]}>RPE (Esforço Percebido)</Text>
-          <Text style={[styles.rpeHint, { color: colors.textTertiary }]}>
+        <View className="mt-1 gap-2 rounded-[10px] border p-2.5" style={{ backgroundColor: colors.surfaceVariant, borderColor: colors.border }}>
+          <Text className="font-sans-semibold text-[11px] leading-[14px]" style={{ color: colors.textSecondary }}>RPE (Esforço Percebido)</Text>
+          <Text className="font-sans text-[11px] leading-[15px]" style={{ color: colors.textTertiary }}>
             RPE 10 = até à falha · cada ponto abaixo ≈ +1 rep em reserva (ex.: RPE 8 ≈ 2 reps em reserva)
           </Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ height: 48 }}>
-            <View style={styles.rpeRow}>
+            <View className="flex-row items-center gap-1.5">
               {RPE_VALUES.map(r => (
-                <TouchableOpacity key={r} style={[styles.rpeChip, { backgroundColor: set.rpe === r ? colors.primary : colors.surfaceHighlight }]}
-                  onPress={() => { onUpdate(exIdx, setIdx, 'rpe', r); if (set.done) onCorrect(exIdx, setIdx, { rpe: r }); setShowRpe(false); }}>
-                  <Text style={[styles.rpeChipText, { color: set.rpe === r ? colors.onPrimary : colors.text }]}>{r}</Text>
+                <TouchableOpacity
+                  key={r}
+                  className="h-10 w-10 items-center justify-center rounded-[10px]"
+                  style={{ backgroundColor: set.rpe === r ? colors.primary : colors.surfaceHighlight }}
+                  onPress={() => { onUpdate(exIdx, setIdx, 'rpe', r); if (set.done) onCorrect(exIdx, setIdx, { rpe: r }); setShowRpe(false); }}
+                >
+                  <Text className="font-sans-bold text-sm" style={{ color: set.rpe === r ? colors.onPrimary : colors.text }}>{r}</Text>
                 </TouchableOpacity>
               ))}
-              <TouchableOpacity style={[styles.rpeChip, { backgroundColor: colors.surfaceHighlight }]} onPress={() => { onUpdate(exIdx, setIdx, 'rpe', null); if (set.done) onCorrect(exIdx, setIdx, { rpe: null }); setShowRpe(false); }}>
+              <TouchableOpacity
+                className="h-10 w-10 items-center justify-center rounded-[10px]"
+                style={{ backgroundColor: colors.surfaceHighlight }}
+                onPress={() => { onUpdate(exIdx, setIdx, 'rpe', null); if (set.done) onCorrect(exIdx, setIdx, { rpe: null }); setShowRpe(false); }}
+              >
                 <X size={14} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -2168,144 +2454,4 @@ const SetRow = memo(function SetRow({ set, setIdx, exIdx, colors, isSimple, lock
       )}
     </>
   );
-});
-
-const styles = StyleSheet.create({
-  screen: { flex: 1 },
-  topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1 },
-  cancelBtn: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  topCenter: { flex: 1, alignItems: 'center' },
-  timerRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
-  workoutName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
-  totalTimer: { fontFamily: 'Inter-Bold', fontSize: 22 },
-  finishBtn: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10 },
-  progressFooter: { paddingHorizontal: 16, paddingTop: 10, paddingBottom: 12, borderTopWidth: 1, gap: 6 },
-  progressFooterText: { fontFamily: 'Inter-SemiBold', fontSize: 12, textAlign: 'center' },
-  progressFooterTrack: { height: 6, borderRadius: 3, overflow: 'hidden' },
-  progressFooterFill: { height: '100%', borderRadius: 3 },
-  finishText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
-  statsBar: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1 },
-  pausedBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8 },
-  pausedBannerText: { flex: 1, fontFamily: 'Inter-SemiBold', fontSize: 13, lineHeight: 17 },
-  pausedBannerAction: { fontFamily: 'Inter-Bold', fontSize: 13, lineHeight: 17 },
-  stat: { flex: 1, alignItems: 'center' },
-  statValue: { fontFamily: 'Inter-Bold', fontSize: 16 },
-  statLabel: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 14 },
-  statDiv: { width: 1, height: 28 },
-  floatingRestBar: {
-    position: 'absolute', left: 12, right: 12,
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16, borderWidth: 1,
-    elevation: 6, shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 8, shadowOffset: { width: 0, height: 3 },
-  },
-  floatingRestLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, letterSpacing: 1 },
-  floatingRestBtn: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, minWidth: 44, alignItems: 'center', justifyContent: 'center' },
-  floatingRestBtnText: { fontFamily: 'Inter-Bold', fontSize: 13 },
-  prNotif: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 14, paddingVertical: 8 },
-  prText: { fontFamily: 'Inter-Bold', fontSize: 14 },
-  adjustNotif: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingHorizontal: 14, paddingVertical: 10, marginHorizontal: 12, marginTop: 8, borderRadius: 12 },
-  adjustText: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 18 },
-  adjustActions: { flexDirection: 'row', gap: 18, marginTop: 6 },
-  adjustActionText: { fontFamily: 'Inter-Bold', fontSize: 13 },
-  exerciseList: { padding: 12, gap: 10 },
-  exCard: { borderRadius: 14, borderWidth: 1, overflow: 'hidden' },
-  supersetBadge: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderTopLeftRadius: 13, borderBottomRightRadius: 10 },
-  supersetBadgeText: { fontFamily: 'Inter-Bold', fontSize: 10, lineHeight: 13, letterSpacing: 0.5 },
-  exHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14 },
-  exThumbWrap: { width: 38, height: 38, borderRadius: 8, overflow: 'hidden' },
-  exDot: { width: 10, height: 10, borderRadius: 5 },
-  exHeaderInfo: { flex: 1 },
-  exName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
-  exMeta: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
-  exBody: { paddingHorizontal: 12, paddingBottom: 12, gap: 4 },
-  exReorderRow: { flexDirection: 'row', gap: 16, marginBottom: 10 },
-  exReorderBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  exReorderText: { fontFamily: 'Inter-SemiBold', fontSize: 12 },
-  coachingTipsContainer: { marginBottom: 12, paddingHorizontal: 0 },
-  setHeaderRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
-  setHeaderCell: { fontFamily: 'Inter-SemiBold', fontSize: 10, lineHeight: 13, letterSpacing: 0.5 },
-  setRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, gap: 6 },
-  setNumCell: { width: 28, alignItems: 'center' },
-  setPrevCell: { flex: 1.2, alignItems: 'center' },
-  setRepsCell: { flex: 1, alignItems: 'center' },
-  setWeightCell: { flex: 1.3, alignItems: 'center' },
-  weightCellRow: { flexDirection: 'row', gap: 2 },
-  setInputInRow: { width: undefined, flex: 1 },
-  weightStepBtn: { width: 26, height: 44, alignItems: 'center', justifyContent: 'center' },
-  weightStepText: { fontFamily: 'Inter-Black', fontSize: 18, lineHeight: 20 },
-  setRpeCell: { width: 44, alignItems: 'center', justifyContent: 'center' },
-  setDoneCell: { width: 36, alignItems: 'center' },
-  setNumBadge: { width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
-  setNumText: { fontFamily: 'Inter-Bold', fontSize: 12, lineHeight: 16 },
-  setPrevText: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16 },
-  setInput: { width: '100%', height: 44, borderRadius: 8, textAlign: 'center', fontFamily: 'Inter-SemiBold', fontSize: 15, borderWidth: 1 },
-  rpeText: { fontFamily: 'Inter-SemiBold', fontSize: 13, lineHeight: 17 },
-  doneBtn: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  progressHint: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, marginBottom: 8 },
-  progressHintText: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, flex: 1 },
-  notesRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6, marginBottom: 4 },
-  notesText: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, flex: 1 },
-  notesEdit: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginBottom: 8 },
-  notesInput: { flex: 1, borderRadius: 8, borderWidth: 1, padding: 10, fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17, minHeight: 44 },
-  notesSave: { width: 44, height: 44, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  quickAdjust: { borderRadius: 10, borderWidth: 1, padding: 8, marginTop: 4, gap: 6 },
-  quickRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  quickLabel: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14, width: 38 },
-  plateRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
-  plateText: { fontFamily: 'Inter-SemiBold', fontSize: 12, flexShrink: 1 },
-  quickBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
-  quickBtnText: { fontFamily: 'Inter-Bold', fontSize: 13, lineHeight: 17 },
-  quickClose: { paddingVertical: 8, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, alignItems: 'center' },
-  rpePicker: { marginTop: 4, borderRadius: 10, borderWidth: 1, padding: 10, gap: 8 },
-  rpeTitle: { fontFamily: 'Inter-SemiBold', fontSize: 11, lineHeight: 14 },
-  rpeHint: { fontFamily: 'Inter-Regular', fontSize: 11, lineHeight: 15 },
-  rpeRow: { flexDirection: 'row', gap: 6, alignItems: 'center' },
-  rpeChip: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  rpeChipText: { fontFamily: 'Inter-Bold', fontSize: 14 },
-  addSetBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 8, borderWidth: 1, borderStyle: 'dashed', paddingVertical: 8, marginTop: 4 },
-  addSetText: { fontFamily: 'Inter-SemiBold', fontSize: 13, lineHeight: 17 },
-  addExBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 12, borderWidth: 2, borderStyle: 'dashed', paddingVertical: 14 },
-  addExText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
-  setTimerCard: { borderRadius: 14, borderWidth: 1, padding: 14, gap: 10 },
-  setTimerRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  setTimerLabel: { fontFamily: 'Inter-Regular', fontSize: 14, flex: 1 },
-  setTimerValue: { fontFamily: 'Inter-Bold', fontSize: 20 },
-  setTimerButtons: { flexDirection: 'row', gap: 8 },
-  setTimerBtn: { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 6 },
-  setTimerBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
-  picker: { flex: 1 },
-  pickerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1 },
-  pickerTitle: { fontFamily: 'Inter-Bold', fontSize: 20 },
-  pickerItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1 },
-  pickerThumbWrap: { width: 40, height: 40, borderRadius: 8, overflow: 'hidden' },
-  pickerName: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
-  pickerSub: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 16, marginTop: 2 },
-  finishOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center', padding: 24 },
-  finishModal: { width: '100%', borderRadius: 24, padding: 24, borderWidth: 1, gap: 16 },
-  finishTitle: { fontFamily: 'Inter-Bold', fontSize: 22, textAlign: 'center' },
-  finishStats: { flexDirection: 'row', justifyContent: 'space-around' },
-  undoneNotice: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, marginTop: 14 },
-  undoneNoticeText: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17 },
-  undoneNoticeAction: { fontFamily: 'Inter-Bold', fontSize: 13, lineHeight: 17 },
-  finishStat: { alignItems: 'center', gap: 4 },
-  finishStatVal: { fontFamily: 'Inter-Bold', fontSize: 24 },
-  finishStatLabel: { fontFamily: 'Inter-Regular', fontSize: 13, lineHeight: 17 },
-  confirmFinishBtn: { borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
-  confirmFinishText: { fontFamily: 'Inter-Bold', fontSize: 17 },
-  continueBtn: { borderRadius: 14, paddingVertical: 14, alignItems: 'center', borderWidth: 1 },
-  continueBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 15 },
-  whyOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 28 },
-  whyCard: { width: '100%', borderRadius: 20, padding: 20, gap: 10 },
-  whyHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  whyTitle: { fontFamily: 'Inter-Bold', fontSize: 17 },
-  whyExName: { fontFamily: 'Inter-Regular', fontSize: 13, marginTop: -6, marginBottom: 4 },
-  whyPhaseRow: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, marginBottom: 2 },
-  phaseDotSmall: { width: 8, height: 8, borderRadius: 4 },
-  whyPhaseText: { fontFamily: 'Inter-Bold', fontSize: 13 },
-  whyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  whyLabel: { fontFamily: 'Inter-Regular', fontSize: 13 },
-  whyValue: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
-  whyExpect: { fontFamily: 'Inter-Regular', fontSize: 12, lineHeight: 17, marginTop: 6 },
-  whyCloseBtn: { borderRadius: 12, paddingVertical: 12, alignItems: 'center', marginTop: 6 },
-  whyCloseBtnText: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
 });

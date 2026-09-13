@@ -1,4 +1,11 @@
-import { movementFamily, pickExercisesForDay, orderByMuscleGroup, getSplitDays, AVAILABLE_DAYS, shouldAddConditioningFinisher, suggestedDaysPerWeek, restSecondsFor } from '../planGenerator';
+import {
+  movementFamily, pickExercisesForDay, orderByMuscleGroup, getSplitDays, AVAILABLE_DAYS,
+  shouldAddConditioningFinisher, suggestedDaysPerWeek, restSecondsFor,
+  fitDayToMinutes, isWithinSessionMinutes, AVAILABLE_DURATIONS,
+  targetExerciseCountFor,
+} from '../planGenerator';
+import { movementSubcategory } from '../movementClassify';
+import { estimateDayMinutes } from '../workoutTime';
 import type { Exercise, MuscleGroup } from '@/types';
 
 function ex(id: number, name: string, primary_muscle: MuscleGroup, equipment: Exercise['equipment']): Exercise {
@@ -12,7 +19,7 @@ describe('movementFamily', () => {
   it('takes the first word as the movement family', () => {
     expect(movementFamily('Supino com Barra')).toBe('supino');
     expect(movementFamily('Supino Inclinado com Barra')).toBe('supino');
-    expect(movementFamily('Crucifixo com Halteres')).toBe('crucifixo');
+    expect(movementFamily('Crucifixo com Halteres')).toBe('crossover');
   });
 
   // BUGFIX regression test: found by reading a real generated plan where a
@@ -25,6 +32,7 @@ describe('movementFamily', () => {
     expect(movementFamily('Gymleco Crossover Maquina (Pec Fly)')).toBe('crossover');
     expect(movementFamily('Gymleco Curl Biceps Maquina')).toBe('curl');
     expect(movementFamily('Crossover no Cabo')).toBe('crossover'); // matches the Gymleco version above
+    expect(movementFamily('Cable Crossover')).toBe('crossover');
   });
 });
 
@@ -64,9 +72,10 @@ describe('pickExercisesForDay diversifies by movement family', () => {
       ex(5, 'Supino Neutro com Halteres', 'chest', 'dumbbell'),
     ];
     const picked = pickExercisesForDay(onlyBenchVariants, ['chest'], 90, 'any', []);
-    // Should still pick a reasonable number of exercises rather than
-    // stopping early just because they all share a movement family.
-    expect(picked.length).toBeGreaterThanOrEqual(4);
+    // Same subcategory (chest_compound) is capped at 2 — do not fill the
+    // day with four bench-press angles just because nothing else exists.
+    expect(picked.length).toBeLessThanOrEqual(2);
+    expect(picked.length).toBeGreaterThan(0);
   });
 
   it('never returns duplicate exercise ids', () => {
@@ -93,14 +102,25 @@ describe('pickExercisesForDay diversifies by movement family', () => {
     expect(picked[0].name).toBe('Supino com Barra');
   });
 
-  it('prefers an exercise the person has actually used, over the equipment-priority default', () => {
+  it('does not let usage history unseat the mixed-pool primary slot', () => {
     const pool: Exercise[] = [
-      ex(1, 'Supino com Barra', 'chest', 'barbell'),   // top of the generic priority order, but never used
-      ex(2, 'Crucifixo com Halteres', 'chest', 'dumbbell'), // lower priority, but a real personal staple
+      ex(1, 'Supino com Barra', 'chest', 'barbell'),
+      ex(2, 'Crucifixo com Halteres', 'chest', 'dumbbell'),
       ex(3, 'Pullover com Halter', 'chest', 'dumbbell'),
       ex(4, 'Crossover no Cabo', 'chest', 'cable'),
     ];
-    const usageHistory = new Map([[2, 8]]); // 8 sessions of real use
+    const usageHistory = new Map([[2, 8]]);
+    const picked = pickExercisesForDay(pool, ['chest'], 90, 'any', [], usageHistory);
+    expect(picked[0].name).toBe('Supino com Barra');
+  });
+
+  it('still prefers a used exercise when the pool is a single equipment class', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino com Barra', 'chest', 'barbell'),
+      ex(2, 'Crucifixo com Halteres', 'chest', 'dumbbell'),
+      ex(3, 'Pullover com Halter', 'chest', 'dumbbell'),
+    ];
+    const usageHistory = new Map([[2, 8]]);
     const picked = pickExercisesForDay(pool, ['chest'], 90, 'any', [], usageHistory);
     expect(picked[0].name).toBe('Crucifixo com Halteres');
   });
@@ -146,6 +166,45 @@ describe('pickExercisesForDay diversifies by movement family', () => {
 // sortCandidates' prefer-the-shorter-name tie-break over legitimate anchor
 // lifts like Barbell Squat — a generated "Pernas" day came back as
 // Snatch/Clean/Kneeling Squat, none of them a sane 3x12-15 hypertrophy pick.
+describe('pickExercisesForDay caps movement subcategories', () => {
+  it('never picks two chest isolations when a compound is also available', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino com Barra', 'chest', 'barbell'),
+      ex(2, 'Crossover no Cabo', 'chest', 'cable'),
+      ex(3, 'Cable Crossover', 'chest', 'cable'),
+      ex(4, 'Crucifixo com Halteres', 'chest', 'dumbbell'),
+      ex(5, 'Gymleco Crossover Maquina (Pec Fly)', 'chest', 'gymleco'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 90, 'any', []);
+    const isolations = picked.filter(e => movementSubcategory(e.name, e.primary_muscle) === 'chest_isolation');
+    expect(isolations.length).toBeLessThanOrEqual(1);
+    expect(picked.some(e => e.name === 'Supino com Barra')).toBe(true);
+  });
+
+  it('structures a Push A day as chest compound + isolation + shoulder + triceps', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino Inclinado com Barra', 'chest', 'barbell'),
+      ex(2, 'Supino com Barra', 'chest', 'barbell'),
+      ex(3, 'Crossover no Cabo', 'chest', 'cable'),
+      ex(4, 'Crucifixo com Halteres', 'chest', 'dumbbell'),
+      ex(5, 'Press de Ombros em Pé', 'shoulders', 'barbell'),
+      ex(6, 'Elevação Lateral com Halteres', 'shoulders', 'dumbbell'),
+      ex(7, 'Extensão de Tríceps na Polia', 'triceps', 'cable'),
+      ex(8, 'Fundos de Tríceps', 'triceps', 'bodyweight'),
+    ];
+    const picked = pickExercisesForDay(
+      pool, ['chest', 'shoulders', 'triceps'], 45, 'any', [],
+      undefined, undefined, undefined, 'hypertrophy', 'intermediate', 'Push A',
+    );
+    const cats = picked.map(e => movementSubcategory(e.name, e.primary_muscle));
+    expect(cats).toContain('chest_compound');
+    expect(cats.filter(c => c === 'chest_isolation')).toHaveLength(1);
+    expect(cats.some(c => c === 'shoulder_press' || c === 'shoulder_isolation')).toBe(true);
+    expect(cats.some(c => c === 'tricep_extension' || c === 'tricep_compound')).toBe(true);
+    expect(cats.filter(c => c === 'chest_compound').length).toBeLessThanOrEqual(2);
+  });
+});
+
 describe('pickExercisesForDay excludes Olympic-lift specialty movements', () => {
   it('never picks Snatch/Clean over an ordinary compound lift, even with no usage history to break the tie', () => {
     const pool: Exercise[] = [
@@ -190,9 +249,26 @@ describe('orderByMuscleGroup', () => {
     expect(lastChest).toBeLessThan(firstShoulders);
     expect(firstShoulders).toBeLessThan(firstBiceps);
   });
+
+  it('puts a compound before isolation inside a muscle, even if the isolation is a barbell', () => {
+    const mixed: Exercise[] = [
+      ex(1, 'Crucifixo com Barra', 'chest', 'barbell'),
+      ex(2, 'Supino Maquina', 'chest', 'machine'),
+    ];
+    const ordered = orderByMuscleGroup(mixed, ['chest']);
+    expect(ordered[0].name).toBe('Supino Maquina');
+    expect(ordered[1].name).toBe('Crucifixo com Barra');
+  });
 });
 
 describe('getSplitDays', () => {
+  it('uses a frequency-friendly 5-day Upper/Lower + PPL split, not a bro split', () => {
+    const labels = getSplitDays(5).map(d => d.label);
+    expect(labels).toEqual(['Upper', 'Lower', 'Push', 'Pull', 'Pernas']);
+    const chestDays = getSplitDays(5).filter(d => d.focus.includes('chest'));
+    expect(chestDays.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('returns a day structure for every available days-per-week option', () => {
     for (const days of AVAILABLE_DAYS) {
       const split = getSplitDays(days);
@@ -263,7 +339,7 @@ describe('pickExercisesForDay with allowedEquipment (fine-grained checklist)', (
     expect(picked).toHaveLength(0);
   });
 
-  it('selecting only Gymleco still returns generic machine exercises — the seed database has none actually tagged gymleco', () => {
+  it('selecting only Gymleco still allows generic machine exercises — same guided class, not because the seed is empty', () => {
     const pool: Exercise[] = [
       ex(1, 'Supino Maquina', 'chest', 'machine'),
       ex(2, 'Supino com Barra', 'chest', 'barbell'),
@@ -271,6 +347,74 @@ describe('pickExercisesForDay with allowedEquipment (fine-grained checklist)', (
     const picked = pickExercisesForDay(pool, ['chest'], 30, 'any', [], undefined, ['gymleco']);
     expect(picked.some(p => p.equipment === 'machine')).toBe(true);
     expect(picked.some(p => p.equipment === 'barbell')).toBe(false);
+  });
+});
+
+describe('pickExercisesForDay mixed machine + free-weight slots', () => {
+  const mixedChest: Exercise[] = [
+    ex(1, 'Supino com Barra', 'chest', 'barbell'),
+    ex(2, 'Supino Inclinado com Barra', 'chest', 'barbell'),
+    ex(3, 'Crucifixo com Halteres', 'chest', 'dumbbell'),
+    ex(4, 'Supino Maquina', 'chest', 'machine'),
+    ex(5, 'Crossover no Cabo', 'chest', 'cable'),
+  ];
+
+  it('hypertrophy intermediate picks a free compound then a machine isolation, not two benches', () => {
+    const picked = pickExercisesForDay(mixedChest, ['chest'], 45, 'any', []);
+    expect(picked[0].name).toBe('Supino com Barra');
+    expect(picked[1].equipment === 'machine' || picked[1].equipment === 'cable').toBe(true);
+    expect(picked[1].name).not.toMatch(/Supino Inclinado/);
+  });
+
+  it('strength prefers a free squat over a hack squat as the primary', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Hack Squat Maquina', 'quads', 'machine'),
+      ex(2, 'Agachamento com Barra', 'quads', 'barbell'),
+      ex(3, 'Extensao de Pernas', 'quads', 'machine'),
+    ];
+    const picked = pickExercisesForDay(pool, ['quads'], 45, 'any', [], undefined, undefined, undefined, 'strength', 'intermediate');
+    expect(picked[0].name).toBe('Agachamento com Barra');
+  });
+
+  it('hypertrophy beginner may start with a machine compound', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino com Barra', 'chest', 'barbell'),
+      ex(2, 'Supino Maquina', 'chest', 'machine'),
+      ex(3, 'Crossover no Cabo', 'chest', 'cable'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 45, 'any', [], undefined, undefined, undefined, 'hypertrophy', 'beginner');
+    expect(picked[0].name).toBe('Supino Maquina');
+  });
+
+  it('free_weights never leaks machines even when the preferred pool is thinner than 2', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino com Barra', 'chest', 'barbell'),
+      ex(2, 'Supino Maquina', 'chest', 'machine'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 30, 'free_weights', []);
+    expect(picked.every(p => p.equipment !== 'machine' && p.equipment !== 'cable')).toBe(true);
+    expect(picked.map(p => p.name)).toEqual(['Supino com Barra']);
+  });
+
+  it('gymleco preference stays exclusive of barbells', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Gymleco Supino Maquina', 'chest', 'gymleco'),
+      ex(2, 'Supino com Barra', 'chest', 'barbell'),
+      ex(3, 'Crossover no Cabo', 'chest', 'cable'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 45, 'gymleco', []);
+    expect(picked.every(p => p.equipment === 'gymleco' || p.equipment === 'machine')).toBe(true);
+    expect(picked.some(p => p.equipment === 'barbell')).toBe(false);
+  });
+
+  it('a machines-only checklist stays machines-only', () => {
+    const pool: Exercise[] = [
+      ex(1, 'Supino com Barra', 'chest', 'barbell'),
+      ex(2, 'Supino Maquina', 'chest', 'machine'),
+      ex(3, 'Crossover no Cabo', 'chest', 'cable'),
+    ];
+    const picked = pickExercisesForDay(pool, ['chest'], 45, 'any', [], undefined, ['machine', 'cable']);
+    expect(picked.every(p => p.equipment === 'machine' || p.equipment === 'cable')).toBe(true);
   });
 });
 
@@ -327,7 +471,7 @@ describe('restSecondsFor', () => {
 describe('suggestedDaysPerWeek', () => {
   it('suggests more days when a broad full-body split is too short to cover every muscle group', () => {
     // 2 days/week -> Full Body split, busiest day needs 5 muscle groups;
-    // 30min/session only affords 4 exercises (the generator's own floor).
+    // 30min/session only affords 4 typical hypertrophy exercises.
     expect(suggestedDaysPerWeek(2, 30)).toBe(3); // 3 days -> Push/Pull/Legs, busiest day needs only 4
   });
 
@@ -337,7 +481,11 @@ describe('suggestedDaysPerWeek', () => {
 
   it('returns null when the chosen days/week already covers every muscle group', () => {
     expect(suggestedDaysPerWeek(3, 30)).toBeNull(); // Push/Pull/Legs already fits a 30min session
-    expect(suggestedDaysPerWeek(5, 30)).toBeNull(); // Bro split's busiest day (Pernas) already fits
+    expect(suggestedDaysPerWeek(5, 60)).toBeNull(); // 60min affords 5 exercises — Upper's 5 muscles fit
+  });
+
+  it('suggests 6 days when a 5-day Upper session is too short to cover every muscle', () => {
+    expect(suggestedDaysPerWeek(5, 30)).toBe(6);
   });
 
   it('returns null once minutes/session is long enough regardless of split breadth', () => {
@@ -368,5 +516,60 @@ describe('shouldAddConditioningFinisher', () => {
 
   it('requires both conditions — long session alone is not enough without the body-analysis signal', () => {
     expect(shouldAddConditioningFinisher(false, 90)).toBe(false);
+  });
+});
+
+describe('targetExerciseCountFor', () => {
+  it('gives 45 minutes more exercises than 30 — they are no longer the same count', () => {
+    expect(targetExerciseCountFor(45)).toBeGreaterThan(targetExerciseCountFor(30));
+  });
+
+  it('scales across the offered session lengths', () => {
+    const counts = AVAILABLE_DURATIONS.map(m => targetExerciseCountFor(m));
+    for (let i = 1; i < counts.length; i++) {
+      expect(counts[i]).toBeGreaterThanOrEqual(counts[i - 1]);
+    }
+    expect(counts[counts.length - 1]).toBeGreaterThan(counts[0]);
+  });
+});
+
+describe('fitDayToMinutes', () => {
+  const pool: Exercise[] = [
+    ex(1, 'Barbell Bench Press', 'chest', 'barbell'),
+    ex(2, 'Overhead Press', 'shoulders', 'barbell'),
+    ex(3, 'Cable Crossover', 'chest', 'cable'),
+    ex(4, 'Lateral Raise', 'shoulders', 'dumbbell'),
+    ex(5, 'Tricep Pushdown', 'triceps', 'cable'),
+    ex(6, 'Incline Dumbbell Press', 'chest', 'dumbbell'),
+    ex(7, 'Pec Deck', 'chest', 'machine'),
+    ex(8, 'Skull Crusher', 'triceps', 'ez_bar'),
+    ex(9, 'Front Raise', 'shoulders', 'dumbbell'),
+    ex(10, 'Diamond Push Up', 'triceps', 'bodyweight'),
+  ];
+
+  const durationOf = (rows: ReturnType<typeof fitDayToMinutes>) =>
+    estimateDayMinutes(rows.map(r => ({ sets: r.sets, restSeconds: r.rest })));
+
+  it('lands each offered session length within ±10% for hypertrophy', () => {
+    for (const minutes of AVAILABLE_DURATIONS) {
+      const fitted = fitDayToMinutes(pool, minutes, 'hypertrophy');
+      expect(fitted.length).toBeGreaterThan(0);
+      expect(isWithinSessionMinutes(durationOf(fitted), minutes)).toBe(true);
+    }
+  });
+
+  it('a 45-minute day is longer than a 30-minute day (they are no longer identical)', () => {
+    const short = durationOf(fitDayToMinutes(pool, 30, 'hypertrophy'));
+    const medium = durationOf(fitDayToMinutes(pool, 45, 'hypertrophy'));
+    expect(medium).toBeGreaterThan(short);
+  });
+
+  it('keeps a strength day near 30 minutes instead of overflowing to 70+', () => {
+    const fitted = fitDayToMinutes(pool, 30, 'strength');
+    expect(isWithinSessionMinutes(durationOf(fitted), 30)).toBe(true);
+  });
+
+  it('returns nothing for an empty candidate list', () => {
+    expect(fitDayToMinutes([], 45, 'hypertrophy')).toEqual([]);
   });
 });

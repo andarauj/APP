@@ -11,7 +11,9 @@ import { useRouter } from 'expo-router';
 import { Sparkles, Clock, Calendar, Dumbbell, Zap, ScanLine, AlertCircle } from 'lucide-react-native';
 import type { PlanType } from '@/types';
 import { PLAN_TYPE_PT, MUSCLE_GROUPS_PT } from '@/types';
-import { AVAILABLE_DAYS, AVAILABLE_DURATIONS, generatePlan, getSplitDays, EquipmentPreference } from '@/utils/planGenerator';
+import { AVAILABLE_DAYS, AVAILABLE_DURATIONS, generatePlan, getSplitDays, targetExerciseCountFor, EquipmentPreference } from '@/utils/planGenerator';
+import { previewDoseForSplit, usesDoseEngine } from '@/utils/trainingDose';
+import { VolumeDoseAudit } from '@/components/ui/VolumeDoseAudit';
 import { getLatestBodyMetric, getAllBodyMetrics } from '@/db/bodyMetricsDao';
 import { getSettingWithDefault } from '@/db/settingsDao';
 import { analyzeBody, getMuscleLabel } from '@/utils/bodyAnalysis';
@@ -55,13 +57,16 @@ export default function AutoPlanScreen() {
       2: 'Full Body A/B',
       3: 'Push / Pull / Pernas',
       4: 'Upper / Lower',
-      5: 'Bro Split',
+      5: 'Upper / Lower + PPL',
       6: 'PPL x2',
     };
     return splits[daysPerWeek] || 'Personalizado';
   })();
 
-  const estimatedExercises = Math.max(4, Math.min(8, Math.floor(minutesPerDay / 4 / 3)));
+  const estimatedExercises = targetExerciseCountFor(minutesPerDay);
+  const dosePreview = usesDoseEngine(planType)
+    ? previewDoseForSplit(getSplitDays(daysPerWeek), minutesPerDay, planType, 'intermediate', analysis?.focusAreas ?? [])
+    : [];
 
   const handleGenerate = async () => {
     setGenerating(true);
@@ -226,6 +231,11 @@ export default function AutoPlanScreen() {
               <Chip key={e.key} label={e.label} selected={equipmentPref === e.key} onPress={() => setEquipmentPref(e.key)} />
             ))}
           </View>
+          {equipmentPref === 'any' && (
+            <Text style={[styles.eqHint, { color: colors.textSecondary }]}>
+              Quando ha livres e maquinas, o plano usa composto livre e isolamento em maquina.
+            </Text>
+          )}
           {equipmentPref === 'gymleco' && (
             <Text style={[styles.eqHint, { color: colors.textSecondary }]}>
               Prioriza exercicios nas maquinas Gymleco do teu ginasio.
@@ -280,6 +290,9 @@ export default function AutoPlanScreen() {
               </View>
             )}
           </View>
+          {dosePreview.length > 0 && (
+            <VolumeDoseAudit rows={dosePreview} colors={colors} />
+          )}
           {analysis && analysis.focusAreas.length > 0 && (
             <View style={styles.focusAreas}>
               <Text style={[styles.focusTitle, { color: colors.textSecondary }]}>AREAS DE FOCO</Text>

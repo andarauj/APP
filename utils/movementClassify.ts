@@ -135,6 +135,12 @@ const ISOLATION_KEYWORDS = [
   'curl', 'extension', 'raise', 'fly', 'flye', 'crossover', 'cross over',
   'pushdown', 'push down', 'kickback', 'kick back', 'shrug', 'preacher',
   'concentration',
+  // Portuguese seed / Gymleco names — without these, "Elevação Lateral"
+  // and "Crucifixo" occupy a compound slot.
+  'elevacao', 'elevação', 'extensao', 'extensão',
+  'crucifixo', 'abducao', 'abdução', 'aducao', 'adução',
+  'gemeos', 'gémeos', 'crunch', 'rosca',
+  'pullover', 'pec deck', 'pecdeck',
 ];
 
 export function isCompoundMovement(name: string): boolean {
@@ -167,4 +173,233 @@ export function tallyMovementBuckets(
     if (b) counts.set(b, (counts.get(b) ?? 0) + 1);
   }
   return Array.from(counts.entries()).map(([bucket, n]) => ({ bucket, sets: n }));
+}
+
+/**
+ * Fine-grained movement slot used by plan generation — one subcategory per
+ * pattern (chest press vs chest fly), not the six NSPI balance buckets.
+ */
+export type MovementSubcategory =
+  | 'chest_compound'
+  | 'chest_isolation'
+  | 'shoulder_press'
+  | 'shoulder_isolation'
+  | 'rear_delt'
+  | 'tricep_compound'
+  | 'tricep_extension'
+  | 'back_horizontal'
+  | 'back_vertical'
+  | 'back_isolation'
+  | 'bicep_curl'
+  | 'forearm'
+  | 'quad_compound'
+  | 'quad_isolation'
+  | 'hinge_compound'
+  | 'hamstring_isolation'
+  | 'glute_compound'
+  | 'glute_isolation'
+  | 'calf_raise'
+  | 'abs'
+  | 'cardio'
+  | 'mobility'
+  | 'other';
+
+export type MovementSlot = MovementSubcategory[];
+
+/** Hard cap: at most two compounds of the same pattern in one routine. */
+export const MAX_PER_COMPOUND_SUBCATEGORY = 2;
+/** Isolation patterns stay at one pick (no two cable crossovers on Push A). */
+export const MAX_PER_ISOLATION_SUBCATEGORY = 1;
+
+const ISOLATION_SUBCATEGORIES = new Set<MovementSubcategory>([
+  'chest_isolation',
+  'shoulder_isolation',
+  'rear_delt',
+  'tricep_extension',
+  'back_isolation',
+  'bicep_curl',
+  'forearm',
+  'quad_isolation',
+  'hamstring_isolation',
+  'glute_isolation',
+  'calf_raise',
+]);
+
+export function subcategoryCap(sub: MovementSubcategory): number {
+  return ISOLATION_SUBCATEGORIES.has(sub)
+    ? MAX_PER_ISOLATION_SUBCATEGORY
+    : MAX_PER_COMPOUND_SUBCATEGORY;
+}
+
+export function muscleForSubcategory(sub: MovementSubcategory): string | null {
+  switch (sub) {
+    case 'chest_compound':
+    case 'chest_isolation':
+      return 'chest';
+    case 'shoulder_press':
+    case 'shoulder_isolation':
+    case 'rear_delt':
+      return 'shoulders';
+    case 'tricep_compound':
+    case 'tricep_extension':
+      return 'triceps';
+    case 'back_horizontal':
+    case 'back_vertical':
+    case 'back_isolation':
+      return 'back';
+    case 'bicep_curl':
+      return 'biceps';
+    case 'forearm':
+      return 'forearms';
+    case 'quad_compound':
+    case 'quad_isolation':
+      return 'quads';
+    case 'hinge_compound':
+    case 'hamstring_isolation':
+      return 'hamstrings';
+    case 'glute_compound':
+    case 'glute_isolation':
+      return 'glutes';
+    case 'calf_raise':
+      return 'calves';
+    case 'abs':
+      return 'abs';
+    default:
+      return null;
+  }
+}
+
+/**
+ * Stable movement_type for catalogue rows and generator caps.
+ * EN + PT names; muscle is the fallback when the name is unusual.
+ */
+export function movementSubcategory(
+  name: string,
+  primaryMuscle = '',
+  exerciseType = 'strength',
+): MovementSubcategory {
+  const n = norm(name);
+  const m = norm(primaryMuscle);
+  if (exerciseType === 'cardio' || m === 'cardio') return 'cardio';
+  if (exerciseType === 'mobility' || m === 'mobility') return 'mobility';
+
+  if (has(n, 'face pull', 'rear delt', 'reverse fly', 'reverse pec', 'crucifixo inverso')) {
+    return 'rear_delt';
+  }
+
+  if (has(n, 'crossover', 'cross over', 'fly', 'flye', 'crucifixo', 'pec deck', 'pecdeck', 'pullover')) {
+    if (has(n, 'inverso', 'reverse')) return 'rear_delt';
+    if (m === 'back') return 'back_isolation';
+    return 'chest_isolation';
+  }
+
+  if (has(
+    n,
+    'overhead press', 'shoulder press', 'military press', 'strict press',
+    'push press', 'z press', 'arnold press', 'desenvolvimento',
+    'press de ombro', 'press militar',
+  )) {
+    return 'shoulder_press';
+  }
+  if (
+    has(n, 'lateral raise', 'side raise', 'front raise', 'elevacao lateral', 'elevação lateral', 'elevacao frontal', 'elevação frontal')
+    && !has(n, 'gemeo', 'gémeo', 'calf', 'panturrilha')
+  ) {
+    return 'shoulder_isolation';
+  }
+
+  if (has(
+    n,
+    'pushdown', 'push down', 'kickback', 'skull',
+    'overhead extension', 'extensao de tricep', 'extensão de tríceps',
+    'extensao de triceps', 'triceps no cabo', 'tríceps no cabo',
+  )) {
+    return 'tricep_extension';
+  }
+
+  if (has(
+    n,
+    'pulldown', 'pull down', 'pull-up', 'pullup', 'pull up',
+    'chin up', 'chinup', 'chin-up', 'lat pull', 'puxada', 'barra fixa',
+  )) {
+    return 'back_vertical';
+  }
+  if (has(n, 'row') && !has(n, 'upright')) return 'back_horizontal';
+  if (has(n, 'remada')) return 'back_horizontal';
+
+  if (has(n, 'leg curl', 'lying curl', 'nordic', 'curl de perna', 'curl nordico', 'curl nórdico')) {
+    return 'hamstring_isolation';
+  }
+  if (has(n, 'curl') || has(n, 'rosca')) return 'bicep_curl';
+  if (m === 'forearms' || has(n, 'wrist', 'forearm', 'antebraco', 'antebraço')) return 'forearm';
+
+  if (has(n, 'leg extension', 'extensao de perna', 'extensão de perna', 'extensao de pernas', 'extensão de pernas')) {
+    return 'quad_isolation';
+  }
+  if (has(n, 'calf', 'gemeo', 'gémeo', 'panturrilha')) return 'calf_raise';
+  if (m === 'abs' || has(n, 'crunch', 'plank', 'prancha', 'sit up', 'sit-up', 'abdominal')) return 'abs';
+
+  if (has(n, 'deadlift', 'dead lift', 'levantamento terra', 'good morning', 'hip thrust', 'glute bridge', 'ponte de glute', 'ponte de glúte')) {
+    if (m === 'glutes' || has(n, 'bridge', 'thrust', 'ponte')) return 'glute_compound';
+    return 'hinge_compound';
+  }
+  if (has(n, 'squat', 'agachamento', 'leg press', 'lunge', 'afunda', 'hack ')) return 'quad_compound';
+
+  const compound = isCompoundMovement(name);
+  if (m === 'chest') return compound ? 'chest_compound' : 'chest_isolation';
+  if (m === 'shoulders') return compound ? 'shoulder_press' : 'shoulder_isolation';
+  if (m === 'triceps') return compound ? 'tricep_compound' : 'tricep_extension';
+  if (m === 'back' || m === 'lats' || m === 'traps') {
+    if (!compound) return 'back_isolation';
+    return has(n, 'pull', 'puxada', 'barra') ? 'back_vertical' : 'back_horizontal';
+  }
+  if (m === 'biceps') return 'bicep_curl';
+  if (m === 'quads') return compound ? 'quad_compound' : 'quad_isolation';
+  if (m === 'hamstrings') return compound ? 'hinge_compound' : 'hamstring_isolation';
+  if (m === 'glutes') return compound ? 'glute_compound' : 'glute_isolation';
+  if (m === 'calves') return 'calf_raise';
+  if (m === 'forearms') return 'forearm';
+  return 'other';
+}
+
+const PUSH_SLOTS: MovementSlot[] = [
+  ['chest_compound'],
+  ['chest_isolation'],
+  ['shoulder_press', 'shoulder_isolation'],
+  ['tricep_extension', 'tricep_compound'],
+];
+
+const PULL_SLOTS: MovementSlot[] = [
+  ['back_vertical'],
+  ['back_horizontal'],
+  ['bicep_curl'],
+];
+
+const LEG_SLOTS: MovementSlot[] = [
+  ['quad_compound'],
+  ['hinge_compound', 'glute_compound'],
+  ['quad_isolation', 'hamstring_isolation', 'glute_isolation'],
+  ['calf_raise'],
+];
+
+/**
+ * Logical slot order for a split day. Null for a single-muscle / ad-hoc
+ * focus so existing ranking (usage, mixed equipment) stays in charge.
+ */
+export function slotsForDay(focus: string[], dayLabel?: string): MovementSlot[] | null {
+  const label = (dayLabel ?? '').toLowerCase();
+  const hasMuscle = (m: string) => focus.includes(m);
+  if (label.includes('push') || (hasMuscle('chest') && hasMuscle('shoulders') && hasMuscle('triceps') && !hasMuscle('back'))) {
+    return PUSH_SLOTS;
+  }
+  if (label.includes('pull') || (hasMuscle('back') && hasMuscle('biceps') && !hasMuscle('chest') && !hasMuscle('quads'))) {
+    return PULL_SLOTS;
+  }
+  if (
+    label.includes('perna') || label.includes('leg') || label.includes('lower')
+    || (hasMuscle('quads') && hasMuscle('hamstrings') && !hasMuscle('chest') && !hasMuscle('back'))
+  ) {
+    return LEG_SLOTS;
+  }
+  return null;
 }
