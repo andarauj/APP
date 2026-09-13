@@ -198,6 +198,7 @@ describe('fresh install (no pre-existing schema)', () => {
     // still proves the statement is valid SQL and the table is queryable.
     expect(columnsOf(mockRawDb, 'exercises')).toEqual(expect.arrayContaining([
       'user_notes', 'media_uri', 'alt_names', 'image_url', 'api_id', 'api_source', 'video_url', 'video_cached_path',
+      'gif_url', 'thumbnail_url',
     ]));
     expect(columnsOf(mockRawDb, 'plan_exercises')).toEqual(expect.arrayContaining(['day_label', 'day_index', 'tempo']));
     expect(columnsOf(mockRawDb, 'workout_plans')).toEqual(expect.arrayContaining(['is_auto_generated']));

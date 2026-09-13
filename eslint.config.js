@@ -14,6 +14,7 @@ module.exports = [
       'android/**',
       'ios/**',
       'assets/data/**',
+      'scripts/**/*.cjs',
     ],
   },
 ];

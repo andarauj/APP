@@ -18,6 +18,10 @@ function mapExercise(row: any): Exercise {
     user_notes: row.user_notes || '',
     media_uri: row.media_uri || '',
     alt_names: row.alt_names || '',
+    video_url: row.video_url || '',
+    video_cached_path: row.video_cached_path || '',
+    gif_url: row.gif_url || '',
+    thumbnail_url: row.thumbnail_url || '',
   };
 }
 

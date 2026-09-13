@@ -87,9 +87,9 @@ export async function importExerciseDb(
     const stmt = await conn.prepareAsync(
       `INSERT OR IGNORE INTO exercises
          (name, primary_muscle, secondary_muscles, equipment, type,
-          instructions, image_url, api_id, api_source, is_custom)
+          instructions, image_url, thumbnail_url, api_id, api_source, is_custom)
        VALUES ($name, $primary, $secondary, $equipment, $type,
-               $instructions, $image, $apiId, $source, 0)`
+               $instructions, $image, $thumb, $apiId, $source, 0)`
     );
     try {
       let processed = 0;
@@ -102,6 +102,7 @@ export async function importExerciseDb(
           $type: ex.type,
           $instructions: ex.instructions,
           $image: ex.image_url,
+          $thumb: ex.image_url,
           $apiId: ex.api_id,
           $source: EXERCISE_DB_SOURCE,
         });

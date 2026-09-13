@@ -2,6 +2,20 @@ import { getDatabase } from './database';
 import type { WorkoutSession, WorkoutSet, SetType, PersonalRecord } from '@/types';
 import { calculate1RM } from '@/utils/calculators';
 
+/**
+ * SQLite expression: effective kg for a set. Bodyweight @ 0 kg uses the
+ * athlete's latest scale weight so calisthenics contribute to tonnage.
+ * Kept as a shared fragment so finishSessionAsIs / weekly volume / history
+ * stay consistent with the live workout screen.
+ */
+const EFFECTIVE_LOAD_SQL = `CASE
+  WHEN ws.weight > 0 THEN ws.weight
+  WHEN e.equipment = 'bodyweight' THEN COALESCE(
+    (SELECT bm.weight FROM body_metrics bm WHERE bm.weight IS NOT NULL ORDER BY bm.date DESC LIMIT 1),
+    0
+  )
+  ELSE 0
+END`;
 export async function createSession(name: string, planId: number | null, dayIndex: number | null = null): Promise<number> {
   const db = await getDatabase();
   const now = Math.floor(Date.now() / 1000);
@@ -204,44 +218,55 @@ export async function getSetsForExerciseHistory(exerciseId: number, limit = 50):
 
 export async function getPersonalRecords(): Promise<PersonalRecord[]> {
   const db = await getDatabase();
+  // date_achieved must come from the set that actually holds the PR
+  // (max weight, then max reps), not MAX(completed_at) across the group —
+  // a later lighter set would otherwise steal the date (and callers that
+  // mistakenly *1000 that value paint year ~58668 on top).
   const rows = await db.getAllAsync(
-    `SELECT ws.exercise_id, e.name as exercise_name,
+    `SELECT ws.exercise_id, e.name as exercise_name, e.equipment,
       MAX(ws.weight) as max_weight,
       MAX(ws.reps) as max_reps,
       MAX(ws.weight * ws.reps) as max_volume,
-      MAX(ws.completed_at) as date_achieved
+      (
+        SELECT ws2.completed_at FROM workout_sets ws2
+        WHERE ws2.exercise_id = ws.exercise_id AND ws2.set_type != 'warmup'
+        ORDER BY ws2.weight DESC, ws2.reps DESC, ws2.completed_at DESC
+        LIMIT 1
+      ) as date_achieved
      FROM workout_sets ws
      JOIN exercises e ON ws.exercise_id = e.id
      WHERE ws.set_type != 'warmup'
      GROUP BY ws.exercise_id
-     -- BUGFIX (found by reading a real training report): bodyweight/cardio
-     -- exercises always logged at 0kg were showing up as "personal
-     -- records" with a 0kg estimated 1RM — technically correct math, but
-     -- meaningless noise diluting the exercises that actually have a real
-     -- strength record to show. A weight record only means something once
-     -- there's been actual external load.
-     HAVING MAX(ws.weight) > 0
-     ORDER BY max_weight DESC`
+     HAVING MAX(ws.weight) > 0 OR e.equipment = 'bodyweight'
+     ORDER BY max_weight DESC, max_reps DESC`
   );
-  return rows.map((r: any) => ({
-    exercise_id: r.exercise_id,
-    exercise_name: r.exercise_name,
-    max_weight: r.max_weight || 0,
-    max_reps: r.max_reps || 0,
-    max_volume: r.max_volume || 0,
-    estimated_1rm: calculate1RM(r.max_weight || 0, r.max_reps || 1),
-    date_achieved: r.date_achieved,
-  }));
+  return rows.map((r: any) => {
+    const isBodyweight = r.equipment === 'bodyweight' && !(r.max_weight > 0);
+    return {
+      exercise_id: r.exercise_id,
+      exercise_name: r.exercise_name,
+      max_weight: r.max_weight || 0,
+      max_reps: r.max_reps || 0,
+      max_volume: r.max_volume || 0,
+      estimated_1rm: isBodyweight ? 0 : calculate1RM(r.max_weight || 0, r.max_reps || 1),
+      date_achieved: r.date_achieved,
+      is_bodyweight: isBodyweight ? 1 : 0,
+    };
+  });
 }
 
 export async function getExerciseProgressChart(exerciseId: number): Promise<{ date: number; weight: number; volume: number; reps: number }[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync(
-    `SELECT MAX(weight) as weight, SUM(weight * reps) as volume, MAX(reps) as reps,
-      completed_at as date
-     FROM workout_sets WHERE exercise_id = ?
-     GROUP BY date(completed_at, 'unixepoch')
-     ORDER BY completed_at ASC LIMIT 60`,
+    `SELECT MAX(ws.weight) as weight,
+            SUM(ws.reps * (${EFFECTIVE_LOAD_SQL})) as volume,
+            MAX(ws.reps) as reps,
+            ws.completed_at as date
+     FROM workout_sets ws
+     JOIN exercises e ON ws.exercise_id = e.id
+     WHERE ws.exercise_id = ?
+     GROUP BY date(ws.completed_at, 'unixepoch')
+     ORDER BY ws.completed_at ASC LIMIT 60`,
     [exerciseId]
   );
   return rows as any[];
@@ -366,7 +391,11 @@ export async function getUnfinishedSessionWithProgress(): Promise<{ session: Wor
 export async function finishSessionAsIs(sessionId: number): Promise<void> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ sets: number; volume: number }>(
-    "SELECT COUNT(*) as sets, COALESCE(SUM(reps * weight), 0) as volume FROM workout_sets WHERE session_id = ? AND set_type != 'warmup'",
+    `SELECT COUNT(*) as sets,
+            COALESCE(SUM(ws.reps * (${EFFECTIVE_LOAD_SQL})), 0) as volume
+     FROM workout_sets ws
+     JOIN exercises e ON ws.exercise_id = e.id
+     WHERE ws.session_id = ? AND ws.set_type != 'warmup'`,
     [sessionId]
   );
   await updateSession({
@@ -398,7 +427,7 @@ export async function getWeeklyVolumeByMuscle(days = 7): Promise<{ muscle: strin
   const rows = await db.getAllAsync<{ muscle: string; sets: number; volume: number }>(
     `SELECT e.primary_muscle AS muscle,
             COUNT(*) AS sets,
-            COALESCE(SUM(ws.reps * ws.weight), 0) AS volume
+            COALESCE(SUM(ws.reps * (${EFFECTIVE_LOAD_SQL})), 0) AS volume
      FROM workout_sets ws
      JOIN exercises e ON ws.exercise_id = e.id
      WHERE ws.completed_at >= ? AND ws.set_type != 'warmup'
@@ -413,6 +442,9 @@ export interface ProgressionSuggestion {
   shouldProgress: boolean;
   suggestedWeight: number;
   reason: string;
+  /** For bodyweight: suggested target reps on the next session. */
+  suggestedReps?: number;
+  isBodyweight?: boolean;
 }
 
 /**
@@ -448,8 +480,29 @@ export async function getProgressionSuggestion(
 
   const weight = Math.max(...sets.map(s => s.weight));
   const allHitTop = sets.every(s => s.reps >= topRep);
-  if (!allHitTop || weight <= 0) {
-    return { shouldProgress: false, suggestedWeight: weight, reason: '' };
+
+  // Bodyweight / unloaded: progress by reps, not kg.
+  if (weight <= 0) {
+    if (!allHitTop) {
+      return {
+        shouldProgress: false,
+        suggestedWeight: 0,
+        reason: '',
+        suggestedReps: topRep,
+        isBodyweight: true,
+      };
+    }
+    return {
+      shouldProgress: true,
+      suggestedWeight: 0,
+      suggestedReps: topRep + 2,
+      isBodyweight: true,
+      reason: `Fizeste ${topRep}+ reps em todas as séries — tenta ${topRep + 2} na próxima`,
+    };
+  }
+
+  if (!allHitTop) {
+    return { shouldProgress: false, suggestedWeight: weight, reason: '', isBodyweight: false };
   }
 
   const increment = weight >= 100 ? 5 : weight >= 40 ? 2.5 : weight >= 20 ? 2 : 1;
@@ -457,6 +510,7 @@ export async function getProgressionSuggestion(
     shouldProgress: true,
     suggestedWeight: weight + increment,
     reason: `Fizeste ${topRep}+ reps em todas as series com ${weight}kg`,
+    isBodyweight: false,
   };
 }
 
@@ -575,11 +629,15 @@ export async function getTrainingTips(): Promise<TrainingTip[]> {
   try {
     // 2) This week's volume vs the previous week.
     const thisWeek = await db.getFirstAsync<{ v: number }>(
-      `SELECT COALESCE(SUM(reps*weight),0) as v FROM workout_sets WHERE completed_at >= ? AND set_type != 'warmup'`,
+      `SELECT COALESCE(SUM(ws.reps * (${EFFECTIVE_LOAD_SQL})),0) as v
+       FROM workout_sets ws JOIN exercises e ON ws.exercise_id = e.id
+       WHERE ws.completed_at >= ? AND ws.set_type != 'warmup'`,
       [now - 7 * 86400]
     );
     const lastWeek = await db.getFirstAsync<{ v: number }>(
-      `SELECT COALESCE(SUM(reps*weight),0) as v FROM workout_sets WHERE completed_at >= ? AND completed_at < ? AND set_type != 'warmup'`,
+      `SELECT COALESCE(SUM(ws.reps * (${EFFECTIVE_LOAD_SQL})),0) as v
+       FROM workout_sets ws JOIN exercises e ON ws.exercise_id = e.id
+       WHERE ws.completed_at >= ? AND ws.completed_at < ? AND ws.set_type != 'warmup'`,
       [now - 14 * 86400, now - 7 * 86400]
     );
     const tv = thisWeek?.v || 0;
@@ -676,17 +734,20 @@ export async function getProgressIndexData(): Promise<{
 
   const [thisWeekRow, historyRows, muscleSets, prRow] = await Promise.all([
     db.getFirstAsync<{ sessions: number; volume: number }>(
-      `SELECT COUNT(DISTINCT session_id) as sessions, COALESCE(SUM(reps * weight), 0) as volume
-       FROM workout_sets WHERE completed_at >= ? AND set_type != 'warmup'`,
+      `SELECT COUNT(DISTINCT ws.session_id) as sessions,
+              COALESCE(SUM(ws.reps * (${EFFECTIVE_LOAD_SQL})), 0) as volume
+       FROM workout_sets ws JOIN exercises e ON ws.exercise_id = e.id
+       WHERE ws.completed_at >= ? AND ws.set_type != 'warmup'`,
       [thisWeekStart]
     ),
     // One row per the 4 prior weeks (excluding the current one), used to
     // compute the person's own recent-average baseline.
     db.getAllAsync<{ sessions: number; volume: number }>(
-      `SELECT COUNT(DISTINCT session_id) as sessions, COALESCE(SUM(reps * weight), 0) as volume
-       FROM workout_sets
-       WHERE completed_at >= ? AND completed_at < ? AND set_type != 'warmup'
-       GROUP BY CAST((? - completed_at) / ? AS INTEGER)`,
+      `SELECT COUNT(DISTINCT ws.session_id) as sessions,
+              COALESCE(SUM(ws.reps * (${EFFECTIVE_LOAD_SQL})), 0) as volume
+       FROM workout_sets ws JOIN exercises e ON ws.exercise_id = e.id
+       WHERE ws.completed_at >= ? AND ws.completed_at < ? AND ws.set_type != 'warmup'
+       GROUP BY CAST((? - ws.completed_at) / ? AS INTEGER)`,
       [historyStart, thisWeekStart, thisWeekStart, WEEK]
     ),
     db.getAllAsync<{ muscle: string; sets: number }>(
@@ -1098,7 +1159,7 @@ export async function getWeeklyVolumeHistory(weeksBack = 12): Promise<
     const rows = await db.getAllAsync<{ primary_muscle: string; volume: number; sets: number }>(
       `SELECT 
          e.primary_muscle,
-         SUM(ws.weight * ws.reps) as volume,
+         SUM(ws.reps * (${EFFECTIVE_LOAD_SQL})) as volume,
          COUNT(*) as sets
        FROM workout_sets ws
        JOIN exercises e ON ws.exercise_id = e.id

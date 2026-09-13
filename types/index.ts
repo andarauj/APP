@@ -59,6 +59,8 @@ export interface Exercise {
   alt_names?: string; // nomes alternativos para pesquisa
   video_url?: string; // URL de vídeo do ExerciseDB ou gerado
   video_cached_path?: string; // caminho local de vídeo em cache
+  gif_url?: string;
+  thumbnail_url?: string;
 }
 
 export interface WorkoutPlan {
@@ -149,6 +151,8 @@ export interface PersonalRecord {
   max_volume: number;
   estimated_1rm: number;
   date_achieved: number;
+  /** 1 when the PR is a bodyweight/reps record (no meaningful external load). */
+  is_bodyweight?: number;
 }
 
 export const MUSCLE_GROUPS_PT: Record<MuscleGroup, string> = {
@@ -177,7 +181,7 @@ export const EQUIPMENT_PT: Record<Equipment, string> = {
   cable: 'Cabo',
   bodyweight: 'Peso Corporal',
   kettlebell: 'Kettlebell',
-  band: 'Elastico',
+  band: 'Elástico',
   plate: 'Disco',
   ez_bar: 'Barra EZ',
   smith: 'Smith',

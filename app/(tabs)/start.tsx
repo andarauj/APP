@@ -8,7 +8,7 @@ import { usePlansManager } from '@/hooks/usePlansManager';
 import { getAllPlans, getPlanDays, filterUserSelectablePlans } from '@/db/planDao';
 import { getLatestAdaptivePlanAny, deleteAdaptivePlanData, type AdaptivePlanRow } from '@/db/adaptiveDao';
 import { getWeeklyPlanner, setPlannerDay, clearPlannerForPlan, type WeeklyPlanner, type PlannerEntry } from '@/db/plannerDao';
-import { getUnfinishedSessionWithProgress, discardSession, finishSessionAsIs, getAllSessions } from '@/db/workoutDao';
+import { getUnfinishedSessionWithProgress, discardSession, finishSessionAsIs, getAllSessions, getSessionsForDate } from '@/db/workoutDao';
 import type { WorkoutPlan } from '@/types';
 import { PLAN_TYPE_PT } from '@/types';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -18,8 +18,12 @@ import { PHASE_LABEL_PT, PHASE_COLOR, PHASE_RPE_PT } from '@/utils/adaptivePlan'
 import { getRollingScheduleForPlan, pastWeekdaysWithoutTracking, isWeekdayPast, type RollingScheduleEntry } from '@/utils/adaptiveService';
 import { PlanGroupCard } from '@/components/ui/PlanGroupCard';
 import { PlanVersionModal } from '@/components/ui/PlanVersionModal';
+import { AdaptivePlanCard } from '@/components/ui/AdaptivePlanCard';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { shouldShowPlansEmpty } from '@/utils/plansUi';
 import { formatDateTime } from '@/utils/format';
+import { greetingForHour } from '@/utils/todayWorkoutStatus';
+import { warmOfflineExerciseMedia } from '@/utils/resolveExerciseMedia';
 
 /** A session left open longer than this is treated as "de ontem" (stale) —
  *  the recovery prompt's copy and default framing change accordingly (see
@@ -86,6 +90,7 @@ export default function StartScreen() {
   // onboarding) briefly shows the planner as if no plan existed at all, before
   // the async loads below resolve, which reads as "nothing happened".
   const [plannerLoaded, setPlannerLoaded] = useState(false);
+  const [todayCompletedSession, setTodayCompletedSession] = useState<{ name: string; total_sets: number; total_volume: number } | null>(null);
 
   const loadStart = useCallback(async () => {
     // Session-resilience recovery: a workout can be left open by an app
@@ -150,8 +155,36 @@ export default function StartScreen() {
       setPlanNames(names);
       setPlanDayLabels(dayLabels);
       setPlanDayExerciseCounts(dayExerciseCounts);
+
+      // Best-effort prefetch of this week's exercise stills for offline demos.
+      try {
+        const { getPlanExercisesWithDetails } = await import('@/db/planDao');
+        const media: { name: string; url: string; key?: string }[] = [];
+        for (const planId of planIds.slice(0, 3)) {
+          const exs = await getPlanExercisesWithDetails(planId);
+          for (const ex of exs as any[]) {
+            const url = ex.thumbnail_url || ex.image_url;
+            if (url) media.push({ name: ex.exercise_name || '', url, key: ex.api_id || String(ex.exercise_id) });
+          }
+        }
+        if (media.length) warmOfflineExerciseMedia(media).catch(() => {});
+      } catch { /* offline / media optional */ }
+
+      // Any finished session today → Hoje can show the "concluído" state.
+      try {
+        const now = new Date();
+        const todays = await getSessionsForDate(now.getFullYear(), now.getMonth(), now.getDate());
+        const finished = todays.filter(s => s.ended_at != null);
+        const latest = finished.sort((a, b) => b.started_at - a.started_at)[0] || null;
+        setTodayCompletedSession(latest
+          ? { name: latest.name, total_sets: latest.total_sets, total_volume: latest.total_volume }
+          : null);
+      } catch {
+        setTodayCompletedSession(null);
+      }
     } catch {
       setPlans([]); setPlanner({}); setPlanNames({}); setPlanDayLabels({}); setPlanDayExerciseCounts({});
+      setTodayCompletedSession(null);
     } finally {
       setPlannerLoaded(true);
     }
@@ -413,13 +446,13 @@ export default function StartScreen() {
         <Text style={[styles.title, { color: colors.text }]}>Treino</Text>
       </View>
 
-      {/* Top tabs: Explorar · Plano · Instantâneo · Meus Planos */}
+      {/* Top tabs: Explorar · Hoje · Instantâneo · Planos */}
       <View style={[styles.topTabs, { borderBottomColor: colors.border }]}>
         {([
           ['explorar', 'Explorar'],
-          ['plano', 'Plano'],
+          ['plano', 'Hoje'],
           ['instantaneo', 'Instantâneo'],
-          ['planos', 'Meus Planos'],
+          ['planos', 'Planos'],
         ] as const).map(([key, label]) => (
           <TouchableOpacity
             key={key}
@@ -432,27 +465,6 @@ export default function StartScreen() {
           </TouchableOpacity>
         ))}
       </View>
-
-      {/* Phase badge — NSPI_ENGINE.md §7: cor da fase + ‹ Ciclo N · Fase M ›.
-          Gated on adaptiveLoaded too (not just adaptiveStatus truthy) — this
-          comes from a separate hook than the planner load below, and without
-          waiting for both, the hero card/planner could render a beat before
-          this badge, or the "exercícios · RPE" line on the hero, making an
-          already-correct state look broken for that one frame. */}
-      {activeTab === 'plano' && adaptiveLoaded && adaptiveStatus && (
-        <TouchableOpacity
-          style={[styles.phaseBadgeRow, { borderBottomColor: colors.border }]}
-          onPress={() => router.push('/adaptive/recap')}
-          activeOpacity={0.75}
-        >
-          <View style={[styles.phaseDot, { backgroundColor: PHASE_COLOR[adaptiveStatus.phase] }]} />
-          <Text style={[styles.phaseBadgeText, { color: colors.text }]}>
-            Ciclo {adaptiveStatus.cycleIndex} · {PHASE_LABEL_PT[adaptiveStatus.phase]}
-            {adaptiveStatus.isBridge ? ' (consolidação)' : ''}
-          </Text>
-          <ChevronRight size={16} color={colors.textSecondary} />
-        </TouchableOpacity>
-      )}
 
       <ScrollView
         contentContainerStyle={styles.content}
@@ -498,106 +510,170 @@ export default function StartScreen() {
         )}
         {activeTab === 'plano' && plannerLoaded && adaptiveLoaded && !(!adaptiveStatus && plans.length === 0) && (
           <>
-            {/* Sessão em Curso — a workout can be left open by an app kill,
-                a dead battery, a call, or just closing the app mid-set.
-                Takes over the primary action slot entirely (there's only
-                ever one active session; starting a second one doesn't make
-                sense) until it's resumed, finished, or discarded. */}
+            {/* FIRST VIEWPORT — single job: today's session.
+                Adaptive cycle is a quiet subtitle, not a second chrome bar.
+                Weekly grid lives below so it never competes with the CTA. */}
+            <Text style={[styles.hojeEyebrow, { color: colors.textSecondary }]}>
+              {greetingForHour(new Date().getHours())}
+            </Text>
+            {adaptiveLoaded && adaptiveStatus ? (
+              <TouchableOpacity
+                onPress={() => router.push('/adaptive/recap')}
+                style={styles.hojeCycleRow}
+                accessibilityRole="button"
+                accessibilityLabel={`Ciclo ${adaptiveStatus.cycleIndex}, ${PHASE_LABEL_PT[adaptiveStatus.phase]}`}
+              >
+                <View style={[styles.phaseDot, { backgroundColor: PHASE_COLOR[adaptiveStatus.phase] }]} />
+                <Text style={[styles.hojeCycleText, { color: colors.textSecondary }]}>
+                  Ciclo {adaptiveStatus.cycleIndex} · {PHASE_LABEL_PT[adaptiveStatus.phase]}
+                  {adaptiveStatus.isBridge ? ' (consolidação)' : ''}
+                </Text>
+                <ChevronRight size={14} color={colors.textTertiary} />
+              </TouchableOpacity>
+            ) : null}
+
             {unfinished && (
               <TouchableOpacity
-                style={[styles.todayCard, { backgroundColor: unfinished.isStale ? colors.errorContainer : colors.accentContainer }]}
+                style={[styles.hojeHero, { backgroundColor: unfinished.isStale ? colors.errorContainer : colors.accentContainer }]}
                 onPress={openUnfinishedDialog}
                 activeOpacity={0.85}
                 accessibilityRole="button"
-                accessibilityLabel={`Sessão em curso: ${unfinished.name}, ${unfinished.completedSets} séries registadas, toca para continuar, concluir ou descartar`}
+                accessibilityLabel={`Sessão em curso: ${unfinished.name}, ${unfinished.completedSets} séries registadas`}
               >
-                <View style={[styles.quickIcon, { backgroundColor: colors.surface }]}>
-                  <AlertCircle size={28} color={unfinished.isStale ? colors.error : colors.accent} />
+                <View style={[styles.hojeHeroIcon, { backgroundColor: colors.surface }]}>
+                  <AlertCircle size={26} color={unfinished.isStale ? colors.error : colors.accent} />
                 </View>
-                <View style={styles.quickInfo}>
-                  <Text style={[styles.quickTitle, { color: colors.text }]}>
-                    {unfinished.isStale ? 'Treino Pendente de Ontem' : 'Sessão em Curso'}
-                  </Text>
-                  <Text style={[styles.quickDesc, { color: colors.textSecondary }]} numberOfLines={1}>
-                    {unfinished.name} · {unfinished.completedSets} série{unfinished.completedSets === 1 ? '' : 's'}
-                  </Text>
-                  <Text style={[styles.quickDesc, { color: colors.textSecondary }]} numberOfLines={1}>
-                    Iniciado às {formatDateTime(unfinished.started_at)}
-                  </Text>
+                <Text style={[styles.hojeHeroTitle, { color: colors.text }]}>
+                  {unfinished.isStale ? 'Treino pendente' : 'Sessão em curso'}
+                </Text>
+                <Text style={[styles.hojeHeroSub, { color: colors.textSecondary }]}>
+                  {unfinished.name}
+                </Text>
+                <Text style={[styles.hojeHeroMeta, { color: colors.textTertiary }]}>
+                  {unfinished.completedSets} série{unfinished.completedSets === 1 ? '' : 's'} · {formatDateTime(unfinished.started_at)}
+                </Text>
+                <View style={[styles.hojeCta, { backgroundColor: unfinished.isStale ? colors.error : colors.accent }]}>
+                  <Play size={16} color={colors.onAccent} fill={colors.onAccent} />
+                  <Text style={[styles.hojeCtaText, { color: colors.onAccent }]}>Continuar treino</Text>
                 </View>
               </TouchableOpacity>
             )}
 
-            {/* Ação Principal — sempre uma e só uma: o treino de hoje (se
-                estiver agendado) ou o aviso de descanso com o próximo
-                treino. Vem primeiro porque é a única coisa que a pessoa
-                precisa de decidir agora. Escondida enquanto existir uma
-                sessão em curso — iniciar outro treino não faz sentido
-                antes de resolver o que já está aberto. */}
-            {!unfinished && (todayEntry ? (() => {
-              const todayDayName = planDayLabels[`${todayEntry.planId}:${todayEntry.dayIndex}`] || planNames[todayEntry.planId] || 'Treino';
-              return (
-              <TouchableOpacity
-                style={[styles.todayCard, { backgroundColor: todayIsBacklog ? colors.error : colors.secondary }]}
-                onPress={() => startPlannerDay(todayEntry)}
-                activeOpacity={0.85}
-                accessibilityRole="button"
-                accessibilityLabel={`${todayIsBacklog ? `Recuperar ${todayDayName}, treino em atraso` : `Iniciar treino de hoje: ${todayDayName}`}`}
+            {!unfinished && todayCompletedSession ? (
+              <View
+                style={[styles.hojeHero, { backgroundColor: colors.secondaryContainer }]}
+                accessibilityLabel={`Treino concluído: ${todayCompletedSession.name}`}
               >
-                {/* WCAG AA: this card's background flips between error and
-                    secondary — the icon/text tokens must flip with it.
-                    onError happens to be white in both themes, onSecondary
-                    is the dark tone fixed for exactly this pairing. */}
-                <View style={styles.quickIcon}>
-                  {todayIsBacklog
-                    ? <AlertCircle size={28} color={colors.onError} />
-                    : <Play size={28} color={colors.onSecondary} />}
+                <View style={[styles.hojeHeroIcon, { backgroundColor: colors.surface }]}>
+                  <CheckIcon size={26} color={colors.secondary} />
                 </View>
-                <View style={styles.quickInfo}>
-                  {/* CTA is actionable, not just descriptive, when there's a
-                      backlog — "Recuperar X" tells you what tapping does,
-                      not just that something's wrong. */}
-                  <Text style={[styles.quickTitle, { color: todayIsBacklog ? colors.onError : colors.onSecondary }]}>
-                    {todayIsBacklog ? `Recuperar ${todayDayName}` : 'Iniciar Treino de Hoje'}
+                <Text style={[styles.hojeHeroTitle, { color: colors.text }]}>Treino concluído</Text>
+                <Text style={[styles.hojeHeroSub, { color: colors.textSecondary }]}>
+                  {todayCompletedSession.name}
+                </Text>
+                <Text style={[styles.hojeHeroMeta, { color: colors.textTertiary }]}>
+                  {todayCompletedSession.total_sets} série{todayCompletedSession.total_sets === 1 ? '' : 's'}
+                  {todayCompletedSession.total_volume > 0
+                    ? ` · ${Math.round(todayCompletedSession.total_volume)} kg volume`
+                    : ''}
+                </Text>
+                <TouchableOpacity
+                  style={[styles.hojeCta, { backgroundColor: colors.primary }]}
+                  onPress={() => router.push({ pathname: '/workout/active', params: { planId: 0, planName: 'Treino Livre' } })}
+                  accessibilityRole="button"
+                  accessibilityLabel="Começar treino livre adicional"
+                >
+                  <Zap size={16} color={colors.onPrimary} />
+                  <Text style={[styles.hojeCtaText, { color: colors.onPrimary }]}>Treino livre</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+            {!unfinished && !todayCompletedSession && (todayEntry ? (() => {
+              const todayDayName = planDayLabels[`${todayEntry.planId}:${todayEntry.dayIndex}`] || planNames[todayEntry.planId] || 'Treino';
+              const exCount = planDayExerciseCounts[`${todayEntry.planId}:${todayEntry.dayIndex}`];
+              const isAdaptiveDay = !!(adaptiveStatus && todayEntry.planId === adaptiveStatus.planId);
+              return (
+                <TouchableOpacity
+                  style={[styles.hojeHero, {
+                    backgroundColor: todayIsBacklog ? colors.errorContainer : colors.primary,
+                  }]}
+                  onPress={() => startPlannerDay(todayEntry)}
+                  activeOpacity={0.88}
+                  accessibilityRole="button"
+                  accessibilityLabel={todayIsBacklog ? `Recuperar ${todayDayName}` : `Começar ${todayDayName}`}
+                >
+                  <Text style={[styles.hojeHeroTitle, {
+                    color: todayIsBacklog ? colors.text : colors.onPrimary,
+                  }]}>
+                    {todayDayName}
                   </Text>
-                  <Text style={[styles.quickDesc, { color: todayIsBacklog ? colors.onError : colors.onSecondary }]} numberOfLines={1}>
-                    {todayIsBacklog ? 'Treino em atraso' : todayDayName}
+                  <Text style={[styles.hojeHeroSub, {
+                    color: todayIsBacklog ? colors.textSecondary : colors.onPrimary,
+                    opacity: todayIsBacklog ? 1 : 0.9,
+                  }]}>
+                    {todayIsBacklog
+                      ? 'Treino em atraso'
+                      : [
+                          exCount != null ? `${exCount} exercícios` : null,
+                          isAdaptiveDay && adaptiveStatus && PHASE_RPE_PT[adaptiveStatus.phase]
+                            ? `RPE ${PHASE_RPE_PT[adaptiveStatus.phase]}`
+                            : null,
+                        ].filter(Boolean).join(' · ') || planNames[todayEntry.planId] || 'Sessão de hoje'}
                   </Text>
-                  {/* Real NSPI output for this specific day — exercise count
-                      the equipment/injury filter actually left in the plan,
-                      plus the active phase's RPE window (see PHASE_RPE_PT) —
-                      not shown for a day pointing at a non-adaptive plan. */}
-                  {adaptiveStatus && todayEntry.planId === adaptiveStatus.planId && (
-                    <Text style={[styles.quickDesc, { color: todayIsBacklog ? colors.onError : colors.onSecondary }]} numberOfLines={1}>
-                      {planDayExerciseCounts[`${todayEntry.planId}:${todayEntry.dayIndex}`] ?? '—'} exercícios
-                      {PHASE_RPE_PT[adaptiveStatus.phase] ? ` · RPE ${PHASE_RPE_PT[adaptiveStatus.phase]}` : ''}
+                  <View style={[styles.hojeCta, {
+                    backgroundColor: todayIsBacklog ? colors.error : colors.onPrimary,
+                  }]}>
+                    <Play
+                      size={16}
+                      color={todayIsBacklog ? colors.onError : colors.primary}
+                      fill={todayIsBacklog ? colors.onError : colors.primary}
+                    />
+                    <Text style={[styles.hojeCtaText, {
+                      color: todayIsBacklog ? colors.onError : colors.primary,
+                    }]}>
+                      {todayIsBacklog ? 'Recuperar treino' : 'Começar treino'}
                     </Text>
-                  )}
-                </View>
-              </TouchableOpacity>
+                  </View>
+                </TouchableOpacity>
               );
-            })() : adaptiveStatus && (
-              <View style={[styles.todayCard, { backgroundColor: colors.surfaceVariant }]}>
-                <View style={[styles.quickIcon, { backgroundColor: colors.surface }]}>
-                  <Calendar size={28} color={colors.textSecondary} />
-                </View>
-                <View style={styles.quickInfo}>
-                  <Text style={[styles.quickTitle, { color: colors.text }]}>Dia de Descanso</Text>
-                  <Text style={[styles.quickDesc, { color: colors.textSecondary }]} numberOfLines={1}>
-                    {nextPlannedEntry
-                      ? `Próximo: ${nextPlannedEntry.weekday === (today + 1) % 7 ? 'Amanhã' : WEEKDAY_FULL[nextPlannedEntry.weekday]} · ${planDayLabels[`${nextPlannedEntry.entry.planId}:${nextPlannedEntry.entry.dayIndex}`] || planNames[nextPlannedEntry.entry.planId] || 'Treino'}`
-                      : 'Sem treinos agendados esta semana'}
+            })() : (
+              <View style={[styles.hojeHero, { backgroundColor: colors.surfaceVariant, borderColor: colors.border, borderWidth: StyleSheet.hairlineWidth }]}>
+                <Text style={[styles.hojeHeroTitle, { color: colors.text }]}>
+                  {!adaptiveStatus && plans.length === 0 ? 'Nenhum treino planeado' : 'Dia de descanso'}
+                </Text>
+                <Text style={[styles.hojeHeroSub, { color: colors.textSecondary }]}>
+                  {nextPlannedEntry
+                    ? `Próximo: ${nextPlannedEntry.weekday === (today + 1) % 7 ? 'Amanhã' : WEEKDAY_FULL[nextPlannedEntry.weekday]} · ${planDayLabels[`${nextPlannedEntry.entry.planId}:${nextPlannedEntry.entry.dayIndex}`] || planNames[nextPlannedEntry.entry.planId] || 'Treino'}`
+                    : adaptiveStatus
+                      ? 'Nada agendado para hoje — recupera ou treina na mesma.'
+                      : 'Cria um plano ou começa um treino livre.'}
+                </Text>
+                <TouchableOpacity
+                  style={[styles.hojeCta, { backgroundColor: colors.primary }]}
+                  onPress={() =>
+                    !adaptiveStatus && plans.length === 0
+                      ? router.push('/adaptive/start')
+                      : router.push({ pathname: '/workout/active', params: { planId: 0, planName: 'Treino Livre' } })
+                  }
+                  accessibilityRole="button"
+                  accessibilityLabel={!adaptiveStatus && plans.length === 0 ? 'Criar plano' : 'Começar treino livre'}
+                >
+                  {!adaptiveStatus && plans.length === 0
+                    ? <Plus size={16} color={colors.onPrimary} />
+                    : <Zap size={16} color={colors.onPrimary} />}
+                  <Text style={[styles.hojeCtaText, { color: colors.onPrimary }]}>
+                    {!adaptiveStatus && plans.length === 0 ? 'Criar plano' : 'Treino livre'}
                   </Text>
-                </View>
+                </TouchableOpacity>
               </View>
             ))}
 
-            {/* Planeador Semanal — toca num dia atribuído para o iniciar,
-                mantém premido (ou toca num dia vazio) para atribuir/editar. */}
+            {/* Secondary: week strip — status icons only (no truncated plan names). */}
             <View style={[styles.plannerCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <View style={styles.plannerHeader}>
                 <Calendar size={16} color={colors.textSecondary} />
-                <Text style={[styles.plannerTitle, { color: colors.textSecondary }]}>PLANEADOR SEMANAL</Text>
+                <Text style={[styles.plannerTitle, { color: colors.textSecondary }]}>ESTA SEMANA</Text>
               </View>
               <View style={styles.plannerRow}>
                 {WEEKDAY_DISPLAY_ORDER.map(weekday => {
@@ -605,22 +681,12 @@ export default function StartScreen() {
                   const entry = effectivePlanner[weekday];
                   const isToday = weekday === today;
                   const isBacklog = rollingByWeekday[weekday]?.isBacklog ?? false;
-                  // BUGFIX (reported: with 0 sessions done all week, Mon–Fri
-                  // still showed their native plan names as if those workouts
-                  // had actually happened). A past day this far behind the
-                  // real completion count was never trained — see
-                  // computeRollingSchedule's isSkipped. Shown muted, with a
-                  // neutral "Saltado" label instead of the plan name, so a
-                  // skipped day can never be mistaken for a done one.
                   const isSkipped = rollingByWeekday[weekday]?.isSkipped ?? false;
-                  // 4th grid state ("Concluído"): a past day this plan's own
-                  // rolling sequence tracked and that is neither the forced
-                  // catch-up nor skipped — i.e. one of the completedCount
-                  // sessions already logged this week. Distinct from an
-                  // upcoming native day (same isBacklog/isSkipped:false
-                  // shape, but not yet reached) purely by being in the past.
                   const isDone = !!rollingByWeekday[weekday] && !isBacklog && !isSkipped
                     && !!adaptiveStatus && isWeekdayPast(weekday, today, weekStartDow);
+                  const dayTitle = entry
+                    ? (planDayLabels[`${entry.planId}:${entry.dayIndex}`] || planNames[entry.planId] || 'Treino')
+                    : 'Sem treino';
                   return (
                     <TouchableOpacity
                       key={weekday}
@@ -642,27 +708,17 @@ export default function StartScreen() {
                       onLongPress={() => openDayPicker(weekday)}
                       delayLongPress={400}
                       accessibilityRole="button"
-                      accessibilityLabel={
-                        isDone
-                          ? `${WEEKDAY_FULL[weekday]}: treino concluído`
-                          : isSkipped
-                            ? `${WEEKDAY_FULL[weekday]}: treino saltado, não foi realizado, toca para registar na mesma`
-                            : entry
-                              ? `${WEEKDAY_FULL[weekday]}: ${planNames[entry.planId] || 'Treino'}, toca para iniciar, mantém para editar`
-                              : `${WEEKDAY_FULL[weekday]}: sem treino atribuído, toca para atribuir`
-                      }
+                      accessibilityLabel={`${WEEKDAY_FULL[weekday]}: ${isDone ? 'concluído' : isSkipped ? 'saltado' : dayTitle}`}
                     >
                       <Text style={[styles.plannerDayLabel, { color: isToday ? colors.primary : colors.textSecondary }]}>{label}</Text>
                       {isDone ? (
                         <CheckIcon size={16} color={colors.secondary} />
                       ) : isSkipped ? (
-                        <Text style={[styles.plannerDaySkippedLabel, { color: colors.textTertiary }]} numberOfLines={1}>
-                          Saltado
-                        </Text>
+                        <XIcon size={14} color={colors.textTertiary} />
+                      ) : isBacklog ? (
+                        <AlertCircle size={14} color={colors.error} />
                       ) : entry ? (
-                        <Text style={[styles.plannerDayPlan, { color: colors.primary }]} numberOfLines={1}>
-                          {(planDayLabels[`${entry.planId}:${entry.dayIndex}`] || planNames[entry.planId] || 'Treino').slice(0, 4)}
-                        </Text>
+                        <View style={[styles.plannerDayDot, { backgroundColor: colors.primary }]} />
                       ) : (
                         <Plus size={14} color={colors.textTertiary} />
                       )}
@@ -873,12 +929,18 @@ export default function StartScreen() {
           </>
         )}
 
-        {/* TAB: MEUS PLANOS — planos que a pessoa construiu, para gerir:
-            abrir, duplicar, apagar. Partilha estado/ações com o ecrã Planos
-            standalone via usePlansManager, para não haver duas ideias
-            diferentes do que "apagar um plano" faz. */}
+        {/* TAB: PLANOS — adaptativo no topo + planos manuais.
+            Nunca empty state falso se existir adaptiveStatus. */}
         {activeTab === 'planos' && (
           <>
+            {adaptiveStatus ? (
+              <AdaptivePlanCard
+                status={adaptiveStatus}
+                onStartToday={() => router.push('/adaptive/plan')}
+                todayLabel="Ver ciclo"
+              />
+            ) : null}
+
             <TouchableOpacity
               style={[styles.newPlanLink, { borderColor: colors.primary }]}
               onPress={() => router.push('/plan/create')}
@@ -888,22 +950,33 @@ export default function StartScreen() {
               <Text style={[styles.newPlanLinkText, { color: colors.primary }]}>Novo Plano</Text>
             </TouchableOpacity>
 
-            {plansManager.groups.length === 0 ? (
+            {plansManager.groups.length > 0 ? (
+              <>
+                {adaptiveStatus ? (
+                  <Text style={{ fontFamily: 'Inter-SemiBold', fontSize: 12, color: colors.textSecondary, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 8, marginTop: 4 }}>
+                    Os meus planos
+                  </Text>
+                ) : null}
+                {plansManager.groups.map(g => (
+                  <PlanGroupCard
+                    key={g.name}
+                    group={g}
+                    dayCounts={plansManager.dayCounts}
+                    onOpenGroup={plansManager.handleOpenGroup}
+                    onDuplicate={plansManager.handleDuplicate}
+                    onDelete={plansManager.handleDelete}
+                    onQuickStart={plansManager.handleQuickStart}
+                  />
+                ))}
+              </>
+            ) : shouldShowPlansEmpty(0, !!adaptiveStatus) ? (
               <Text style={{ fontFamily: 'Inter-Regular', fontSize: 14, color: colors.textSecondary, paddingVertical: 8 }}>
                 Ainda não tens planos. Cria um em cima ou no separador Explorar.
               </Text>
             ) : (
-              plansManager.groups.map(g => (
-                <PlanGroupCard
-                  key={g.name}
-                  group={g}
-                  dayCounts={plansManager.dayCounts}
-                  onOpenGroup={plansManager.handleOpenGroup}
-                  onDuplicate={plansManager.handleDuplicate}
-                  onDelete={plansManager.handleDelete}
-                  onQuickStart={plansManager.handleQuickStart}
-                />
-              ))
+              <Text style={{ fontFamily: 'Inter-Regular', fontSize: 14, color: colors.textSecondary, paddingVertical: 8 }}>
+                Ainda sem planos manuais — o teu Plano Adaptativo está acima.
+              </Text>
             )}
           </>
         )}
@@ -1045,6 +1118,20 @@ const styles = StyleSheet.create({
   phaseBadgeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1 },
   phaseDot: { width: 8, height: 8, borderRadius: 4 },
   phaseBadgeText: { flex: 1, fontFamily: 'Inter-SemiBold', fontSize: 13 },
+  hojeEyebrow: { fontFamily: 'Inter-SemiBold', fontSize: 12, letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 4 },
+  hojeCycleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  hojeCycleText: { flex: 1, fontFamily: 'Inter-Medium', fontSize: 13 },
+  hojeHero: { borderRadius: 18, padding: 20, gap: 6, marginBottom: 4 },
+  hojeHeroIcon: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
+  hojeHeroTitle: { fontFamily: 'Inter-Bold', fontSize: 24, lineHeight: 30 },
+  hojeHeroSub: { fontFamily: 'Inter-Regular', fontSize: 15, lineHeight: 21 },
+  hojeHeroMeta: { fontFamily: 'Inter-Regular', fontSize: 13, marginTop: 2 },
+  hojeCta: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    marginTop: 14, borderRadius: 12, paddingVertical: 14,
+  },
+  hojeCtaText: { fontFamily: 'Inter-Bold', fontSize: 16 },
+  plannerDayDot: { width: 8, height: 8, borderRadius: 4 },
   quickIcon: { width: 52, height: 52, borderRadius: 26, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
   quickInfo: { flex: 1 },
   explorarHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

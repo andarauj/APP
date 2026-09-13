@@ -3,7 +3,7 @@ import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, wit
 import { useEffect } from 'react';
 import { useRouter } from 'expo-router';
 import { useTheme } from '@/hooks/useTheme';
-import { AlertTriangle, Play, Sparkles, Dumbbell, Clock, ListChecks } from 'lucide-react-native';
+import { AlertTriangle, Play, Sparkles, Dumbbell, Clock, ListChecks, Check } from 'lucide-react-native';
 import { formatTime } from '@/utils/format';
 import { formatMinutes } from '@/utils/workoutTime';
 import { hapticSelect } from '@/utils/haptics';
@@ -141,6 +141,40 @@ export function HeroCard({ status }: { status: TodayWorkoutStatus }) {
           <Text style={[styles.ctaText, { color: colors.primary }]}>Iniciar Treino de Hoje</Text>
         </View>
       </TouchableOpacity>
+    );
+  }
+
+  if (status.priority === 'completed' && status.completed) {
+    const c = status.completed;
+    return (
+      <View
+        style={[styles.card, { backgroundColor: colors.secondaryContainer, borderColor: colors.secondaryContainer }]}
+        accessibilityLabel={`Treino concluído: ${c.name}`}
+      >
+        <View style={styles.headerRow}>
+          <View style={[styles.iconBadge, { backgroundColor: colors.secondary }]}>
+            <Check size={13} color={colors.onSecondary} />
+          </View>
+          <Text style={[styles.eyebrow, { color: colors.text }]}>CONCLUÍDO</Text>
+        </View>
+        <Text style={[styles.title, { color: colors.text }]} numberOfLines={1}>{c.name}</Text>
+        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+          {c.totalSets} série{c.totalSets === 1 ? '' : 's'}
+          {c.totalVolume > 0 ? ` · ${Math.round(c.totalVolume)} kg` : ''}
+        </Text>
+        <TouchableOpacity
+          style={[styles.ctaBtn, { backgroundColor: colors.primary }]}
+          onPress={() => {
+            hapticSelect();
+            router.push({ pathname: '/workout/active', params: { planId: 0, planName: 'Treino Livre' } });
+          }}
+          accessibilityRole="button"
+          accessibilityLabel="Iniciar treino livre adicional"
+        >
+          <Dumbbell size={16} color={colors.onPrimary} />
+          <Text style={[styles.ctaText, { color: colors.onPrimary }]}>Treino Livre</Text>
+        </TouchableOpacity>
+      </View>
     );
   }
 

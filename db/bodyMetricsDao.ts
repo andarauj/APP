@@ -79,6 +79,15 @@ export async function getLatestBodyMetric(): Promise<BodyMetric | null> {
   );
 }
 
+/** Most recent scale weight in kg, or null if the user has never logged one. */
+export async function getLatestBodyWeightKg(): Promise<number | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ weight: number | null }>(
+    'SELECT weight FROM body_metrics WHERE weight IS NOT NULL ORDER BY date DESC LIMIT 1'
+  );
+  return row?.weight ?? null;
+}
+
 /**
  * Get weight trend (last N days)
  */

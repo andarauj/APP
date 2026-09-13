@@ -14,7 +14,7 @@ import { useCallback, useState } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { useDatabase } from './useDatabase';
 import { useAdaptiveStatus } from './useAdaptiveStatus';
-import { getUnfinishedSessionWithProgress, getSessionSetsWithExercise } from '@/db/workoutDao';
+import { getUnfinishedSessionWithProgress, getSessionSetsWithExercise, getSessionsForDate } from '@/db/workoutDao';
 import { getRollingScheduleForPlan, type RollingScheduleEntry } from '@/utils/adaptiveService';
 import { getWeeklyPlanner } from '@/db/plannerDao';
 import { getPlanById, getPlanExercisesWithDetails } from '@/db/planDao';
@@ -41,11 +41,18 @@ export interface ScheduledHeroPayload {
   muscles: string[];
 }
 
+export interface CompletedHeroPayload {
+  name: string;
+  totalSets: number;
+  totalVolume: number;
+}
+
 export interface TodayWorkoutStatus {
   priority: TodayWorkoutPriority;
   loaded: boolean;
   active: ActiveHeroPayload | null;
   scheduled: ScheduledHeroPayload | null; // populated for both 'overdue' and 'today'
+  completed: CompletedHeroPayload | null;
   refresh: () => Promise<void>;
 }
 
@@ -76,21 +83,26 @@ export function useTodayWorkoutStatus(): TodayWorkoutStatus {
   const [loaded, setLoaded] = useState(false);
   const [active, setActive] = useState<ActiveHeroPayload | null>(null);
   const [scheduled, setScheduled] = useState<ScheduledHeroPayload | null>(null);
+  const [completed, setCompleted] = useState<CompletedHeroPayload | null>(null);
 
   const refresh = useCallback(async () => {
     if (!isReady) return;
     try {
-      const [unfinishedResult, planner] = await Promise.all([
+      const now = new Date();
+      const [unfinishedResult, planner, todaysSessions] = await Promise.all([
         getUnfinishedSessionWithProgress(),
         getWeeklyPlanner(),
+        getSessionsForDate(now.getFullYear(), now.getMonth(), now.getDate()),
       ]);
       // Mirrors start.tsx's silent-discard rule for display purposes only —
       // a session with 0 logged sets isn't "in progress" from the person's
       // point of view. The actual DB cleanup still happens in start.tsx,
       // whichever screen the person visits first; this hook only reads.
       const hasUnfinished = !!unfinishedResult && unfinishedResult.completedSets > 0;
+      const finishedToday = todaysSessions.filter(s => s.ended_at != null);
+      const latestFinished = finishedToday.sort((a, b) => b.started_at - a.started_at)[0] || null;
 
-      const today = new Date().getDay();
+      const today = now.getDay();
       let rollingEntry: RollingScheduleEntry | null = null;
       if (adaptiveStatus) {
         const weekStartDow = new Date(adaptiveStatus.weekStart * 1000).getDay();
@@ -98,11 +110,13 @@ export function useTodayWorkoutStatus(): TodayWorkoutStatus {
         rollingEntry = schedule?.find(e => e.weekday === today) ?? null;
       }
       const plannedToday = planner[today] ?? null;
+      const hasTodayEntry = !!rollingEntry || !!plannedToday;
 
       const resolved = resolveTodayWorkoutPriority({
         hasUnfinishedSession: hasUnfinished,
         isTodayBacklog: rollingEntry?.isBacklog ?? false,
-        hasTodayEntry: !!rollingEntry || !!plannedToday,
+        hasTodayEntry,
+        hasTodayCompleted: !!latestFinished,
       });
       setPriority(resolved);
 
@@ -121,6 +135,16 @@ export function useTodayWorkoutStatus(): TodayWorkoutStatus {
         setActive(null);
       }
 
+      if (resolved === 'completed' && latestFinished) {
+        setCompleted({
+          name: latestFinished.name,
+          totalSets: latestFinished.total_sets,
+          totalVolume: latestFinished.total_volume,
+        });
+      } else {
+        setCompleted(null);
+      }
+
       if (resolved === 'overdue' || resolved === 'today') {
         const planId = adaptiveStatus && rollingEntry ? adaptiveStatus.planId : plannedToday!.planId;
         const dayIndex = adaptiveStatus && rollingEntry ? rollingEntry.dayIndex : plannedToday!.dayIndex;
@@ -133,6 +157,7 @@ export function useTodayWorkoutStatus(): TodayWorkoutStatus {
       setPriority('rest');
       setActive(null);
       setScheduled(null);
+      setCompleted(null);
     } finally {
       setLoaded(true);
     }
@@ -140,5 +165,5 @@ export function useTodayWorkoutStatus(): TodayWorkoutStatus {
 
   useFocusEffect(useCallback(() => { refresh(); }, [refresh]));
 
-  return { priority, loaded, active, scheduled, refresh };
+  return { priority, loaded, active, scheduled, completed, refresh };
 }

@@ -259,7 +259,7 @@ export default function ExercisesScreen() {
                   <View style={[styles.muscleCircle, { backgroundColor: c + '22' }]}>
                     <Dumbbell size={26} color={c} />
                   </View>
-                  <Text style={[styles.muscleLabel, { color: colors.text }]} numberOfLines={1}>{MUSCLE_GROUPS_PT[m]}</Text>
+                  <Text style={[styles.muscleLabel, { color: colors.text }]}>{MUSCLE_GROUPS_PT[m]}</Text>
                 </TouchableOpacity>
               );
             })}
@@ -466,7 +466,7 @@ const styles = StyleSheet.create({
   muscleGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between' },
   muscleTile: { width: '30%', alignItems: 'center', gap: 8, paddingVertical: 8 },
   muscleCircle: { width: 72, height: 72, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
-  muscleLabel: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, textAlign: 'center' },
+  muscleLabel: { fontFamily: 'Inter-SemiBold', fontSize: 12, lineHeight: 16, textAlign: 'center', minHeight: 32 },
   seeAllBtn: { height: BUTTON_HEIGHT, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   seeAllBtnText: { fontFamily: 'Inter-Bold', fontSize: 15 },
   filterPillsWrap: { flexGrow: 0, flexShrink: 0 },

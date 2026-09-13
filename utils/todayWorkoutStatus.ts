@@ -1,4 +1,4 @@
-export type TodayWorkoutPriority = 'active' | 'overdue' | 'today' | 'rest';
+export type TodayWorkoutPriority = 'active' | 'overdue' | 'today' | 'completed' | 'rest';
 
 export interface TodayWorkoutSignals {
   /** A session with ended_at IS NULL and at least one logged set — the
@@ -13,6 +13,8 @@ export interface TodayWorkoutSignals {
   /** Something — adaptive-rolled or manually assigned via the weekly
    *  planner — is scheduled for today, and it's not backlog. */
   hasTodayEntry: boolean;
+  /** A completed session was already logged today for the scheduled plan. */
+  hasTodayCompleted?: boolean;
 }
 
 /**
@@ -24,7 +26,16 @@ export interface TodayWorkoutSignals {
  */
 export function resolveTodayWorkoutPriority(signals: TodayWorkoutSignals): TodayWorkoutPriority {
   if (signals.hasUnfinishedSession) return 'active';
+  // Finished today beats backlog/schedule — the person already trained.
+  if (signals.hasTodayCompleted) return 'completed';
   if (signals.isTodayBacklog) return 'overdue';
   if (signals.hasTodayEntry) return 'today';
   return 'rest';
+}
+
+/** Time-of-day greeting in PT-PT. */
+export function greetingForHour(hour: number): string {
+  if (hour < 12) return 'Bom dia';
+  if (hour < 19) return 'Boa tarde';
+  return 'Boa noite';
 }

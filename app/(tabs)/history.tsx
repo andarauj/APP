@@ -7,7 +7,7 @@ import { getStreakData, getWorkoutDatesByMonth, getSessionsForDate, getWeeklyVol
 import { exportWorkoutAsXml, shareXmlFile, importXml } from '@/utils/xmlExport';
 import { pickXmlFile } from '@/utils/filePicker';
 import type { WorkoutSession, PersonalRecord } from '@/types';
-import { formatTime, formatDateTime, formatVolume, monthName, getDaysInMonth, getFirstDayOfMonth } from '@/utils/format';
+import { formatTime, formatDate, formatDateTime, formatVolume, monthName, getDaysInMonth, getFirstDayOfMonth } from '@/utils/format';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Calendar, Flame, TrendingUp, Download, Upload, ChevronLeft, ChevronRight, X, Play, Zap, Dumbbell, Radar, Star } from 'lucide-react-native';
 import { Card } from '@/components/ui/Card';
@@ -417,11 +417,13 @@ export default function HistoryScreen() {
                           {pr.exercise_name}
                         </Text>
                         <Text style={[styles.listSub, { color: colors.textSecondary }]}>
-                          {new Date(pr.date_achieved * 1000).toLocaleDateString('pt-PT')}
+                          {formatDate(pr.date_achieved)}
                         </Text>
                       </View>
                       <Text style={[styles.prValue, { color: colors.secondary }]}>
-                        {pr.max_weight}kg × {pr.max_reps}
+                        {pr.is_bodyweight
+                          ? `${pr.max_reps} reps`
+                          : `${pr.max_weight}kg × ${pr.max_reps}`}
                       </Text>
                     </View>
                   )) : (

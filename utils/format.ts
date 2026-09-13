@@ -8,18 +8,29 @@ export function formatTime(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/**
+ * App convention: store and pass Unix timestamps in **seconds**.
+ * Values that look like milliseconds (> 1e12 ≈ Sept 2001 in ms) are
+ * normalised so a mistaken `* 1000` at a call site cannot paint year ~58668.
+ */
+export function toUnixSeconds(timestamp: number): number {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 0;
+  if (timestamp > 1e12) return Math.floor(timestamp / 1000);
+  return Math.floor(timestamp);
+}
+
 export function formatDate(timestamp: number): string {
-  const d = new Date(timestamp * 1000);
+  const d = new Date(toUnixSeconds(timestamp) * 1000);
   return d.toLocaleDateString('pt-PT', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
 export function formatDateShort(timestamp: number): string {
-  const d = new Date(timestamp * 1000);
+  const d = new Date(toUnixSeconds(timestamp) * 1000);
   return d.toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit' });
 }
 
 export function formatDateTime(timestamp: number): string {
-  const d = new Date(timestamp * 1000);
+  const d = new Date(toUnixSeconds(timestamp) * 1000);
   return d.toLocaleDateString('pt-PT', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 

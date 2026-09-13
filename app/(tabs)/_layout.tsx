@@ -101,21 +101,20 @@ export default function TabsLayout() {
         tabBarAllowFontScaling: false,
       }}
     >
-      {/* Bar: Descobrir · Treino · Exercícios · Progresso. "Perfil" is off
-          the bar — records/calculators/settings are reached from the ⚙️ in
-          the Progresso header. */}
+      {/* Bar: Treino · Exercícios · Progresso · Perfil.
+          Descobrir / Planos / Histórico ficam fora da barra (deep-links). */}
 
-      {/* Descobrir — no social back-end, so it is a small always-available
-          library: personalised tips and evergreen coaching notes. */}
+      {/* Descobrir — tips library, reached from Progresso. */}
       <Tabs.Screen
         name="discover"
         options={{
           title: 'Descobrir',
+          href: null,
           tabBarIcon: ({ color }) => <Compass size={24} color={color} />,
         }}
       />
 
-      {/* Holds the Explorar / Plano / Instantâneo top tabs. */}
+      {/* Holds the Explorar / Hoje / Instantâneo / Planos top tabs. */}
       <Tabs.Screen
         name="start"
         options={{
@@ -143,20 +142,15 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* Off the bar — reached from the ⚙️ in the Progresso header; holds
-          Recordes · Calc. · Corpo · Definições. */}
       <Tabs.Screen
         name="profile"
         options={{
           title: 'Perfil',
-          href: null,
           tabBarIcon: ({ color }) => <User size={24} color={color} />,
         }}
       />
 
-      {/* Off the bar. Reachable from the "Planos" link in the Treino header
-          and from the plan pickers. Merges into Treino's "Explorar" sub-tab
-          in Fase 1b. */}
+      {/* Off the bar. Reachable from Treino › Planos and plan pickers. */}
       <Tabs.Screen
         name="plans"
         options={{
@@ -166,8 +160,7 @@ export default function TabsLayout() {
         }}
       />
 
-      {/* Off the bar: reached from the "Histórico" top tab inside Treino, the
-          progress hub, and (soon) Progresso › Atividade. */}
+      {/* Off the bar: reached from Progresso and Treino deep links. */}
       <Tabs.Screen
         name="history"
         options={{

@@ -21,7 +21,9 @@ import type { Exercise, SetType, MuscleGroup } from '@/types';
 import { MUSCLE_GROUPS_PT, EQUIPMENT_PT } from '@/types';
 import { SearchBar } from '@/components/ui/SearchBar';
 import { ExerciseTile } from '@/components/ui/ExerciseTile';
-import { formatTime } from '@/utils/format';
+import { formatTime, formatVolume } from '@/utils/format';
+import { setVolume, shouldPreferRepsKpi } from '@/utils/loadVolume';
+import { getLatestBodyWeightKg } from '@/db/bodyMetricsDao';
 import { parseTempo, calculatePlates } from '@/utils/calculators';
 import { hapticTap, hapticSuccess, hapticWarning, hapticSelect } from '@/utils/haptics';
 import { playRestEndSound } from '@/utils/sound';
@@ -180,6 +182,7 @@ export default function ActiveWorkoutScreen() {
   const [restRemindersEnabled, setRestRemindersEnabled] = useState(true);
   const [coachingTips, setCoachingTips] = useState<CoachingTip[]>([]);
   const [coachingExerciseIdx, setCoachingExerciseIdx] = useState<number | null>(null);
+  const [userBodyweightKg, setUserBodyweightKg] = useState<number | null>(null);
 
   // BUGFIX (reported: weight/reps for an exercise near the end of a long
   // workout were unreadable, hidden under the keyboard): KeyboardAvoidingView
@@ -297,6 +300,7 @@ export default function ActiveWorkoutScreen() {
   // deliberate rather than an oversight.
   useEffect(() => {
     init();
+    getLatestBodyWeightKg().then(setUserBodyweightKg).catch(() => setUserBodyweightKg(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -930,9 +934,19 @@ export default function ActiveWorkoutScreen() {
   };
 
   const totalVolume = exercises.reduce((sum, ex) =>
-    sum + ex.sets.filter(s => s.done).reduce((v, s) => v + (parseFloat(s.weight) || 0) * (parseInt(s.reps) || 0), 0), 0
+    sum + ex.sets.filter(s => s.done).reduce(
+      (v, s) => v + setVolume(parseInt(s.reps) || 0, parseFloat(s.weight) || 0, ex.equipment, userBodyweightKg),
+      0
+    ), 0
   );
   const totalSets = exercises.reduce((sum, ex) => sum + ex.sets.filter(s => s.done).length, 0);
+  const totalReps = exercises.reduce((sum, ex) =>
+    sum + ex.sets.filter(s => s.done).reduce((r, s) => r + (parseInt(s.reps) || 0), 0), 0
+  );
+  const bwDoneSets = exercises.reduce((sum, ex) =>
+    sum + (ex.equipment === 'bodyweight' ? ex.sets.filter(s => s.done).length : 0), 0
+  );
+  const preferRepsKpi = shouldPreferRepsKpi(bwDoneSets, totalSets);
   // For the sticky progress bar — every set across every exercise, done or
   // not, so "12 de 20 séries" means what it says.
   const totalPlannedSets = exercises.reduce((sum, ex) => sum + ex.sets.length, 0);
@@ -1104,8 +1118,17 @@ export default function ActiveWorkoutScreen() {
         </View>
         <View style={[styles.statDiv, { backgroundColor: colors.border }]} />
         <View style={styles.stat}>
-          <Text style={[styles.statValue, { color: colors.text }]}>{Math.round(totalVolume)} kg</Text>
-          <Text style={[styles.statLabel, { color: colors.textTertiary }]}>Volume</Text>
+          {preferRepsKpi ? (
+            <>
+              <Text style={[styles.statValue, { color: colors.text }]}>{totalReps}</Text>
+              <Text style={[styles.statLabel, { color: colors.textTertiary }]}>Reps</Text>
+            </>
+          ) : (
+            <>
+              <Text style={[styles.statValue, { color: colors.text }]}>{Math.round(totalVolume)} kg</Text>
+              <Text style={[styles.statLabel, { color: colors.textTertiary }]}>Volume</Text>
+            </>
+          )}
         </View>
         <View style={[styles.statDiv, { backgroundColor: colors.border }]} />
         <View style={styles.stat}>
@@ -1534,11 +1557,23 @@ export default function ActiveWorkoutScreen() {
                 <Text style={[styles.finishStatVal, { color: colors.primary }]}>{totalSets}</Text>
                 <Text style={[styles.finishStatLabel, { color: colors.textSecondary }]}>Séries</Text>
               </View>
-              <View style={styles.finishStat}>
-                <Text style={[styles.finishStatVal, { color: colors.primary }]}>{Math.round(totalVolume)} kg</Text>
-                <Text style={[styles.finishStatLabel, { color: colors.textSecondary }]}>Volume</Text>
-              </View>
+              {preferRepsKpi ? (
+                <View style={styles.finishStat}>
+                  <Text style={[styles.finishStatVal, { color: colors.primary }]}>{totalReps}</Text>
+                  <Text style={[styles.finishStatLabel, { color: colors.textSecondary }]}>Reps</Text>
+                </View>
+              ) : (
+                <View style={styles.finishStat}>
+                  <Text style={[styles.finishStatVal, { color: colors.primary }]}>{Math.round(totalVolume)} kg</Text>
+                  <Text style={[styles.finishStatLabel, { color: colors.textSecondary }]}>Volume</Text>
+                </View>
+              )}
             </View>
+            {preferRepsKpi && totalVolume > 0 && (
+              <Text style={[styles.finishStatLabel, { color: colors.textTertiary, textAlign: 'center', marginBottom: 8 }]}>
+                {formatVolume(totalVolume)} estimados (peso corporal)
+              </Text>
+            )}
 
             {/* "Mark complete" — glide through the rest of the workout using
                 the reps/weight already filled in, instead of tapping every

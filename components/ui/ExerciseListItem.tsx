@@ -34,7 +34,8 @@ export const ExerciseListItem = memo(function ExerciseListItem({
   textTertiaryColor,
   borderColor,
 }: ExerciseListItemProps) {
-  const hasImage = exercise.image_url && exercise.image_url.trim() !== '';
+  const thumb = (exercise.thumbnail_url || exercise.image_url || '').trim();
+  const hasImage = thumb.length > 0;
   const mColor = muscleColor(exercise.primary_muscle);
   const EquipIcon = EQUIPMENT_ICON[exercise.equipment];
 
@@ -63,7 +64,7 @@ export const ExerciseListItem = memo(function ExerciseListItem({
     >
       <View style={styles.mediaContainer}>
         {hasImage ? (
-          <Image source={{ uri: exercise.image_url }} style={styles.thumbnail} resizeMode="cover" />
+          <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
         ) : (
           <ExerciseTile muscle={exercise.primary_muscle} equipment={exercise.equipment} size={56} />
         )}

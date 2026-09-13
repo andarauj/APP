@@ -127,7 +127,7 @@ export async function getPlanDayCounts(planIds: number[]): Promise<Record<number
 export async function getPlanExercisesWithDetails(planId: number): Promise<any[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync(
-    `SELECT pe.*, e.name as exercise_name, e.primary_muscle, e.equipment, e.type, e.user_notes, e.media_uri, e.image_url
+    `SELECT pe.*, e.name as exercise_name, e.primary_muscle, e.equipment, e.type, e.user_notes, e.media_uri, e.image_url, e.thumbnail_url, e.gif_url, e.api_id
      FROM plan_exercises pe
      JOIN exercises e ON pe.exercise_id = e.id
      WHERE pe.plan_id = ?

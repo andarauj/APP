@@ -4,19 +4,23 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '@/hooks/useTheme';
 import { useDatabase } from '@/hooks/useDatabase';
 import { usePlansManager } from '@/hooks/usePlansManager';
+import { useAdaptiveStatus } from '@/hooks/useAdaptiveStatus';
 import type { PlanGroup } from '@/utils/planGrouping';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { PlanGroupCard } from '@/components/ui/PlanGroupCard';
 import { PlanVersionModal } from '@/components/ui/PlanVersionModal';
-import { useFocusEffect } from 'expo-router';
+import { AdaptivePlanCard } from '@/components/ui/AdaptivePlanCard';
+import { filterPlanGroupsByTab, shouldShowPlansEmpty, type PlansFilterTab } from '@/utils/plansUi';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { ListChecks } from 'lucide-react-native';
 
 export default function PlansScreen() {
   const { colors } = useTheme();
   const { isReady } = useDatabase();
+  const router = useRouter();
+  const { status: adaptiveStatus } = useAdaptiveStatus();
 
-  // Top tab navigation
-  const [activeTab, setActiveTab] = useState<'todos' | 'novos' | 'favoritos'>('todos');
+  const [activeTab, setActiveTab] = useState<PlansFilterTab>('todos');
   const [refreshing, setRefreshing] = useState(false);
 
   const {
@@ -34,6 +38,9 @@ export default function PlansScreen() {
     setRefreshing(false);
   };
 
+  const filtered = filterPlanGroupsByTab(groups, activeTab);
+  const showEmpty = shouldShowPlansEmpty(filtered.length, !!adaptiveStatus && activeTab !== 'manuais');
+
   const renderItem = ({ item: group }: { item: PlanGroup }) => (
     <PlanGroupCard
       group={group}
@@ -45,66 +52,68 @@ export default function PlansScreen() {
     />
   );
 
+  const tabs: { key: PlansFilterTab; label: string }[] = [
+    { key: 'todos', label: 'Todos' },
+    { key: 'gerados', label: 'Gerados' },
+    { key: 'manuais', label: 'Manuais' },
+  ];
+
   return (
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <Text style={[styles.headerTitle, { color: colors.text }]}>Planos</Text>
       </View>
 
-      {/* Top tabs contextuais */}
       <View style={[styles.topTabs, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity
-          onPress={() => setActiveTab('todos')}
-          style={[styles.topTab, activeTab === 'todos' && { borderBottomColor: colors.primary, borderBottomWidth: 2 }]}
-        >
-          <Text style={[styles.topTabLabel, { color: activeTab === 'todos' ? colors.primary : colors.textSecondary }]}>
-            Todos
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => setActiveTab('novos')}
-          style={[styles.topTab, activeTab === 'novos' && { borderBottomColor: colors.primary, borderBottomWidth: 2 }]}
-        >
-          <Text style={[styles.topTabLabel, { color: activeTab === 'novos' ? colors.primary : colors.textSecondary }]}>
-            Novos
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={() => setActiveTab('favoritos')}
-          style={[styles.topTab, activeTab === 'favoritos' && { borderBottomColor: colors.primary, borderBottomWidth: 2 }]}
-        >
-          <Text style={[styles.topTabLabel, { color: activeTab === 'favoritos' ? colors.primary : colors.textSecondary }]}>
-            Favoritos
-          </Text>
-        </TouchableOpacity>
+        {tabs.map(t => (
+          <TouchableOpacity
+            key={t.key}
+            onPress={() => setActiveTab(t.key)}
+            style={[styles.topTab, activeTab === t.key && { borderBottomColor: colors.primary, borderBottomWidth: 2 }]}
+          >
+            <Text style={[styles.topTabLabel, { color: activeTab === t.key ? colors.primary : colors.textSecondary }]}>
+              {t.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
-      {/* Filter groups based on active tab */}
       <FlatList
-        data={
-          activeTab === 'novos'
-            ? groups.filter(g => g.plans.some(p => p.is_auto_generated === 1))
-            : activeTab === 'favoritos'
-            ? groups.filter(g => g.plans.some(p => p.is_auto_generated === 0))
-            : groups
-        }
+        data={filtered}
         keyExtractor={g => g.name}
         renderItem={renderItem}
         contentContainerStyle={styles.list}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} colors={[colors.primary]} />}
+        ListHeaderComponent={
+          adaptiveStatus && activeTab !== 'manuais' ? (
+            <View style={{ marginBottom: 4 }}>
+              <AdaptivePlanCard
+                status={adaptiveStatus}
+                onStartToday={() => router.push('/adaptive/plan')}
+                todayLabel="Ver ciclo"
+              />
+              {filtered.length > 0 ? (
+                <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>Os meus planos</Text>
+              ) : null}
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
-          <EmptyState
-            icon={<ListChecks size={48} color={colors.textTertiary} />}
-            title="Ainda sem planos"
-            description="Cria um plano no separador Treinar — aparece aqui para gerires: editar, duplicar ou apagar."
-          />
+          showEmpty ? (
+            <EmptyState
+              icon={<ListChecks size={48} color={colors.textTertiary} />}
+              title="Ainda sem planos"
+              description="Cria um plano no separador Treino — aparece aqui para gerires: editar, duplicar ou apagar."
+            />
+          ) : adaptiveStatus && filtered.length === 0 ? (
+            <Text style={{ fontFamily: 'Inter-Regular', fontSize: 14, color: colors.textSecondary, paddingVertical: 8 }}>
+              Sem planos manuais nesta vista — o teu Plano Adaptativo está acima.
+            </Text>
+          ) : null
         }
         showsVerticalScrollIndicator={false}
       />
 
-      {/* Version picker — only shown for a name with more than one plan. */}
       <PlanVersionModal
         group={openGroup}
         onClose={() => setOpenGroup(null)}
@@ -118,10 +127,18 @@ export default function PlansScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 16, paddingBottom: 12, borderBottomWidth: 1 },
+  header: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth },
   headerTitle: { fontFamily: 'Inter-Bold', fontSize: 28 },
-  topTabs: { flexDirection: 'row', paddingHorizontal: 16, borderBottomWidth: 1 },
-  topTab: { flex: 1, paddingVertical: 12, alignItems: 'center', justifyContent: 'center', borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  topTabLabel: { fontFamily: 'Inter-SemiBold', fontSize: 13 },
-  list: { padding: 16, gap: 12 },
+  topTabs: { flexDirection: 'row', paddingHorizontal: 8 },
+  topTab: { flex: 1, alignItems: 'center', paddingVertical: 12 },
+  topTabLabel: { fontFamily: 'Inter-SemiBold', fontSize: 14 },
+  list: { padding: 16, paddingBottom: 40, flexGrow: 1 },
+  sectionLabel: {
+    fontFamily: 'Inter-SemiBold',
+    fontSize: 12,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 8,
+    marginTop: 4,
+  },
 });

@@ -9,7 +9,12 @@
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
-    "android": "expo run:android"
+    "android": "expo run:android",
+    "audit": "node scripts/audit_gymforge.cjs",
+    "audit:full": "node scripts/audit_gymforge.cjs --full",
+    "audit:media": "node scripts/audit_gymforge.cjs --media",
+    "enrich:media": "node scripts/enrich_exercise_media.cjs --dry-run",
+    "enrich:media:write": "node scripts/enrich_exercise_media.cjs --write-matches --validate-urls"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",

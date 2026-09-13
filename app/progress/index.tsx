@@ -19,7 +19,7 @@ import { useTheme } from '@/hooks/useTheme';
 import { useAppMode } from '@/hooks/useAppMode';
 import {
   ChevronLeft, ChevronRight, Radar, Zap, Star, Activity,
-  Trophy, Calendar, Camera, History,
+  Trophy, Calendar, Camera, History, Compass,
 } from 'lucide-react-native';
 
 interface Entry {
@@ -77,6 +77,12 @@ const SECTIONS: { heading: string; entries: Entry[] }[] = [
   {
     heading: 'Resumos',
     entries: [
+      {
+        route: '/(tabs)/discover',
+        title: 'Descobrir',
+        description: 'Dicas personalizadas e notas de coaching',
+        icon: Compass,
+      },
       {
         route: '/monthly-recap',
         title: 'O teu mês',

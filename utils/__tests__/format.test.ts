@@ -1,6 +1,8 @@
 import {
   formatTime,
   formatVolume,
+  formatDate,
+  toUnixSeconds,
   getDaysInMonth,
   getFirstDayOfMonth,
   monthName,
@@ -15,6 +17,37 @@ describe('formatTime', () => {
 
   it('switches to h:mm:ss once past an hour', () => {
     expect(formatTime(3661)).toBe('1:01:01');
+  });
+});
+
+describe('toUnixSeconds', () => {
+  it('leaves second-scale timestamps untouched', () => {
+    expect(toUnixSeconds(1_700_000_000)).toBe(1_700_000_000);
+  });
+
+  it('normalises millisecond timestamps so callers that *1000 do not paint year ~58668', () => {
+    expect(toUnixSeconds(1_700_000_000_000)).toBe(1_700_000_000);
+  });
+
+  it('returns 0 for invalid input', () => {
+    expect(toUnixSeconds(0)).toBe(0);
+    expect(toUnixSeconds(-5)).toBe(0);
+    expect(toUnixSeconds(Number.NaN)).toBe(0);
+  });
+});
+
+describe('formatDate', () => {
+  it('formats a Unix-seconds timestamp into a pt-PT date with a sane year', () => {
+    // 2023-11-14 ≈ 1700000000
+    const label = formatDate(1_700_000_000);
+    expect(label).toMatch(/2023/);
+    expect(label).not.toMatch(/58\s?000|58668/);
+  });
+
+  it('does not produce an absurd year when given milliseconds by mistake', () => {
+    const label = formatDate(1_700_000_000_000);
+    expect(label).toMatch(/2023/);
+    expect(label).not.toMatch(/58\d{3}/);
   });
 });
 

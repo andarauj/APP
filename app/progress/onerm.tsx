@@ -71,7 +71,7 @@ export default function OneRepMaxScreen() {
       // chart reads left-to-right chronologically, so both need reversing.
       const chronological = [...recordsData].reverse();
       setChartData(chronological.map(r => r.estimated1RM));
-      setChartDates(chronological.map(r => formatDate(r.date * 1000)));
+      setChartDates(chronological.map(r => formatDate(r.date)));
     } catch (err) {
       console.error('Failed to load 1RM data:', err);
     } finally {
@@ -112,7 +112,7 @@ export default function OneRepMaxScreen() {
             { color: index === 0 ? colors.secondary : colors.textSecondary },
           ]}
         >
-          {formatDate(item.date * 1000)}
+          {formatDate(item.date)}
         </Text>
       </View>
       <Text

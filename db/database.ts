@@ -1,5 +1,11 @@
 import * as SQLite from 'expo-sqlite';
 import { EXERCISE_SEED_DATA } from './exerciseSeedData';
+import {
+  EXERCISE_DISPLAY_RENAMES,
+  resolveCanonicalKey,
+  normalizeExerciseKey,
+  mediaDonorKeysFor,
+} from '@/utils/exerciseNormalize';
 
 const DB_NAME = 'changes.db';
 
@@ -136,7 +142,9 @@ export async function initDatabase(): Promise<void> {
       api_id TEXT DEFAULT '',
       api_source TEXT DEFAULT '',
       video_url TEXT DEFAULT '',
-      video_cached_path TEXT DEFAULT ''
+      video_cached_path TEXT DEFAULT '',
+      gif_url TEXT DEFAULT '',
+      thumbnail_url TEXT DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_exercises_muscle ON exercises(primary_muscle);
     CREATE INDEX IF NOT EXISTS idx_exercises_equipment ON exercises(equipment);
@@ -316,6 +324,15 @@ export async function initDatabase(): Promise<void> {
   await runStep('migrateSecondaryMuscleTokens', () => migrateSecondaryMuscleTokens(db), db, applied);
   await runStep('migrateAdaptiveEngine', () => migrateAdaptiveEngine(db), db, applied);
   await runStep('migrateExerciseDbInstructionsPt', () => migrateExerciseDbInstructionsPt(db), db, applied);
+  await runStep('migrateExerciseMediaUrls', () => migrateExerciseMediaUrls(db), db, applied);
+  await runStep('migrateExerciseCatalogNormalize', () => migrateExerciseCatalogNormalize(db), db, applied);
+  // Phase 2: expanded aliases + attach free-exercise-db artwork onto curated PT rows.
+  await runStep('migrateExerciseCatalogNormalizeV2', () => migrateExerciseCatalogNormalize(db), db, applied);
+  await runStep('migrateAttachCuratedExerciseMedia', () => migrateAttachCuratedExerciseMedia(db), db, applied);
+  // Phase 3: residual ASCII display renames (Extensao/Elevacao/…) on installed DBs.
+  await runStep('migrateExerciseCatalogNormalizeV3', () => migrateExerciseCatalogNormalize(db), db, applied);
+  // Phase 4: attach verified free-exercise-db stills onto curated PT rows (matches JSON).
+  await runStep('migrateEnrichExerciseMediaMatches', () => migrateEnrichExerciseMediaMatches(db), db, applied);
 }
 
 /**
@@ -637,6 +654,280 @@ async function migrateExerciseVideoFields(db: SQLite.SQLiteDatabase): Promise<vo
   }
   await db.runAsync(
     `UPDATE exercises SET video_url = '' WHERE video_url LIKE '%youtube.com/results%'`
+  );
+}
+
+/** Adds gif_url / thumbnail_url for rich media without dropping legacy image_url. */
+async function migrateExerciseMediaUrls(db: SQLite.SQLiteDatabase): Promise<void> {
+  const cols = (await db.getAllAsync<{ name: string }>(`PRAGMA table_info(exercises)`)).map(c => c.name);
+  if (!cols.includes('gif_url')) {
+    await db.execAsync(`ALTER TABLE exercises ADD COLUMN gif_url TEXT DEFAULT ''`);
+  }
+  if (!cols.includes('thumbnail_url')) {
+    await db.execAsync(`ALTER TABLE exercises ADD COLUMN thumbnail_url TEXT DEFAULT ''`);
+  }
+  // Prefer existing still as thumbnail when empty — keeps lists cheap.
+  await db.runAsync(
+    `UPDATE exercises SET thumbnail_url = image_url
+     WHERE (thumbnail_url IS NULL OR thumbnail_url = '')
+       AND image_url IS NOT NULL AND image_url != ''`
+  );
+}
+
+/**
+ * PT-PT display renames + semantic merge of EN duplicates into curated rows.
+ * Preserves history: FKs are re-pointed before any DELETE.
+ */
+async function migrateExerciseCatalogNormalize(db: SQLite.SQLiteDatabase): Promise<void> {
+  const all = await db.getAllAsync<{
+    id: number; name: string; is_custom: number;
+    image_url: string; api_id: string; api_source: string;
+    gif_url: string; thumbnail_url: string; alt_names: string;
+  }>('SELECT id, name, is_custom, image_url, api_id, api_source, gif_url, thumbnail_url, alt_names FROM exercises');
+
+  // 1) Exact display renames. If the target name already exists, treat as merge.
+  for (const [from, to] of Object.entries(EXERCISE_DISPLAY_RENAMES)) {
+    const source = all.find(e => e.name === from && e.is_custom === 0);
+    if (!source) continue;
+    const existingTarget = all.find(e => e.name === to && e.id !== source.id);
+    if (existingTarget) {
+      await mergeExerciseInto(db, source.id, existingTarget.id);
+      // Reflect in local list so later steps see the merge.
+      source.name = `__merged_${source.id}`;
+    } else {
+      await db.runAsync('UPDATE exercises SET name = ? WHERE id = ?', [to, source.id]);
+      source.name = to;
+    }
+  }
+
+  // Refresh after renames.
+  const refreshed = await db.getAllAsync<{
+    id: number; name: string; is_custom: number;
+    image_url: string; api_id: string; api_source: string;
+    gif_url: string; thumbnail_url: string; alt_names: string;
+  }>('SELECT id, name, is_custom, image_url, api_id, api_source, gif_url, thumbnail_url, alt_names FROM exercises WHERE is_custom = 0');
+
+  // 2) Group by canonical key; keep preferred (PT curated / lowest id with media).
+  const byKey = new Map<string, typeof refreshed>();
+  for (const row of refreshed) {
+    const key = resolveCanonicalKey(row.name);
+    const list = byKey.get(key) || [];
+    list.push(row);
+    byKey.set(key, list);
+  }
+
+  for (const [, group] of byKey) {
+    if (group.length < 2) continue;
+    // Prefer a row whose name matches the rename target / has no api_source EN,
+    // then one with image_url, then lowest id.
+    group.sort((a, b) => {
+      const aCurated = a.api_source === 'free-exercise-db' ? 1 : 0;
+      const bCurated = b.api_source === 'free-exercise-db' ? 1 : 0;
+      if (aCurated !== bCurated) return aCurated - bCurated;
+      const aMedia = a.image_url || a.gif_url || a.thumbnail_url ? 0 : 1;
+      const bMedia = b.image_url || b.gif_url || b.thumbnail_url ? 0 : 1;
+      if (aMedia !== bMedia) return aMedia - bMedia;
+      return a.id - b.id;
+    });
+    const canonical = group[0];
+    for (let i = 1; i < group.length; i++) {
+      await mergeExerciseInto(db, group[i].id, canonical.id);
+    }
+  }
+}
+
+async function mergeExerciseInto(
+  db: SQLite.SQLiteDatabase,
+  fromId: number,
+  intoId: number
+): Promise<void> {
+  if (fromId === intoId) return;
+
+  // Carry media / api ids onto the survivor when it lacks them.
+  const [from, into] = await Promise.all([
+    db.getFirstAsync<{
+      image_url: string; api_id: string; api_source: string;
+      gif_url: string; thumbnail_url: string; alt_names: string; name: string;
+    }>('SELECT image_url, api_id, api_source, gif_url, thumbnail_url, alt_names, name FROM exercises WHERE id = ?', [fromId]),
+    db.getFirstAsync<{
+      image_url: string; api_id: string; api_source: string;
+      gif_url: string; thumbnail_url: string; alt_names: string; name: string;
+    }>('SELECT image_url, api_id, api_source, gif_url, thumbnail_url, alt_names, name FROM exercises WHERE id = ?', [intoId]),
+  ]);
+  if (!from || !into) return;
+
+  const altParts = new Set(
+    `${into.alt_names || ''},${from.name},${from.alt_names || ''}`
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+  );
+  await db.runAsync(
+    `UPDATE exercises SET
+       image_url = CASE WHEN image_url IS NULL OR image_url = '' THEN ? ELSE image_url END,
+       api_id = CASE WHEN api_id IS NULL OR api_id = '' THEN ? ELSE api_id END,
+       api_source = CASE WHEN api_source IS NULL OR api_source = '' THEN ? ELSE api_source END,
+       gif_url = CASE WHEN gif_url IS NULL OR gif_url = '' THEN ? ELSE gif_url END,
+       thumbnail_url = CASE WHEN thumbnail_url IS NULL OR thumbnail_url = '' THEN ? ELSE thumbnail_url END,
+       alt_names = ?
+     WHERE id = ?`,
+    [
+      from.image_url || '',
+      from.api_id || '',
+      from.api_source || '',
+      from.gif_url || '',
+      from.thumbnail_url || from.image_url || '',
+      Array.from(altParts).join(','),
+      intoId,
+    ]
+  );
+
+  await db.runAsync('UPDATE plan_exercises SET exercise_id = ? WHERE exercise_id = ?', [intoId, fromId]);
+  await db.runAsync('UPDATE workout_sets SET exercise_id = ? WHERE exercise_id = ?', [intoId, fromId]);
+  await db.runAsync('UPDATE training_maxes SET exercise_id = ? WHERE exercise_id = ?', [intoId, fromId]).catch(() => {});
+  // Favorites: avoid UNIQUE conflicts — delete loser if winner already favorited.
+  await db.runAsync(
+    `DELETE FROM exercise_favorites WHERE exercise_id = ?
+     AND EXISTS (SELECT 1 FROM exercise_favorites WHERE exercise_id = ?)`,
+    [fromId, intoId]
+  );
+  await db.runAsync('UPDATE exercise_favorites SET exercise_id = ? WHERE exercise_id = ?', [intoId, fromId]);
+  await db.runAsync(
+    `UPDATE adaptive_exercise_state SET exercise_id = ? WHERE exercise_id = ?
+     AND NOT EXISTS (
+       SELECT 1 FROM adaptive_exercise_state a2
+       WHERE a2.adaptive_plan_id = adaptive_exercise_state.adaptive_plan_id
+         AND a2.exercise_id = ?
+     )`,
+    [intoId, fromId, intoId]
+  ).catch(() => {});
+  await db.runAsync('DELETE FROM adaptive_exercise_state WHERE exercise_id = ?', [fromId]).catch(() => {});
+
+  await db.runAsync('DELETE FROM exercises WHERE id = ?', [fromId]);
+}
+
+/**
+ * Curated PT rows often win the name UNIQUE race and never receive free-exercise-db
+ * artwork. Copy image_url / thumbnail_url from a donor that shares a canonical key
+ * (or alias) without deleting the donor when names still differ.
+ */
+async function migrateAttachCuratedExerciseMedia(db: SQLite.SQLiteDatabase): Promise<void> {
+  const rows = await db.getAllAsync<{
+    id: number; name: string; image_url: string; thumbnail_url: string; gif_url: string; api_id: string;
+  }>(
+    `SELECT id, name,
+            COALESCE(image_url,'') as image_url,
+            COALESCE(thumbnail_url,'') as thumbnail_url,
+            COALESCE(gif_url,'') as gif_url,
+            COALESCE(api_id,'') as api_id
+     FROM exercises WHERE is_custom = 0`
+  );
+
+  type Row = (typeof rows)[number];
+  const byKey = new Map<string, Row[]>();
+  for (const row of rows) {
+    const key = normalizeExerciseKey(row.name);
+    const list = byKey.get(key) || [];
+    list.push(row);
+    byKey.set(key, list);
+  }
+
+  const pickDonor = (keys: string[]): Row | null => {
+    for (const k of keys) {
+      const candidates = byKey.get(k) || [];
+      const withMedia = candidates.find(c => c.image_url || c.thumbnail_url || c.gif_url);
+      if (withMedia) return withMedia;
+    }
+    return null;
+  };
+
+  for (const row of rows) {
+    if (row.image_url || row.thumbnail_url || row.gif_url) continue;
+    const canonical = resolveCanonicalKey(row.name);
+    const donor = pickDonor(mediaDonorKeysFor(canonical));
+    if (!donor || donor.id === row.id) continue;
+    await db.runAsync(
+      `UPDATE exercises SET
+         image_url = CASE WHEN image_url IS NULL OR image_url = '' THEN ? ELSE image_url END,
+         thumbnail_url = CASE WHEN thumbnail_url IS NULL OR thumbnail_url = '' THEN ? ELSE thumbnail_url END,
+         gif_url = CASE WHEN gif_url IS NULL OR gif_url = '' THEN ? ELSE gif_url END,
+         api_id = CASE WHEN api_id IS NULL OR api_id = '' THEN ? ELSE api_id END
+       WHERE id = ?`,
+      [
+        donor.image_url,
+        donor.thumbnail_url || donor.image_url,
+        donor.gif_url,
+        donor.api_id,
+        row.id,
+      ]
+    );
+  }
+
+  // Ensure every row with image_url also has a list thumbnail.
+  await db.runAsync(
+    `UPDATE exercises SET thumbnail_url = image_url
+     WHERE (thumbnail_url IS NULL OR thumbnail_url = '')
+       AND image_url IS NOT NULL AND image_url != ''`
+  );
+}
+
+/**
+ * Phase 4 — apply curated PT ↔ free-exercise-db still matches produced by
+ * scripts/enrich_exercise_media.cjs (assets/data/exercise-media-matches.json).
+ * Only fills EMPTY media fields; never overwrites valid existing URLs.
+ * Idempotent: re-running is a no-op once fields are populated.
+ */
+async function migrateEnrichExerciseMediaMatches(db: SQLite.SQLiteDatabase): Promise<void> {
+  let payload: {
+    matches?: {
+      seedName: string;
+      imageUrl?: string;
+      thumbnailUrl?: string;
+      gifUrl?: string;
+      apiId?: string;
+      source?: string;
+      urlValid?: boolean;
+      confidence?: number;
+    }[];
+  };
+  try {
+    payload = require('../assets/data/exercise-media-matches.json');
+  } catch {
+    return;
+  }
+  const matches = payload.matches || [];
+  for (const m of matches) {
+    const image = (m.imageUrl || '').trim();
+    const thumb = (m.thumbnailUrl || image).trim();
+    if (!image || !/^https:\/\//i.test(image)) continue;
+    if (m.urlValid === false) continue;
+    if ((m.confidence ?? 100) < 75) continue;
+    await db.runAsync(
+      `UPDATE exercises SET
+         image_url = CASE WHEN image_url IS NULL OR image_url = '' THEN ? ELSE image_url END,
+         thumbnail_url = CASE WHEN thumbnail_url IS NULL OR thumbnail_url = '' THEN ? ELSE thumbnail_url END,
+         gif_url = CASE
+           WHEN (gif_url IS NULL OR gif_url = '') AND ? != '' THEN ?
+           ELSE gif_url END,
+         api_id = CASE WHEN api_id IS NULL OR api_id = '' THEN ? ELSE api_id END,
+         api_source = CASE WHEN api_source IS NULL OR api_source = '' THEN ? ELSE api_source END
+       WHERE name = ? AND is_custom = 0`,
+      [
+        image,
+        thumb,
+        m.gifUrl || '',
+        m.gifUrl || '',
+        m.apiId || '',
+        m.source || 'free-exercise-db',
+        m.seedName,
+      ]
+    );
+  }
+
+  await db.runAsync(
+    `UPDATE exercises SET thumbnail_url = image_url
+     WHERE (thumbnail_url IS NULL OR thumbnail_url = '')
+       AND image_url IS NOT NULL AND image_url != ''`
   );
 }
 

@@ -422,23 +422,39 @@ function RecordsTab({ prs, colors, weeklyVolume }: {
           <View style={styles.prHeader}>
             <Award size={16} color={colors.accent} />
             <Text style={[styles.prName, { color: colors.text }]} numberOfLines={1}>{pr.exercise_name}</Text>
-            <Text style={[styles.prDate, { color: colors.textTertiary }]}>{formatDate(pr.date_achieved * 1000)}</Text>
+            <Text style={[styles.prDate, { color: colors.textTertiary }]}>{formatDate(pr.date_achieved)}</Text>
           </View>
           <View style={styles.prStats}>
-            <View style={styles.prStat}>
-              <Text style={[styles.prStatVal, { color: colors.primary }]}>{pr.max_weight} kg</Text>
-              <Text style={[styles.prStatLabel, { color: colors.textSecondary }]}>Peso Máx.</Text>
-            </View>
-            <View style={[styles.prStatDiv, { backgroundColor: colors.border }]} />
-            <View style={styles.prStat}>
-              <Text style={[styles.prStatVal, { color: colors.primary }]}>{pr.max_reps}</Text>
-              <Text style={[styles.prStatLabel, { color: colors.textSecondary }]}>Reps Máx.</Text>
-            </View>
-            <View style={[styles.prStatDiv, { backgroundColor: colors.border }]} />
-            <View style={styles.prStat}>
-              <Text style={[styles.prStatVal, { color: colors.accent }]}>{pr.estimated_1rm} kg</Text>
-              <Text style={[styles.prStatLabel, { color: colors.textSecondary }]}>1RM Est.</Text>
-            </View>
+            {pr.is_bodyweight ? (
+              <>
+                <View style={styles.prStat}>
+                  <Text style={[styles.prStatVal, { color: colors.primary }]}>{pr.max_reps}</Text>
+                  <Text style={[styles.prStatLabel, { color: colors.textSecondary }]}>Reps Máx.</Text>
+                </View>
+                <View style={[styles.prStatDiv, { backgroundColor: colors.border }]} />
+                <View style={styles.prStat}>
+                  <Text style={[styles.prStatVal, { color: colors.accent }]}>{pr.max_reps}</Text>
+                  <Text style={[styles.prStatLabel, { color: colors.textSecondary }]}>Recorde de reps</Text>
+                </View>
+              </>
+            ) : (
+              <>
+                <View style={styles.prStat}>
+                  <Text style={[styles.prStatVal, { color: colors.primary }]}>{pr.max_weight} kg</Text>
+                  <Text style={[styles.prStatLabel, { color: colors.textSecondary }]}>Peso Máx.</Text>
+                </View>
+                <View style={[styles.prStatDiv, { backgroundColor: colors.border }]} />
+                <View style={styles.prStat}>
+                  <Text style={[styles.prStatVal, { color: colors.primary }]}>{pr.max_reps}</Text>
+                  <Text style={[styles.prStatLabel, { color: colors.textSecondary }]}>Reps Máx.</Text>
+                </View>
+                <View style={[styles.prStatDiv, { backgroundColor: colors.border }]} />
+                <View style={styles.prStat}>
+                  <Text style={[styles.prStatVal, { color: colors.accent }]}>{pr.estimated_1rm} kg</Text>
+                  <Text style={[styles.prStatLabel, { color: colors.textSecondary }]}>1RM Est.</Text>
+                </View>
+              </>
+            )}
           </View>
         </Card>
       ))}

@@ -11,8 +11,17 @@ import { isVideoUri } from '@/utils/exerciseMedia';
  * two-frame animation. If `1.jpg` 404s we quietly fall back to the still.
  */
 const FRAME0_RE = /\/0\.(jpe?g|png|webp)(\?.*)?$/i;
+const GIF_RE = /\.gif(\?.*)?$/i;
 
-function TwoFrameAnimation({ frame0, height }: { frame0: string; height: number }) {
+function TwoFrameAnimation({
+  frame0,
+  height,
+  accessibilityLabel,
+}: {
+  frame0: string;
+  height: number;
+  accessibilityLabel?: string;
+}) {
   const frame1 = useMemo(() => frame0.replace(FRAME0_RE, '/1.$1$2'), [frame0]);
   const [hasSecond, setHasSecond] = useState(true);
   const opacity = useRef(new Animated.Value(0)).current;
@@ -33,7 +42,10 @@ function TwoFrameAnimation({ frame0, height }: { frame0: string; height: number 
   }, [hasSecond, opacity]);
 
   return (
-    <View style={[styles.media, { height, overflow: 'hidden' }]}>
+    <View
+      style={[styles.media, { height, overflow: 'hidden' }]}
+      accessibilityLabel={accessibilityLabel}
+    >
       <Image source={{ uri: frame0 }} style={[styles.layer, { height }]} resizeMode="contain" />
       {hasSecond && (
         <Animated.Image
@@ -47,15 +59,51 @@ function TwoFrameAnimation({ frame0, height }: { frame0: string; height: number 
   );
 }
 
-/** Renders a user-attached photo or video for an exercise, or an animated
- *  two-frame demo for free-exercise-db stills. */
-export function ExerciseMedia({ uri, height = 220 }: { uri: string; height?: number }) {
-  const isVideo = isVideoUri(uri);
-  const player = useVideoPlayer(isVideo ? uri : null, p => {
+export type ExerciseMediaProps = {
+  /** Preferred rich media (GIF). */
+  gifUrl?: string | null;
+  /** Fallback still / two-frame source. */
+  imageUrl?: string | null;
+  /** List-friendly small image. */
+  thumbnailUrl?: string | null;
+  /** Legacy single-uri prop (user media or detail). */
+  uri?: string | null;
+  /** Optional video — only loaded when allowVideo is true (detail screens). */
+  videoUrl?: string | null;
+  allowVideo?: boolean;
+  height?: number;
+  /** When true, prefer thumbnail over GIF (list rows). */
+  compact?: boolean;
+  /** Accessibility label, e.g. "Execução de agachamento". */
+  accessibilityLabel?: string;
+};
+
+/**
+ * Renders exercise media with preference:
+ *   GIF → two-frame stills → static image → (optional) video
+ * Lists should pass compact + thumbnailUrl and never allowVideo.
+ */
+export function ExerciseMedia({
+  uri,
+  gifUrl,
+  imageUrl,
+  thumbnailUrl,
+  videoUrl,
+  allowVideo = false,
+  height = 220,
+  compact = false,
+  accessibilityLabel = 'Demonstração do exercício',
+}: ExerciseMediaProps) {
+  const still = compact
+    ? (thumbnailUrl || imageUrl || uri || gifUrl || '')
+    : (gifUrl || imageUrl || thumbnailUrl || uri || '');
+
+  const useVideo = allowVideo && !!videoUrl && isVideoUri(videoUrl);
+  const player = useVideoPlayer(useVideo ? videoUrl! : null, p => {
     if (p) { p.loop = true; }
   });
 
-  if (isVideo) {
+  if (useVideo) {
     return (
       <VideoView
         style={[styles.media, { height }]}
@@ -63,15 +111,43 @@ export function ExerciseMedia({ uri, height = 220 }: { uri: string; height?: num
         allowsFullscreen
         nativeControls
         contentFit="contain"
+        accessibilityLabel={accessibilityLabel}
       />
     );
   }
 
-  if (FRAME0_RE.test(uri)) {
-    return <TwoFrameAnimation frame0={uri} height={height} />;
+  if (!still) {
+    return (
+      <View
+        style={[styles.media, { height, backgroundColor: '#00000011' }]}
+        accessibilityLabel={`${accessibilityLabel} (sem media)`}
+      />
+    );
   }
 
-  return <Image source={{ uri }} style={[styles.media, { height }]} resizeMode="contain" />;
+  if (!compact && GIF_RE.test(still)) {
+    return (
+      <Image
+        source={{ uri: still }}
+        style={[styles.media, { height }]}
+        resizeMode="contain"
+        accessibilityLabel={accessibilityLabel}
+      />
+    );
+  }
+
+  if (!compact && FRAME0_RE.test(still)) {
+    return <TwoFrameAnimation frame0={still} height={height} accessibilityLabel={accessibilityLabel} />;
+  }
+
+  return (
+    <Image
+      source={{ uri: still }}
+      style={[styles.media, { height }]}
+      resizeMode="contain"
+      accessibilityLabel={accessibilityLabel}
+    />
+  );
 }
 
 const styles = StyleSheet.create({

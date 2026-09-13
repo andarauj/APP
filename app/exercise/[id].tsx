@@ -113,7 +113,7 @@ export default function ExerciseDetailScreen() {
 
   const altNames = (exercise.alt_names || '')
     .split(',').map(s => s.trim()).filter(Boolean).join(', ');
-  const displayImage = mediaUri || exercise.image_url || '';
+  const displayImage = mediaUri || exercise.gif_url || exercise.image_url || exercise.thumbnail_url || '';
   const typeLabel = exercise.type === 'strength' ? 'Força' : exercise.type === 'cardio' ? 'Cardio' : 'Mobilidade';
 
   const chartData = rangedProgress.map(p => ({
@@ -153,7 +153,16 @@ export default function ExerciseDetailScreen() {
             illustration; the user's own photo/video wins when set. */}
         {!!displayImage && (
           <View style={styles.mediaWrap}>
-            <ExerciseMedia uri={displayImage} height={210} />
+            <ExerciseMedia
+              uri={mediaUri || undefined}
+              gifUrl={exercise.gif_url}
+              imageUrl={exercise.image_url}
+              thumbnailUrl={exercise.thumbnail_url}
+              videoUrl={exercise.video_cached_path || undefined}
+              allowVideo={!!exercise.video_cached_path}
+              height={210}
+              accessibilityLabel={`Execução de ${exercise.name}`}
+            />
           </View>
         )}
 
